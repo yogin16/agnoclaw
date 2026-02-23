@@ -1,0 +1,98 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agnoclaw"
+version = "0.1.0"
+description = "A hackable, model-agnostic agent harness built on Agno — with Claude Code's prompt wisdom, OpenClaw's UX patterns, and full Python extensibility"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "agnoclaw contributors" }]
+keywords = ["ai", "agents", "llm", "harness", "agno", "claude", "autonomous"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    # Core framework
+    "agno>=2.5.0",
+    # CLI
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "prompt-toolkit>=3.0.0",
+    # Config
+    "tomli>=2.0.0; python_version < '3.11'",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    # Frontmatter parsing (for SKILL.md)
+    "python-frontmatter>=1.0.0",
+    # Scheduling (heartbeat)
+    "apscheduler>=3.10.0",
+    # Web tools
+    "httpx>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+    # File tools
+    "pathspec>=0.12.0",
+    # Storage (default: SQLite via agno)
+    "sqlalchemy>=2.0.0",
+    # Search
+    "duckduckgo-search>=7.0.0",
+    "anthropic>=0.83.0",
+]
+
+[project.optional-dependencies]
+postgres = [
+    "psycopg[binary]>=3.1.0",
+    "asyncpg>=0.29.0",
+]
+all-models = [
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "google-generativeai>=0.8.0",
+    "groq>=0.11.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+]
+
+[project.scripts]
+agnoclaw = "agnoclaw.cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/agnoclaw/agnoclaw"
+Documentation = "https://github.com/agnoclaw/agnoclaw#readme"
+Repository = "https://github.com/agnoclaw/agnoclaw"
+Issues = "https://github.com/agnoclaw/agnoclaw/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agnoclaw"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

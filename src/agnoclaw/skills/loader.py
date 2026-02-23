@@ -1,0 +1,164 @@
+"""
+SKILL.md parser.
+
+Implements the AgentSkills open standard, compatible with Claude Code skills
+and OpenClaw/ClawHub skill format.
+
+A skill is a directory containing a SKILL.md file with YAML frontmatter:
+
+    ---
+    name: deep-research
+    description: Perform deep multi-source research on any topic
+    user-invocable: true
+    disable-model-invocation: false
+    allowed-tools: bash, web_search, web_fetch, spawn_subagent
+    ---
+
+    ## Deep Research Skill
+
+    When performing deep research:
+    1. Start with a broad web search to map the landscape
+    2. Identify 3-5 authoritative sources
+    ...
+
+Special syntax in SKILL.md content:
+  $ARGUMENTS    — all arguments passed at invocation
+  $ARGUMENTS[N] — nth argument (0-indexed)
+  !`cmd`        — shell command run before content is injected (dynamic context)
+"""
+
+from __future__ import annotations
+
+import subprocess
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+import frontmatter
+
+
+@dataclass
+class SkillMeta:
+    """Parsed metadata from a SKILL.md frontmatter."""
+
+    name: str
+    description: str = ""
+    user_invocable: bool = True
+    disable_model_invocation: bool = False
+    allowed_tools: list[str] = field(default_factory=list)
+    model: Optional[str] = None
+    context: Optional[str] = None  # "fork" for isolated subagent
+    argument_hint: Optional[str] = None
+    homepage: Optional[str] = None
+    # OpenClaw extensions
+    requires_bins: list[str] = field(default_factory=list)
+    requires_env: list[str] = field(default_factory=list)
+    os_restriction: Optional[str] = None  # "darwin", "linux", "win32"
+    always: bool = False  # skip all gate checks
+
+
+@dataclass
+class Skill:
+    """A fully loaded and parsed skill."""
+
+    meta: SkillMeta
+    content: str  # The SKILL.md body (instructions)
+    path: Path    # Path to the SKILL.md file
+
+    @property
+    def name(self) -> str:
+        return self.meta.name
+
+    @property
+    def description(self) -> str:
+        return self.meta.description
+
+    def render(self, arguments: str = "") -> str:
+        """
+        Render the skill content with argument substitution.
+
+        Substitutes:
+          $ARGUMENTS   → full arguments string
+          $ARGUMENTS[N] → nth space-split argument
+          !`cmd`       → output of shell command (dynamic context injection)
+        """
+        content = self.content
+
+        # Substitute $ARGUMENTS[N]
+        args_list = arguments.split() if arguments else []
+
+        def replace_arg_n(m: re.Match) -> str:
+            idx = int(m.group(1))
+            return args_list[idx] if idx < len(args_list) else ""
+
+        content = re.sub(r"\$ARGUMENTS\[(\d+)\]", replace_arg_n, content)
+        content = content.replace("$ARGUMENTS", arguments)
+
+        # Execute inline shell commands: !`cmd`
+        def run_inline(m: re.Match) -> str:
+            cmd = m.group(1)
+            try:
+                result = subprocess.run(
+                    cmd, shell=True, capture_output=True, text=True, timeout=10
+                )
+                return result.stdout.strip()
+            except Exception as e:
+                return f"[error running `{cmd}`: {e}]"
+
+        content = re.sub(r"!`([^`]+)`", run_inline, content)
+
+        return content
+
+
+def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
+    """
+    Parse a SKILL.md file into a Skill object.
+
+    Returns None if the file doesn't exist or can't be parsed.
+    """
+    if not skill_md_path.exists():
+        return None
+
+    try:
+        post = frontmatter.load(str(skill_md_path))
+    except Exception:
+        return None
+
+    metadata = post.metadata
+    content = post.content.strip()
+
+    # Derive name from directory if not in frontmatter
+    name = metadata.get("name") or skill_md_path.parent.name
+
+    # Parse allowed-tools (can be string or list)
+    allowed_tools_raw = metadata.get("allowed-tools", metadata.get("allowed_tools", []))
+    if isinstance(allowed_tools_raw, str):
+        allowed_tools = [t.strip() for t in allowed_tools_raw.split(",") if t.strip()]
+    else:
+        allowed_tools = list(allowed_tools_raw)
+
+    # Parse OpenClaw gating metadata
+    openclaw_meta = metadata.get("metadata", {}).get("openclaw", {})
+    requires = openclaw_meta.get("requires", {})
+
+    meta = SkillMeta(
+        name=name,
+        description=metadata.get("description", ""),
+        user_invocable=metadata.get("user-invocable", metadata.get("user_invocable", True)),
+        disable_model_invocation=metadata.get(
+            "disable-model-invocation",
+            metadata.get("disable_model_invocation", False),
+        ),
+        allowed_tools=allowed_tools,
+        model=metadata.get("model"),
+        context=metadata.get("context"),
+        argument_hint=metadata.get("argument-hint", metadata.get("argument_hint")),
+        homepage=metadata.get("homepage"),
+        requires_bins=requires.get("bins", []),
+        requires_env=requires.get("env", []),
+        os_restriction=openclaw_meta.get("os"),
+        always=openclaw_meta.get("always", False),
+    )
+
+    return Skill(meta=meta, content=content, path=skill_md_path)
