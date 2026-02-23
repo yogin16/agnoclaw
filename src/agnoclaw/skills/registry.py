@@ -16,17 +16,31 @@ Selective injection principle (from OpenClaw):
 
 This keeps context lean and avoids prompt bloat.
 
+Security model:
+  Skills are classified by trust level based on their source directory:
+    - builtin: shipped with agnoclaw — inline commands and installs auto-approved
+    - local:   user's workspace or ~/.agnoclaw/skills/ — inline commands allowed,
+               installs require interactive approval
+    - community: external sources — inline commands blocked, installs require approval,
+                 package names validated against dangerous patterns
+
+  The !`cmd` syntax in SKILL.md is only executed for builtin/local skills.
+  Install specs always display what will be installed and require confirmation
+  (except for builtin skills).
+
 Install support (metadata.openclaw.install):
-  When a skill declares install specs, the registry runs them before
-  loading the skill if the required binary/package is missing.
+  When a skill declares install specs, the registry validates package names,
+  then prompts the user before running any installs.
   Supports: uv, pip, brew, npm, go.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +51,43 @@ from .loader import Skill, SkillInstaller, load_skill_from_path
 
 logger = logging.getLogger("agnoclaw.skills")
 
+# ── Security: package name validation ──────────────────────────────────────────
+
+# Characters that should never appear in a package name
+# Note: <>=. are allowed for version constraints (e.g., requests>=2.31)
+# Subprocess calls use list form (not shell=True), so these are safe.
+_DANGEROUS_CHARS = re.compile(r'[;&|$`()\[\]{}!#\\\n\r]')
+
+# Patterns that indicate a URL-based install (supply chain risk)
+_URL_PATTERNS = re.compile(r'^(https?://|git\+|git://|svn\+|ssh://|ftp://)')
+
+
+def _validate_package_name(pkg: str, installer_type: str) -> tuple[bool, str]:
+    """
+    Validate a package name for dangerous patterns.
+
+    Returns (is_valid, reason) — reason is empty string if valid.
+    """
+    if not pkg or not pkg.strip():
+        return False, "empty package name"
+
+    if _DANGEROUS_CHARS.search(pkg):
+        return False, f"contains shell metacharacters: {pkg!r}"
+
+    if _URL_PATTERNS.match(pkg):
+        return False, f"URL-based installs are blocked: {pkg!r}"
+
+    # Go packages are paths like github.com/user/repo — allow slashes
+    if installer_type != "go" and ".." in pkg:
+        return False, f"path traversal in package name: {pkg!r}"
+
+    # npm scoped packages start with @ — that's fine
+    # But reject obviously suspicious patterns
+    if len(pkg) > 200:
+        return False, f"package name too long ({len(pkg)} chars)"
+
+    return True, ""
+
 
 class SkillRegistry:
     """
@@ -44,24 +95,35 @@ class SkillRegistry:
 
     Skills are loaded lazily (on demand) to avoid prompt bloat.
     Only the content of the selected skill is injected per turn.
+
+    Trust model:
+        Skills are assigned a trust level based on their source directory:
+        - "builtin": shipped with agnoclaw — fully trusted
+        - "local": user's workspace or ~/.agnoclaw/skills/ — trusted for exec, approval for installs
+        - "community": external sources — exec blocked, installs require approval + validation
     """
 
-    def __init__(self, workspace_skills_dir: Optional[Path] = None):
+    def __init__(self, workspace_skills_dir: Optional[Path] = None, *, auto_approve_installs: bool = False):
         self._dirs: list[Path] = []
         self._cache: dict[str, Skill] = {}
+        self._bundled_dir: Optional[Path] = None
+        self._local_dirs: list[Path] = []
+        self._auto_approve_installs = auto_approve_installs
 
         # Build search path (highest → lowest priority)
         if workspace_skills_dir:
             self._dirs.append(workspace_skills_dir)
+            self._local_dirs.append(workspace_skills_dir)
 
         user_skills = Path.home() / ".agnoclaw" / "skills"
         if user_skills.exists():
             self._dirs.append(user_skills)
+            self._local_dirs.append(user_skills)
 
         # Bundled skills (relative to this package)
-        bundled = self._find_bundled_skills_dir()
-        if bundled:
-            self._dirs.append(bundled)
+        self._bundled_dir = self._find_bundled_skills_dir()
+        if self._bundled_dir:
+            self._dirs.append(self._bundled_dir)
 
     def add_directory(self, path: str | Path) -> None:
         """Add an additional skills directory (appended at lowest priority)."""
@@ -93,7 +155,10 @@ class SkillRegistry:
         """
         Load a skill by name and return its rendered content for injection.
 
-        Runs any declared install specs before loading if dependencies are missing.
+        Security behavior by trust level:
+          - builtin: inline exec allowed, installs auto-approved
+          - local: inline exec allowed, installs require user confirmation
+          - community: inline exec blocked, installs require confirmation + validation
 
         Args:
             name: Skill name (matches the directory name or `name` frontmatter field).
@@ -107,9 +172,15 @@ class SkillRegistry:
             return None
         if not self._passes_gates(skill):
             return None
-        # Run any declared installers (only installs if dependency is missing)
-        self._run_install(skill)
-        return skill.render(arguments)
+
+        trust = self._trust_level(skill)
+
+        # Run any declared installers (validated + approval-gated)
+        self._run_install(skill, trust)
+
+        # Inline !`cmd` execution: only for builtin and local skills
+        allow_exec = trust in ("builtin", "local")
+        return skill.render(arguments, allow_exec=allow_exec)
 
     def list_skills(self) -> list[dict]:
         """
@@ -190,11 +261,46 @@ class SkillRegistry:
 
         return True
 
+    # ── Trust model ─────────────────────────────────────────────────────────────
+
+    def _trust_level(self, skill: Skill) -> str:
+        """
+        Determine trust level for a skill based on its source directory.
+
+        Returns: "builtin", "local", or "community"
+        """
+        skill_dir = skill.path.parent.parent  # skill_name/SKILL.md → parent dir
+        try:
+            skill_dir_resolved = skill_dir.resolve()
+        except (OSError, ValueError):
+            return "community"
+
+        if self._bundled_dir:
+            try:
+                if skill_dir_resolved == self._bundled_dir.resolve():
+                    return "builtin"
+            except (OSError, ValueError):
+                pass
+
+        for local_dir in self._local_dirs:
+            try:
+                if skill_dir_resolved == local_dir.resolve():
+                    return "local"
+            except (OSError, ValueError):
+                pass
+
+        return "community"
+
     # ── Install support ────────────────────────────────────────────────────────
 
-    def _run_install(self, skill: Skill) -> None:
+    def _run_install(self, skill: Skill, trust: str = "community") -> None:
         """
-        Run declared install specs for a skill.
+        Run declared install specs for a skill, with security validation.
+
+        Security gates:
+          1. Package names are validated against dangerous patterns
+          2. Non-builtin skills require interactive user approval before install
+          3. Install commands are logged
 
         Only installs if the package/binary is not already present.
         Logs warnings on failure but does not raise — skill loading continues.
@@ -208,18 +314,39 @@ class SkillRegistry:
         os_map = {"darwin": "darwin", "linux": "linux", "windows": "win32"}
         current_platform = os_map.get(current_os, current_os)
 
+        # Collect pending installs (filter by platform and already-installed)
+        pending: list[tuple[SkillInstaller, str]] = []
         for installer in skill.meta.install:
-            # Platform filter
             if installer.os and current_platform not in installer.os:
                 continue
-
             if not self._needs_install(installer):
+                continue
+
+            # Validate package name
+            valid, reason = _validate_package_name(installer.package, installer.type)
+            if not valid:
+                logger.warning(
+                    "Skill '%s': BLOCKED install of '%s' — %s",
+                    skill.name, installer.package, reason,
+                )
                 continue
 
             pkg = installer.package
             if installer.version:
                 pkg = f"{pkg}=={installer.version}" if installer.type in ("uv", "pip") else f"{pkg}@{installer.version}"
+            pending.append((installer, pkg))
 
+        if not pending:
+            return
+
+        # Approval gate: builtin skills auto-approve, others prompt
+        if trust != "builtin" and not self._auto_approve_installs:
+            if not self._prompt_install_approval(skill, pending):
+                logger.info("Skill '%s': install declined by user", skill.name)
+                return
+
+        # Execute installs
+        for installer, pkg in pending:
             cmd = self._build_install_cmd(installer.type, pkg)
             if cmd is None:
                 logger.warning("Skill '%s': unknown installer type '%s'", skill.name, installer.type)
@@ -248,6 +375,23 @@ class SkillRegistry:
                 logger.warning("Skill '%s': install timed out for %s", skill.name, pkg)
             except Exception as e:
                 logger.warning("Skill '%s': install error: %s", skill.name, e)
+
+    @staticmethod
+    def _prompt_install_approval(skill: Skill, pending: list[tuple[SkillInstaller, str]]) -> bool:
+        """
+        Display pending installs and prompt the user for approval.
+
+        Returns True if the user approves, False otherwise.
+        """
+        print(f"\nSkill '{skill.name}' requires the following installations:")
+        for installer, pkg in pending:
+            print(f"  {installer.type}: {pkg}")
+        print()
+        try:
+            answer = input("Proceed with installation? [y/N] ").strip().lower()
+            return answer in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
 
     def _needs_install(self, installer: SkillInstaller) -> bool:
         """

@@ -112,6 +112,54 @@ Install runs only if the package is not already importable (Python) or binary is
 
 ---
 
+## Security
+
+Skills can contain executable content (`!`cmd``) and declare package installs. agnoclaw applies a trust-based security model to mitigate supply chain and command injection risks.
+
+### Trust levels
+
+| Level | Source | Inline exec (`!`cmd``) | Install specs |
+|---|---|---|---|
+| **builtin** | Shipped with agnoclaw | Allowed | Auto-approved |
+| **local** | `~/.agnoclaw/workspace/skills/` or `~/.agnoclaw/skills/` | Allowed | User approval required |
+| **community** | External (ClawHub, git clone, etc.) | **Blocked** | User approval + validation |
+
+### Package name validation
+
+Before any install runs, package names are checked for:
+- Shell metacharacters (`;`, `|`, `&`, `` ` ``, `$`, etc.)
+- URL-based installs (`https://`, `git+`, etc.) — blocked to prevent arbitrary code download
+- Path traversal (`..`)
+- Excessively long names (>200 chars)
+
+Invalid packages are logged and skipped.
+
+### Install approval flow
+
+For non-builtin skills, the user sees what will be installed and must confirm:
+
+```
+Skill 'my-skill' requires the following installations:
+  uv: httpx
+  brew: gh
+
+Proceed with installation? [y/N]
+```
+
+To auto-approve in non-interactive contexts (CI, tests):
+```python
+registry = SkillRegistry(skills_dir, auto_approve_installs=True)
+```
+
+### Best practices
+
+- **Review community skills** before installing — check SKILL.md for `!`cmd`` and `install:` specs
+- **Prefer builtin/local skills** for sensitive environments
+- **Use `agnoclaw skill inspect <name>`** to view a skill's full content before activation
+- **Keep skills in version control** for auditability
+
+---
+
 ## Content Syntax
 
 ### Argument substitution

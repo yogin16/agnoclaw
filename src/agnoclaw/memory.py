@@ -170,7 +170,7 @@ def build_learning_machine(
         research_lm = build_learning_machine(db=my_db, namespace="research")
         code_lm = build_learning_machine(db=my_db, namespace="code-review")
 
-        agent = HarnessAgent(enable_learning=True, learning_namespace="code-review")
+        agent = AgentHarness(enable_learning=True, learning_namespace="code-review")
     """
     from agno.learn import LearningMachine, LearningMode
     from agno.learn.config import (

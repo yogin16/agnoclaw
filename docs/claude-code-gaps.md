@@ -147,11 +147,11 @@ active skill → extra context → runtime (date, workspace, session_id)
 ```
 
 **Tier 2 — Agno MemoryManager:** structured per-user fact extraction to SQLite/Postgres.
-Enable with `HarnessAgent(user_id="alice", enable_user_memory=True)`.
+Enable with `AgentHarness(user_id="alice", enable_user_memory=True)`.
 
 **Tier 3 — Agno LearningMachine:** institutional cross-user knowledge.
 Three stores: `entity_memory`, `learned_knowledge`, `decision_log`.
-Enable with `HarnessAgent(enable_learning=True)`.
+Enable with `AgentHarness(enable_learning=True)`.
 
 **agnoclaw advantages:**
 - `BOOT.md` startup execution (CC uses SessionStart hooks)

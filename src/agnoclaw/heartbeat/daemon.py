@@ -19,9 +19,9 @@ Process persistence:
 
 Usage:
     from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
-    from agnoclaw import HarnessAgent
+    from agnoclaw import AgentHarness
 
-    agent = HarnessAgent()
+    agent = AgentHarness()
 
     # Simple interval heartbeat
     daemon = HeartbeatDaemon(agent, on_alert=print)
@@ -93,7 +93,7 @@ class HeartbeatDaemon:
     Asyncio-based heartbeat scheduler with optional cron job support.
 
     Args:
-        agent: The HarnessAgent to run heartbeats on.
+        agent: The AgentHarness to run heartbeats on.
         on_alert: Callback called with the alert message when something needs attention.
                   Signature: on_alert(message: str) -> None
         config: HarnessConfig. Loaded from env/TOML if not provided.

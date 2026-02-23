@@ -88,7 +88,7 @@ toolkit = TextAnalysisToolkit()
 
 agent = AgentHarness(
     name="TextAnalyst",
-    extra_tools=[toolkit],
+    tools=[toolkit],
 )
 
 # The agent now has access to word_count, hex_encode, and summarize_stats
@@ -105,7 +105,7 @@ from agnoclaw.tools import make_bash_tool
 
 minimal_agent = AgentHarness(
     name="MinimalAgent",
-    extra_tools=[word_count],
+    tools=[word_count],
     # Disable defaults via config
     config=None,  # uses defaults — but you can pass a custom HarnessConfig
 )

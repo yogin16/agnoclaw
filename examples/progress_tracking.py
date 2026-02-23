@@ -117,7 +117,7 @@ def demo_with_agent(project_dir: str) -> None:
     # Pass a custom ProgressToolkit pointed at our project dir
     agent = AgentHarness(
         name="progress-demo-agent",
-        extra_tools=[ProgressToolkit(project_dir=project_dir)],
+        tools=[ProgressToolkit(project_dir=project_dir)],
     )
 
     # Ask the agent to use the tools

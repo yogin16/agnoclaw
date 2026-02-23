@@ -19,7 +19,7 @@ and LangChain DeepAgents' middleware insights — and runs them on Agno's produc
 
 ```
 src/agnoclaw/
-├── agent.py          # HarnessAgent — main class, wraps Agno Agent
+├── agent.py          # AgentHarness — main class, wraps Agno Agent
 ├── workspace.py      # Workspace: ~/.agnoclaw/workspace/
 ├── memory.py         # Memory hierarchy loader (AGENTS.md, SOUL.md, USER.md, MEMORY.md)
 ├── config.py         # Settings via pydantic-settings + TOML
@@ -42,7 +42,7 @@ src/agnoclaw/
 
 ## Key Design Decisions
 
-- `HarnessAgent` wraps Agno's `Agent` but adds: workspace awareness, skill injection, memory loading
+- `AgentHarness` wraps Agno's `Agent` but adds: workspace awareness, skill injection, memory loading
 - System prompt is assembled from sections, with memory files injected last
 - SKILL.md follows the AgentSkills standard (compatible with ClawHub format)
 - Selective skill injection: only one skill's content loaded per turn
@@ -68,7 +68,7 @@ uv run agnoclaw heartbeat start        # start heartbeat daemon
 
 ```python
 # Core
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 from agnoclaw.config import HarnessConfig
 
 # Tools

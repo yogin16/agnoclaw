@@ -51,13 +51,16 @@ Installer types (metadata.openclaw.install):
 
 from __future__ import annotations
 
-import subprocess
+import logging
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import frontmatter
+
+logger = logging.getLogger("agnoclaw.skills")
 
 
 @dataclass
@@ -114,14 +117,23 @@ class Skill:
     def description(self) -> str:
         return self.meta.description
 
-    def render(self, arguments: str = "") -> str:
+    def render(self, arguments: str = "", *, allow_exec: bool = False) -> str:
         """
         Render the skill content with argument substitution.
 
         Substitutes:
           $ARGUMENTS    → full arguments string
           $ARGUMENTS[N] → nth space-split argument
-          !`cmd`        → output of shell command (dynamic context injection)
+          !`cmd`        → output of shell command (only if allow_exec=True)
+
+        Security: Inline shell execution (!`cmd`) is disabled by default.
+        Pass allow_exec=True only for trusted (builtin/local) skills.
+        Untrusted skills get the raw !`cmd` syntax preserved as-is.
+
+        Args:
+            arguments: Arguments to substitute into $ARGUMENTS placeholders.
+            allow_exec: If True, execute !`cmd` inline shell commands.
+                        If False (default), leave !`cmd` as literal text.
         """
         content = self.content
 
@@ -135,18 +147,28 @@ class Skill:
         content = re.sub(r"\$ARGUMENTS\[(\d+)\]", replace_arg_n, content)
         content = content.replace("$ARGUMENTS", arguments)
 
-        # Execute inline shell commands: !`cmd`
-        def run_inline(m: re.Match) -> str:
-            cmd = m.group(1)
-            try:
-                result = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True, timeout=10
-                )
-                return result.stdout.strip()
-            except Exception as e:
-                return f"[error running `{cmd}`: {e}]"
+        # Execute inline shell commands: !`cmd` — only if explicitly allowed
+        if allow_exec:
+            def run_inline(m: re.Match) -> str:
+                cmd = m.group(1)
+                logger.debug("Skill '%s': executing inline command: %s", self.name, cmd)
+                try:
+                    result = subprocess.run(
+                        cmd, shell=True, capture_output=True, text=True, timeout=10
+                    )
+                    return result.stdout.strip()
+                except Exception as e:
+                    return f"[error running `{cmd}`: {e}]"
 
-        content = re.sub(r"!`([^`]+)`", run_inline, content)
+            content = re.sub(r"!`([^`]+)`", run_inline, content)
+        else:
+            # Count how many commands would have been executed
+            inline_cmds = re.findall(r"!`([^`]+)`", content)
+            if inline_cmds:
+                logger.info(
+                    "Skill '%s': %d inline command(s) skipped (allow_exec=False)",
+                    self.name, len(inline_cmds),
+                )
 
         return content
 

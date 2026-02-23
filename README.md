@@ -304,6 +304,19 @@ Skill precedence (highest → lowest):
 2. `~/.agnoclaw/skills/` — user-level skills
 3. Built-in skills (shipped with agnoclaw)
 
+### Skill security
+
+Skills are classified by **trust level** based on their source:
+
+| Level | Source | Inline exec (`!`cmd``) | Install specs |
+|---|---|---|---|
+| **builtin** | Shipped with agnoclaw | Allowed | Auto-approved |
+| **local** | Workspace or `~/.agnoclaw/skills/` | Allowed | User approval required |
+| **community** | External (ClawHub, git clone) | Blocked | User approval + validation |
+
+Package names in install specs are validated against shell metacharacters, URL-based
+installs, and path traversal before any command runs. See `docs/skills.md` for details.
+
 ---
 
 ## Heartbeat and Cron
@@ -429,7 +442,7 @@ def query_internal_api(endpoint: str, params: dict = {}) -> str:
     # your implementation
     return "{...}"
 
-agent = AgentHarness(extra_tools=[query_internal_api])
+agent = AgentHarness(tools=[query_internal_api])
 ```
 
 ### Custom system prompt section
@@ -461,7 +474,7 @@ def deploy_to_production(service: str, version: str) -> str:
     # deployment logic
     return f"Deployed {service}:{version}"
 
-agent = AgentHarness(extra_tools=[deploy_to_production])
+agent = AgentHarness(tools=[deploy_to_production])
 response = agent.run("Deploy the auth service version 2.1.0 to production")
 
 # Check if paused for approval
@@ -564,6 +577,80 @@ toolkit.write_progress(
 # Resume at the start of the next session
 print(toolkit.read_progress())
 print(toolkit.read_features())
+```
+
+---
+
+## Context management for long-running sessions
+
+AgentHarness includes built-in support for managing context in long-running or
+multi-session agents. These features use Agno's native context management layer.
+
+### Tool result compression
+
+For sessions with many tool calls (file reads, bash output, web fetches), tool
+results can dominate the context window. Enable compression to automatically
+summarize older tool outputs:
+
+```python
+agent = AgentHarness(
+    enable_compression=True,
+    compress_token_limit=4000,  # compress when tool results exceed this
+)
+```
+
+### Session summaries (cross-session continuity)
+
+Session summaries capture the key decisions and state at the end of each run.
+On the next run, the summary is injected into context so the agent picks up
+where it left off:
+
+```python
+agent = AgentHarness(enable_session_summary=True)
+
+# First session
+agent.run("Implement user auth with JWT")
+
+# Later session — the agent automatically gets the previous summary
+agent.run("Continue: add refresh tokens")
+```
+
+### Three-tier memory hierarchy
+
+| Tier | What | Scope | Storage |
+|------|------|-------|---------|
+| **Workspace files** | MEMORY.md, AGENTS.md, SOUL.md | Per-workspace | Markdown files |
+| **MemoryManager** | Structured per-user facts | Per-user | SQL (auto-extracted) |
+| **LearningMachine** | Institutional patterns | Cross-user | SQL (accumulated) |
+
+```python
+# Full memory stack
+agent = AgentHarness(
+    user_id="alice",
+    enable_user_memory=True,       # tier 2: per-user facts
+    enable_learning=True,          # tier 3: institutional knowledge
+    learning_mode="agentic",       # agent decides when to learn
+    enable_compression=True,       # keep context window manageable
+    enable_session_summary=True,   # continuity across sessions
+)
+```
+
+### Workspace bootstrap limits
+
+Workspace files are capped to prevent context bloat:
+
+- **MEMORY.md**: first 200 lines only (keep it as an index)
+- **Per file**: 20,000 chars max
+- **Total**: 150,000 chars max across all workspace files
+
+### Environment variables
+
+```bash
+AGNOCLAW_ENABLE_COMPRESSION=true
+AGNOCLAW_COMPRESS_TOKEN_LIMIT=4000
+AGNOCLAW_ENABLE_SESSION_SUMMARY=true
+AGNOCLAW_ENABLE_LEARNING=true
+AGNOCLAW_LEARNING_MODE=agentic
 ```
 
 ---

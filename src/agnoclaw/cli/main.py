@@ -36,11 +36,11 @@ def _build_agent(
     workspace: Optional[str],
     debug: bool,
 ):
-    """Shared factory for building a HarnessAgent from CLI options."""
-    from agnoclaw import HarnessAgent
+    """Shared factory for building an AgentHarness from CLI options."""
+    from agnoclaw import AgentHarness
 
-    return HarnessAgent(
-        model_id=model,
+    return AgentHarness(
+        model=model,
         provider=provider,
         session_id=session,
         workspace_dir=workspace,
@@ -375,10 +375,10 @@ def heartbeat():
 @click.option("--interval", "-i", default=None, type=int, help="Check interval in minutes (overrides config)")
 def heartbeat_start(model, provider, workspace, interval):
     """Start the heartbeat daemon (runs until Ctrl+C)."""
-    from agnoclaw import HarnessAgent
+    from agnoclaw import AgentHarness
     from agnoclaw.heartbeat import HeartbeatDaemon
 
-    agent = HarnessAgent(model_id=model, provider=provider, workspace_dir=workspace)
+    agent = AgentHarness(model=model, provider=provider, workspace_dir=workspace)
 
     if agent.workspace.is_empty_heartbeat():
         console.print(
@@ -422,10 +422,10 @@ def heartbeat_start(model, provider, workspace, interval):
 @WORKSPACE_OPT
 def heartbeat_trigger(model, provider, workspace):
     """Run one heartbeat check immediately."""
-    from agnoclaw import HarnessAgent
+    from agnoclaw import AgentHarness
     from agnoclaw.heartbeat import HeartbeatDaemon
 
-    agent = HarnessAgent(model_id=model, provider=provider, workspace_dir=workspace)
+    agent = AgentHarness(model=model, provider=provider, workspace_dir=workspace)
 
     def on_alert(msg):
         console.print(Panel(msg, title="[yellow]Heartbeat Alert[/yellow]", border_style="yellow"))

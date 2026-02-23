@@ -5,7 +5,7 @@ Usage:
     from agnoclaw.tools import get_default_tools
 
     tools = get_default_tools(config)
-    agent = HarnessAgent(tools=tools, ...)
+    agent = AgentHarness(tools=tools, ...)
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def get_default_tools(config: Optional["HarnessConfig"] = None) -> list:
     """
     Build the default tool suite based on configuration.
 
-    Returns a list of tools and toolkits ready to pass to HarnessAgent.
+    Returns a list of tools and toolkits ready to pass to AgentHarness.
     """
     from agnoclaw.config import get_config
 

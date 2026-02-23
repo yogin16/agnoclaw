@@ -5,7 +5,7 @@
 ```
 agnoclaw/
 ├── src/agnoclaw/          # Main package (src layout)
-│   ├── agent.py           # HarnessAgent — main entry point
+│   ├── agent.py           # AgentHarness — main entry point
 │   ├── config.py          # HarnessConfig, HeartbeatConfig, StorageConfig
 │   ├── workspace.py       # Workspace: context file loading, memory management
 │   ├── memory.py          # MemoryManager + LearningMachine builders
