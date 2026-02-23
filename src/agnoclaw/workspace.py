@@ -22,6 +22,13 @@ Key files:
 
 Context loading order (loaded into system prompt):
   AGENTS.md → SOUL.md → IDENTITY.md → USER.md → MEMORY.md → TOOLS.md → BOOT.md
+
+Size limits (matching Claude Code / OpenClaw conventions):
+  MEMORY.md — only first MEMORY_STARTUP_LINES (200) lines loaded at startup.
+              Content beyond line 200 is not injected into context automatically.
+              Use separate topic files (debugging.md, patterns.md) for detailed notes.
+  Per file — capped at BOOTSTRAP_MAX_CHARS (20,000 chars) before injection.
+  Total    — all files combined capped at BOOTSTRAP_TOTAL_MAX_CHARS (150,000 chars).
 """
 
 from __future__ import annotations
@@ -29,6 +36,20 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 from typing import Optional
+
+
+# ── Context injection size limits ──────────────────────────────────────────
+# Matching Claude Code auto-memory and OpenClaw bootstrap conventions.
+
+MEMORY_STARTUP_LINES: int = 200
+"""Only the first 200 lines of MEMORY.md are loaded at startup.
+Keep MEMORY.md as an index; move detailed notes into topic files."""
+
+BOOTSTRAP_MAX_CHARS: int = 20_000
+"""Maximum characters for any single workspace file before injection."""
+
+BOOTSTRAP_TOTAL_MAX_CHARS: int = 150_000
+"""Maximum total characters for all workspace context files combined."""
 
 
 WORKSPACE_FILES = {
@@ -106,11 +127,23 @@ class Workspace:
             path.write_text(content, encoding="utf-8")
 
     def read_file(self, name: str) -> Optional[str]:
-        """Read a workspace file by logical name or filename. Returns None if not found."""
+        """Read a workspace file by logical name or filename. Returns None if not found.
+
+        MEMORY.md is automatically capped at MEMORY_STARTUP_LINES (200) lines on read.
+        This matches Claude Code's auto-memory behaviour: the first 200 lines of MEMORY.md
+        are loaded at startup; content beyond line 200 is not injected into context.
+        Keep MEMORY.md concise — move detailed notes into separate topic files.
+        """
         filename = WORKSPACE_FILES.get(name, name)
         path = self.path / filename
         if path.exists():
-            content = path.read_text(encoding="utf-8").strip()
+            content = path.read_text(encoding="utf-8")
+            # MEMORY.md startup cap: first 200 lines only
+            if name == "memory" or filename == "MEMORY.md":
+                lines = content.splitlines()
+                if len(lines) > MEMORY_STARTUP_LINES:
+                    content = "\n".join(lines[:MEMORY_STARTUP_LINES])
+            content = content.strip()
             return content if content else None
         return None
 
@@ -159,12 +192,36 @@ class Workspace:
 
         Loading order: AGENTS.md → SOUL.md → IDENTITY.md → USER.md → MEMORY.md → TOOLS.md → BOOT.md
         BOOT.md is returned last so the agent acts on it at session start.
+
+        Size limits applied (matching OpenClaw bootstrap conventions):
+        - Per file: capped at BOOTSTRAP_MAX_CHARS (20,000 chars)
+        - Total: capped at BOOTSTRAP_TOTAL_MAX_CHARS (150,000 chars)
+        - MEMORY.md: additionally capped at MEMORY_STARTUP_LINES (200) lines
+          by read_file()
+
+        Files that would exceed the total budget are skipped (lower-priority files
+        are loaded first; later files drop out if budget is exhausted).
         """
         result = {}
+        total_chars = 0
+
         for name in ("agents", "soul", "identity", "user", "memory", "tools", "boot"):
             content = self.read_file(name)
-            if content:
-                result[name] = content
+            if not content:
+                continue
+            # Per-file cap
+            if len(content) > BOOTSTRAP_MAX_CHARS:
+                content = content[:BOOTSTRAP_MAX_CHARS]
+            # Total budget check
+            if total_chars + len(content) > BOOTSTRAP_TOTAL_MAX_CHARS:
+                # Remaining budget
+                remaining = BOOTSTRAP_TOTAL_MAX_CHARS - total_chars
+                if remaining > 0:
+                    result[name] = content[:remaining]
+                break  # budget exhausted
+            result[name] = content
+            total_chars += len(content)
+
         return result
 
     def write_session_summary(self, summary: str) -> None:

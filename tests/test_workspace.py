@@ -151,3 +151,108 @@ def test_workspace_workspace_files_mapping():
     assert WORKSPACE_FILES["identity"] == "IDENTITY.md"
     assert WORKSPACE_FILES["tools"] == "TOOLS.md"
     assert WORKSPACE_FILES["boot"] == "BOOT.md"
+
+
+# ── Size limit tests ─────────────────────────────────────────────────────
+
+
+def test_memory_startup_line_cap(tmp_path):
+    """MEMORY.md should only return the first 200 lines at startup."""
+    from agnoclaw.workspace import MEMORY_STARTUP_LINES
+
+    ws = Workspace(tmp_path / "ws")
+    ws.initialize()
+
+    # Write 250 lines
+    lines = [f"line {i}" for i in range(250)]
+    ws.write_file("memory", "\n".join(lines))
+
+    content = ws.read_file("memory")
+    assert content is not None
+    returned_lines = content.splitlines()
+    assert len(returned_lines) == MEMORY_STARTUP_LINES, (
+        f"Expected {MEMORY_STARTUP_LINES} lines, got {len(returned_lines)}"
+    )
+    assert "line 0" in content
+    assert f"line {MEMORY_STARTUP_LINES - 1}" in content
+    assert f"line {MEMORY_STARTUP_LINES}" not in content  # line 200 should not appear
+
+
+def test_memory_startup_line_cap_under_limit(tmp_path):
+    """MEMORY.md under 200 lines should be returned in full."""
+    ws = Workspace(tmp_path / "ws")
+    ws.initialize()
+
+    ws.write_file("memory", "# Memory\n\nJust a few notes.\n")
+    content = ws.read_file("memory")
+    assert content is not None
+    assert "Just a few notes." in content
+
+
+def test_memory_startup_line_cap_constant():
+    """MEMORY_STARTUP_LINES constant should be 200."""
+    from agnoclaw.workspace import MEMORY_STARTUP_LINES
+    assert MEMORY_STARTUP_LINES == 200
+
+
+def test_bootstrap_max_chars_constant():
+    from agnoclaw.workspace import BOOTSTRAP_MAX_CHARS
+    assert BOOTSTRAP_MAX_CHARS == 20_000
+
+
+def test_bootstrap_total_max_chars_constant():
+    from agnoclaw.workspace import BOOTSTRAP_TOTAL_MAX_CHARS
+    assert BOOTSTRAP_TOTAL_MAX_CHARS == 150_000
+
+
+def test_per_file_char_cap(tmp_path):
+    """A workspace file exceeding BOOTSTRAP_MAX_CHARS should be truncated."""
+    from agnoclaw.workspace import BOOTSTRAP_MAX_CHARS
+
+    ws = Workspace(tmp_path / "ws")
+    ws.initialize()
+
+    # Write content > 20K chars
+    long_content = "A" * (BOOTSTRAP_MAX_CHARS + 5000)
+    ws.write_file("agents", long_content)
+
+    context = ws.context_files()
+    assert "agents" in context
+    assert len(context["agents"]) == BOOTSTRAP_MAX_CHARS
+
+
+def test_total_bootstrap_cap(tmp_path):
+    """Total context should not exceed BOOTSTRAP_TOTAL_MAX_CHARS."""
+    from agnoclaw.workspace import BOOTSTRAP_MAX_CHARS, BOOTSTRAP_TOTAL_MAX_CHARS
+
+    ws = Workspace(tmp_path / "ws")
+    ws.initialize()
+
+    # Fill 7 files × 20K each = 140K + defaults — some should get dropped
+    for name in ("agents", "soul", "identity", "user", "memory", "tools"):
+        ws.write_file(name, "X" * BOOTSTRAP_MAX_CHARS)
+
+    context = ws.context_files()
+    total = sum(len(v) for v in context.values())
+    assert total <= BOOTSTRAP_TOTAL_MAX_CHARS
+
+
+def test_context_files_skips_files_over_budget(tmp_path):
+    """Once total budget is exhausted, later files should be excluded."""
+    from agnoclaw.workspace import BOOTSTRAP_MAX_CHARS, BOOTSTRAP_TOTAL_MAX_CHARS
+
+    ws = Workspace(tmp_path / "ws")
+    ws.initialize()
+
+    # Use exactly the total budget with the first two files
+    # agents = 20K, soul = 130K → fills 150K
+    ws.write_file("agents", "A" * BOOTSTRAP_MAX_CHARS)
+    ws.write_file("soul", "S" * (BOOTSTRAP_TOTAL_MAX_CHARS - BOOTSTRAP_MAX_CHARS))
+    ws.write_file("user", "U" * 1000)  # should be excluded
+
+    context = ws.context_files()
+    assert "agents" in context
+    assert "soul" in context
+    # 'user' should either be excluded or truncated (budget exhausted)
+    total = sum(len(v) for v in context.values())
+    assert total <= BOOTSTRAP_TOTAL_MAX_CHARS
