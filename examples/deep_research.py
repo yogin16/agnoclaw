@@ -44,7 +44,7 @@ async def research_with_events():
     agent = HarnessAgent(session_id="deep-research-async")
     skill_content = agent.skills.load_skill("deep-research")
 
-    async for event in await agent.arun(
+    async for event in agent.arun(
         "Research the competitive landscape of open-source LLM frameworks",
         stream=True,
         stream_events=True,

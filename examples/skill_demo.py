@@ -7,11 +7,13 @@ Demonstrates:
 - Skill override priority (workspace > user > bundled)
 - Multiple skills in a session
 - Skill metadata inspection
+
+Run: uv run python examples/skill_demo.py
+Requires: ANTHROPIC_API_KEY env var
 """
 
+import shutil
 from agnoclaw import HarnessAgent
-from agnoclaw.skills.registry import SkillRegistry
-from pathlib import Path
 
 
 # ── Inspect available skills ──────────────────────────────────────────────
@@ -21,7 +23,8 @@ registry = agent.skills
 
 print("=== Available Skills ===")
 for skill in registry.list_skills():
-    print(f"  {skill.name:20s}  {skill.meta.description or '(no description)'}")
+    # list_skills() returns dicts: {name, description, user_invocable, ...}
+    print(f"  {skill['name']:20s}  {skill['description'] or '(no description)'}")
 
 print()
 
@@ -53,12 +56,9 @@ agent.print_response(
 
 # ── Skill metadata inspection ─────────────────────────────────────────────
 
-print("\n=== Skill Details ===")
-for skill_name in ["code-review", "deep-research", "git-workflow"]:
-    skill = registry.get_skill_descriptions()
-    if skill_name in skill:
-        print(f"\n{skill_name}:")
-        print(f"  {skill[skill_name]}")
+print("\n=== Skill Details (from system prompt injection) ===")
+descriptions = registry.get_skill_descriptions()
+print(descriptions[:500] + "..." if len(descriptions) > 500 else descriptions)
 
 
 # ── Workspace-level skill override ───────────────────────────────────────
@@ -101,5 +101,4 @@ agent2.print_response(
 )
 
 # Cleanup
-import shutil
 shutil.rmtree(custom_review_dir, ignore_errors=True)

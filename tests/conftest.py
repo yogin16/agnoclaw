@@ -5,16 +5,41 @@ Fixtures:
   tmp_workspace    — an initialized Workspace in a temp directory
   mock_agent       — a HarnessAgent with all external I/O mocked out
   sample_skill_dir — a temp dir with one valid SKILL.md
+  live_agent       — a real HarnessAgent for integration tests
+                     (uses Ollama if available, else skips)
+
+Integration tests:
+  Tests that make real model calls are marked @pytest.mark.integration
+  and skipped by default. Run them with:
+
+    # With Ollama (local, no API key):
+    uv run pytest tests/ -m integration
+
+    # Override model/provider via env vars:
+    AGNOCLAW_TEST_PROVIDER=ollama AGNOCLAW_TEST_MODEL=qwen3:0.6b pytest -m integration
+
+    # With Anthropic:
+    ANTHROPIC_API_KEY=... AGNOCLAW_TEST_PROVIDER=anthropic pytest -m integration
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from agnoclaw.workspace import Workspace
+
+
+# ── pytest marks ─────────────────────────────────────────────────────────────
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "integration: tests that make real model calls (Ollama or cloud API)",
+    )
 
 
 # ── Workspace fixtures ────────────────────────────────────────────────────────
@@ -101,7 +126,6 @@ def mock_agent(tmp_workspace_path: Path):
         agent = HarnessAgent(
             name="test-agent",
             workspace_dir=tmp_workspace_path,
-            db=None,
         )
 
         # Attach mocks for test assertions
@@ -109,6 +133,69 @@ def mock_agent(tmp_workspace_path: Path):
         agent._mock_print = mock_print
 
         yield agent
+
+
+# ── Live integration agent ────────────────────────────────────────────────────
+#
+# Used by @pytest.mark.integration tests. Defaults to Ollama (qwen3:0.6b)
+# so no API key is needed. Override via env vars:
+#   AGNOCLAW_TEST_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-...
+#   AGNOCLAW_TEST_PROVIDER=ollama AGNOCLAW_TEST_MODEL=qwen3:8b
+
+_DEFAULT_LOCAL_PROVIDER = "ollama"
+_DEFAULT_LOCAL_MODEL = "qwen3:0.6b"
+
+
+def _get_live_provider() -> tuple[str, str]:
+    """Return (provider, model) for integration tests."""
+    provider = os.environ.get("AGNOCLAW_TEST_PROVIDER", _DEFAULT_LOCAL_PROVIDER)
+    if provider == "ollama":
+        model = os.environ.get("AGNOCLAW_TEST_MODEL", _DEFAULT_LOCAL_MODEL)
+    elif provider == "anthropic":
+        model = os.environ.get("AGNOCLAW_TEST_MODEL", "claude-haiku-4-5-20251001")
+    else:
+        model = os.environ.get("AGNOCLAW_TEST_MODEL", "")
+    return provider, model
+
+
+def _ollama_available() -> bool:
+    """True if the Ollama daemon is reachable."""
+    try:
+        import httpx
+        r = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _anthropic_available() -> bool:
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+@pytest.fixture
+def live_agent(tmp_workspace_path: Path):
+    """
+    A real HarnessAgent that makes actual model calls.
+
+    - Defaults to Ollama (qwen3:0.6b) — no API key, runs locally.
+    - Set AGNOCLAW_TEST_PROVIDER=anthropic to use Claude instead.
+    - Skips if neither provider is available.
+    """
+    provider, model = _get_live_provider()
+
+    if provider == "ollama" and not _ollama_available():
+        pytest.skip("Ollama daemon not running (start with: ollama serve)")
+    elif provider == "anthropic" and not _anthropic_available():
+        pytest.skip("ANTHROPIC_API_KEY not set")
+
+    from agnoclaw import HarnessAgent
+
+    return HarnessAgent(
+        name="live-test-agent",
+        provider=provider,
+        model_id=model,
+        workspace_dir=tmp_workspace_path,
+    )
 
 
 # ── ProgressToolkit fixture ───────────────────────────────────────────────────

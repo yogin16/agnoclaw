@@ -127,18 +127,21 @@ class FilesToolkit(Toolkit):
         except Exception as e:
             return f"[error] Could not edit {path}: {e}"
 
-    def glob_files(self, pattern: str, base_dir: Optional[str] = None) -> str:
+    def glob_files(self, pattern: str, base_dir: Optional[str] = None, path: Optional[str] = None) -> str:
         """
         Find files matching a glob pattern.
 
         Args:
             pattern: Glob pattern, e.g. '**/*.py', 'src/**/*.ts', '*.md'
             base_dir: Base directory to search from. Defaults to workspace.
+            path: Alias for base_dir (accepted for compatibility).
 
         Returns:
             Newline-separated list of matching file paths, sorted by modification time.
         """
-        search_dir = Path(base_dir).expanduser() if base_dir else self.workspace_dir
+        # Accept 'path' as alias for 'base_dir' (models often use this name)
+        directory = base_dir or path
+        search_dir = Path(directory).expanduser() if directory else self.workspace_dir
         if not search_dir.exists():
             return f"[error] Directory not found: {search_dir}"
 
