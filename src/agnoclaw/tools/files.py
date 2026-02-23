@@ -29,6 +29,7 @@ class FilesToolkit(Toolkit):
         self.register(self.read_file)
         self.register(self.write_file)
         self.register(self.edit_file)
+        self.register(self.multi_edit_file)
         self.register(self.glob_files)
         self.register(self.grep_files)
         self.register(self.list_dir)
@@ -124,6 +125,60 @@ class FilesToolkit(Toolkit):
             new_content = content.replace(old_string, new_string, 1)
             file_path.write_text(new_content, encoding="utf-8")
             return f"Edited {path}: replaced 1 occurrence."
+        except Exception as e:
+            return f"[error] Could not edit {path}: {e}"
+
+    def multi_edit_file(self, path: str, edits: list) -> str:
+        """
+        Apply multiple string replacements to a file atomically.
+
+        All edits are validated before any are applied. Fails fast if any
+        old_string is not found or is not unique.
+
+        Read the file first before calling this tool.
+
+        Args:
+            path: Absolute path to the file.
+            edits: List of dicts with keys 'old_string' and 'new_string'.
+                   Each old_string must appear exactly once in the file.
+                   Example: [{"old_string": "foo", "new_string": "bar"},
+                              {"old_string": "baz", "new_string": "qux"}]
+
+        Returns:
+            Success message listing edit count, or an error if validation fails.
+        """
+        file_path = Path(path).expanduser()
+        if not file_path.exists():
+            return f"[error] File not found: {path}. Read the file first."
+        if not edits:
+            return f"[error] No edits provided."
+
+        try:
+            content = file_path.read_text(encoding="utf-8")
+
+            # Validate all edits before applying any
+            for i, edit in enumerate(edits):
+                old_str = edit.get("old_string", "")
+                if not old_str:
+                    return f"[error] Edit {i}: old_string is empty."
+                count = content.count(old_str)
+                if count == 0:
+                    return (
+                        f"[error] Edit {i}: old_string not found in {path}.\n"
+                        f"Make sure to read the file first and copy the exact text including whitespace."
+                    )
+                if count > 1:
+                    return (
+                        f"[error] Edit {i}: old_string appears {count} times in {path}. "
+                        f"Provide more surrounding context to make it unique."
+                    )
+
+            # Apply all edits sequentially (validation already passed)
+            for edit in edits:
+                content = content.replace(edit["old_string"], edit.get("new_string", ""), 1)
+
+            file_path.write_text(content, encoding="utf-8")
+            return f"Edited {path}: applied {len(edits)} replacements."
         except Exception as e:
             return f"[error] Could not edit {path}: {e}"
 

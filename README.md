@@ -144,8 +144,18 @@ agnoclaw workspace show
 # Start heartbeat daemon (runs until Ctrl+C)
 agnoclaw heartbeat start
 
+# Start with custom interval
+agnoclaw heartbeat start --interval 15
+
 # Trigger one heartbeat check immediately
 agnoclaw heartbeat trigger
+
+# Install as a persistent service (starts on login, survives terminal close)
+# macOS → launchd LaunchAgent; Linux → systemd user service
+agnoclaw heartbeat install-service
+
+# Uninstall the service
+agnoclaw heartbeat install-service --uninstall
 ```
 
 ---
@@ -221,6 +231,7 @@ Skills extend the agent with domain-specific instructions. Compatible with the [
 | `git-workflow` | Safe git operations with guardrails |
 | `daily-standup` | Generate standup from git history and todos |
 | `memory-manage` | Read/update/summarize long-term memory |
+| `self-improving-agent` | Record corrections/errors/feature-requests in `.learnings/`; promote stable patterns to workspace files |
 
 ### Using skills
 
@@ -264,14 +275,19 @@ Skill precedence (highest → lowest):
 
 ---
 
-## Heartbeat
+## Heartbeat and Cron
 
-The heartbeat system runs the agent periodically to surface items needing attention.
+The heartbeat runs the agent on a schedule to surface items needing attention.
+Cron jobs extend this with precise expression-based scheduling — inspired by
+OpenClaw's CronManager.
+
+Heartbeat runs on the **main agent's session** (full workspace context). Cron jobs
+can run in the main session or in an **isolated session** (fresh, no prior context).
 
 ```python
 import asyncio
 from agnoclaw import HarnessAgent
-from agnoclaw.heartbeat import HeartbeatDaemon
+from agnoclaw.heartbeat import HeartbeatDaemon, CronJob
 
 agent = HarnessAgent()
 
@@ -280,9 +296,32 @@ def on_alert(message: str):
     print(f"ALERT: {message}")
 
 daemon = HeartbeatDaemon(agent, on_alert=on_alert)
-daemon.start()
 
+# Add a cron job: daily standup at 9am Mon-Fri (isolated session)
+daemon.add_cron_job(CronJob(
+    name="daily-standup",
+    schedule="0 9 * * 1-5",         # cron expression
+    prompt="Run the daily standup.",
+    skill="daily-standup",
+    isolated=True,                   # fresh session, no conversation history
+))
+
+# Or use interval syntax: "30m", "1h", "2h30m"
+daemon.add_cron_job(CronJob(
+    name="disk-check",
+    schedule="1h",
+    prompt="Check if disk usage exceeds 80% and alert if so.",
+))
+
+daemon.start()
 asyncio.run(asyncio.sleep(float("inf")))  # run forever
+```
+
+For always-on operation (survives terminal close), install as a system service:
+
+```bash
+# macOS → launchd LaunchAgent; Linux → systemd user service
+agnoclaw heartbeat install-service --interval 30
 ```
 
 Configuration (`.agnoclaw.toml` or env vars):

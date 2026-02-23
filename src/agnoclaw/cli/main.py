@@ -438,6 +438,152 @@ def heartbeat_trigger(model, provider, workspace):
         console.print("[green]HEARTBEAT_OK — nothing needs attention.[/green]")
 
 
+@heartbeat.command("install-service")
+@MODEL_OPT
+@PROVIDER_OPT
+@WORKSPACE_OPT
+@click.option("--interval", "-i", default=30, type=int, show_default=True, help="Heartbeat interval in minutes")
+@click.option("--uninstall", is_flag=True, default=False, help="Remove the installed service")
+def heartbeat_install_service(model, provider, workspace, interval, uninstall):
+    """Register heartbeat as a launchd (macOS) or systemd (Linux) persistent service.
+
+    Once installed, the heartbeat daemon starts automatically on login and
+    survives terminal close — matching OpenClaw's always-on Gateway behavior.
+    """
+    import platform
+    import shutil
+    import subprocess
+
+    os_name = platform.system().lower()
+    agnoclaw_bin = shutil.which("agnoclaw")
+    if not agnoclaw_bin:
+        console.print("[red]agnoclaw binary not found on PATH. Install with 'pip install agnoclaw' or 'uv tool install agnoclaw'.[/red]")
+        return
+
+    if os_name == "darwin":
+        _manage_launchd_service(agnoclaw_bin, workspace, interval, uninstall)
+    elif os_name == "linux":
+        _manage_systemd_service(agnoclaw_bin, workspace, interval, uninstall)
+    else:
+        console.print(f"[yellow]Service install not supported on {platform.system()}. Run 'agnoclaw heartbeat start' manually in a persistent session (tmux/screen).[/yellow]")
+
+
+def _manage_launchd_service(agnoclaw_bin: str, workspace, interval: int, uninstall: bool) -> None:
+    """Install/uninstall launchd LaunchAgent on macOS."""
+    import subprocess
+    from pathlib import Path
+
+    label = "ai.agnoclaw.heartbeat"
+    plist_dir = Path.home() / "Library" / "LaunchAgents"
+    plist_path = plist_dir / f"{label}.plist"
+
+    if uninstall:
+        if plist_path.exists():
+            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+            plist_path.unlink()
+            console.print(f"[green]Uninstalled: {plist_path}[/green]")
+        else:
+            console.print("[yellow]No launchd service found to uninstall.[/yellow]")
+        return
+
+    plist_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd_args = [agnoclaw_bin, "heartbeat", "start", "--interval", str(interval)]
+    if workspace:
+        cmd_args += ["--workspace", workspace]
+
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        {"".join(f"        <string>{a}</string>{chr(10)}" for a in cmd_args)}    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{Path.home()}/.agnoclaw/logs/heartbeat.log</string>
+    <key>StandardErrorPath</key>
+    <string>{Path.home()}/.agnoclaw/logs/heartbeat.error.log</string>
+</dict>
+</plist>"""
+
+    # Ensure log directory
+    (Path.home() / ".agnoclaw" / "logs").mkdir(parents=True, exist_ok=True)
+
+    plist_path.write_text(plist_content)
+    result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, text=True)
+
+    if result.returncode == 0:
+        console.print(f"[green]Installed and started: {plist_path}[/green]")
+        console.print(f"[dim]Logs: ~/.agnoclaw/logs/heartbeat.log[/dim]")
+        console.print(f"[dim]To uninstall: agnoclaw heartbeat install-service --uninstall[/dim]")
+    else:
+        console.print(f"[red]launchctl load failed: {result.stderr}[/red]")
+        console.print(f"[dim]Plist written to: {plist_path}[/dim]")
+
+
+def _manage_systemd_service(agnoclaw_bin: str, workspace, interval: int, uninstall: bool) -> None:
+    """Install/uninstall systemd user service on Linux."""
+    import subprocess
+    from pathlib import Path
+
+    service_name = "agnoclaw-heartbeat"
+    service_dir = Path.home() / ".config" / "systemd" / "user"
+    service_path = service_dir / f"{service_name}.service"
+
+    if uninstall:
+        subprocess.run(["systemctl", "--user", "stop", service_name], capture_output=True)
+        subprocess.run(["systemctl", "--user", "disable", service_name], capture_output=True)
+        if service_path.exists():
+            service_path.unlink()
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        console.print(f"[green]Uninstalled systemd service: {service_name}[/green]")
+        return
+
+    service_dir.mkdir(parents=True, exist_ok=True)
+    (Path.home() / ".agnoclaw" / "logs").mkdir(parents=True, exist_ok=True)
+
+    cmd_args = [agnoclaw_bin, "heartbeat", "start", "--interval", str(interval)]
+    if workspace:
+        cmd_args += ["--workspace", workspace]
+
+    service_content = f"""[Unit]
+Description=agnoclaw Heartbeat Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={" ".join(cmd_args)}
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:{Path.home()}/.agnoclaw/logs/heartbeat.log
+StandardError=append:{Path.home()}/.agnoclaw/logs/heartbeat.error.log
+
+[Install]
+WantedBy=default.target
+"""
+
+    service_path.write_text(service_content)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    result = subprocess.run(
+        ["systemctl", "--user", "enable", "--now", service_name],
+        capture_output=True, text=True,
+    )
+
+    if result.returncode == 0:
+        console.print(f"[green]Installed and started: {service_path}[/green]")
+        console.print(f"[dim]Status: systemctl --user status {service_name}[/dim]")
+        console.print(f"[dim]To uninstall: agnoclaw heartbeat install-service --uninstall[/dim]")
+    else:
+        console.print(f"[red]systemctl enable failed: {result.stderr}[/red]")
+        console.print(f"[dim]Service file written to: {service_path}[/dim]")
+
+
 # ── agnoclaw workspace ────────────────────────────────────────────────────────
 
 @cli.group()

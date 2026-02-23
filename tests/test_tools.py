@@ -124,6 +124,76 @@ def test_files_toolkit_list_dir(tmp_path):
     assert "file1.py" in result or "file2.txt" in result
 
 
+# ── MultiEdit tests ──────────────────────────────────────────────────────
+
+
+def test_multi_edit_file_applies_all_edits(tmp_path):
+    from agnoclaw.tools.files import FilesToolkit
+
+    toolkit = FilesToolkit()
+    file_path = str(tmp_path / "multi.py")
+    content = "def foo():\n    return 1\n\ndef bar():\n    return 2\n"
+    (tmp_path / "multi.py").write_text(content, encoding="utf-8")
+
+    result = toolkit.multi_edit_file(file_path, [
+        {"old_string": "return 1", "new_string": "return 100"},
+        {"old_string": "return 2", "new_string": "return 200"},
+    ])
+    assert "2 replacements" in result
+    final = (tmp_path / "multi.py").read_text(encoding="utf-8")
+    assert "return 100" in final
+    assert "return 200" in final
+    assert "return 1\n" not in final
+    assert "return 2\n" not in final
+
+
+def test_multi_edit_file_fails_on_missing_old_string(tmp_path):
+    from agnoclaw.tools.files import FilesToolkit
+
+    toolkit = FilesToolkit()
+    file_path = str(tmp_path / "multi.py")
+    (tmp_path / "multi.py").write_text("hello world", encoding="utf-8")
+
+    result = toolkit.multi_edit_file(file_path, [
+        {"old_string": "NOT_PRESENT", "new_string": "x"},
+    ])
+    assert "[error]" in result
+    # File should be unchanged
+    assert (tmp_path / "multi.py").read_text(encoding="utf-8") == "hello world"
+
+
+def test_multi_edit_file_fails_on_duplicate_old_string(tmp_path):
+    from agnoclaw.tools.files import FilesToolkit
+
+    toolkit = FilesToolkit()
+    file_path = str(tmp_path / "multi.py")
+    (tmp_path / "multi.py").write_text("x = 1\nx = 1\n", encoding="utf-8")
+
+    result = toolkit.multi_edit_file(file_path, [
+        {"old_string": "x = 1", "new_string": "x = 2"},
+    ])
+    assert "[error]" in result
+
+
+def test_multi_edit_file_empty_edits(tmp_path):
+    from agnoclaw.tools.files import FilesToolkit
+
+    toolkit = FilesToolkit()
+    file_path = str(tmp_path / "f.txt")
+    (tmp_path / "f.txt").write_text("abc", encoding="utf-8")
+
+    result = toolkit.multi_edit_file(file_path, [])
+    assert "[error]" in result
+
+
+def test_multi_edit_file_nonexistent(tmp_path):
+    from agnoclaw.tools.files import FilesToolkit
+
+    toolkit = FilesToolkit()
+    result = toolkit.multi_edit_file(str(tmp_path / "missing.py"), [{"old_string": "x", "new_string": "y"}])
+    assert "[error]" in result
+
+
 # ── BashTool tests ───────────────────────────────────────────────────────
 
 

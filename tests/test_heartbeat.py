@@ -255,3 +255,70 @@ def test_workspace_is_empty_heartbeat_headers_only(tmp_path):
     ws.write_file("heartbeat", "# Heartbeat\n\n## Subsection\n")
 
     assert ws.is_empty_heartbeat()
+
+
+# ── CronJob + schedule parser tests ─────────────────────────────────────
+
+
+def test_cron_job_dataclass():
+    from agnoclaw.heartbeat.daemon import CronJob
+
+    job = CronJob(name="test", schedule="30m", prompt="hello")
+    assert job.name == "test"
+    assert job.schedule == "30m"
+    assert job.isolated is False
+    assert job.enabled is True
+
+
+def test_seconds_until_next_interval_minutes():
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    # "30m" → 1800 seconds
+    result = HeartbeatDaemon._seconds_until_next("30m")
+    assert result == 1800.0
+
+
+def test_seconds_until_next_interval_hours():
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    # "1h" → 3600 seconds
+    result = HeartbeatDaemon._seconds_until_next("1h")
+    assert result == 3600.0
+
+
+def test_seconds_until_next_interval_combined():
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    # "1h30m" → 5400 seconds
+    result = HeartbeatDaemon._seconds_until_next("1h30m")
+    assert result == 5400.0
+
+
+def test_seconds_until_next_interval_seconds():
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    # "45s" → 45 seconds
+    result = HeartbeatDaemon._seconds_until_next("45s")
+    assert result == 45.0
+
+
+def test_seconds_until_next_cron_or_minus_one():
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    # Valid cron expression — if croniter available should be >0; if not should be -1
+    result = HeartbeatDaemon._seconds_until_next("0 9 * * 1-5")
+    # Either a positive float (next scheduled run) or -1 (no cron lib)
+    assert result == -1.0 or result > 0
+
+
+def test_daemon_add_cron_job():
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    job = CronJob(name="standup", schedule="0 9 * * 1-5", prompt="daily standup")
+    daemon.add_cron_job(job)
+    assert len(daemon._cron_jobs) == 1
+    assert daemon._cron_jobs[0].name == "standup"
