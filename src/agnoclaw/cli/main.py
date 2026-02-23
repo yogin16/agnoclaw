@@ -2,6 +2,7 @@
 agnoclaw CLI — interactive and one-shot agent execution.
 
 Commands:
+    agnoclaw init              Interactive onboarding wizard (first run)
     agnoclaw chat              Interactive chat session (like Claude Code)
     agnoclaw run "task"        One-shot task execution
     agnoclaw skill list        List available skills
@@ -64,6 +65,87 @@ SESSION_OPT = click.option("--session", "-s", default=None, help="Session ID for
 WORKSPACE_OPT = click.option("--workspace", "-w", default=None, help="Workspace directory path")
 DEBUG_OPT = click.option("--debug", is_flag=True, default=False, help="Enable debug mode (show tool calls)")
 SKILL_OPT = click.option("--skill", default=None, help="Activate a skill for this run (skill name)")
+
+
+# ── agnoclaw init ─────────────────────────────────────────────────────────────
+
+@cli.command()
+@WORKSPACE_OPT
+def init(workspace):
+    """Interactive onboarding wizard — personalize your agent workspace."""
+    from agnoclaw.workspace import Workspace
+
+    ws = Workspace(workspace)
+    ws.initialize()
+
+    console.print(Panel(
+        "[bold cyan]agnoclaw init[/bold cyan] — personalize your agent\n"
+        "[dim]Press Enter to skip any question.[/dim]",
+        border_style="cyan",
+    ))
+
+    # Q1: Agent persona / soul
+    console.print("\n[bold]1. Agent persona[/bold]")
+    console.print("[dim]Describe how your agent should behave (tone, style, values).[/dim]")
+    console.print("[dim]Example: 'Direct and concise. Prefers bullet points. No fluff.'[/dim]")
+    soul_input = click.prompt("Persona", default="", show_default=False)
+
+    # Q2: User identity
+    console.print("\n[bold]2. About you[/bold]")
+    console.print("[dim]Your name, timezone, communication preferences.[/dim]")
+    console.print("[dim]Example: 'Alice, UTC-8, prefers brief responses, uses Python 3.12'[/dim]")
+    user_input = click.prompt("User identity", default="", show_default=False)
+
+    # Q3: Agent capabilities / identity
+    console.print("\n[bold]3. Agent capabilities[/bold]")
+    console.print("[dim]What should this agent specialize in?[/dim]")
+    console.print("[dim]Example: 'Full-stack developer, expert in Python and React'[/dim]")
+    identity_input = click.prompt("Capabilities", default="", show_default=False)
+
+    # Q4: Default model
+    console.print("\n[bold]4. Default model[/bold]")
+    console.print("[dim]Which model should the agent use by default?[/dim]")
+    model_input = click.prompt(
+        "Model ID",
+        default="claude-sonnet-4-6",
+        show_default=True,
+    )
+
+    # Q5: Enable bash tool
+    console.print("\n[bold]5. Shell access[/bold]")
+    enable_bash = click.confirm("Allow the agent to run shell commands (bash tool)?", default=True)
+
+    # ── Write files ──────────────────────────────────────────────────────────
+
+    if soul_input.strip():
+        existing_soul = ws.read_file("soul") or ""
+        # Append persona note below the default
+        new_soul = existing_soul.rstrip() + f"\n\n## Persona (from init)\n{soul_input.strip()}\n"
+        ws.write_file("soul", new_soul)
+
+    if user_input.strip():
+        ws.write_file("user", f"# User\n\n{user_input.strip()}\n")
+
+    if identity_input.strip():
+        ws.write_file(
+            "identity",
+            f"# Identity\n\n{identity_input.strip()}\n",
+        )
+
+    # Write a minimal config hint to TOOLS.md
+    tools_lines = ["# Tools\n"]
+    tools_lines.append(f"default_model: {model_input.strip()}")
+    if not enable_bash:
+        tools_lines.append("disable: bash")
+    ws.write_file("tools", "\n".join(tools_lines) + "\n")
+
+    console.print(f"\n[green]Workspace initialized at: {ws.path}[/green]")
+    console.print(
+        f"  SOUL.md, USER.md, IDENTITY.md, TOOLS.md written\n"
+        f"  Default model: [cyan]{model_input.strip()}[/cyan]\n"
+        f"  Bash tool: [cyan]{'enabled' if enable_bash else 'disabled'}[/cyan]\n"
+        f"\nRun [bold]agnoclaw chat[/bold] to start."
+    )
 
 
 # ── agnoclaw chat ──────────────────────────────────────────────────────────────
@@ -286,6 +368,54 @@ def heartbeat():
     pass
 
 
+@heartbeat.command("start")
+@MODEL_OPT
+@PROVIDER_OPT
+@WORKSPACE_OPT
+@click.option("--interval", "-i", default=None, type=int, help="Check interval in minutes (overrides config)")
+def heartbeat_start(model, provider, workspace, interval):
+    """Start the heartbeat daemon (runs until Ctrl+C)."""
+    from agnoclaw import HarnessAgent
+    from agnoclaw.heartbeat import HeartbeatDaemon
+
+    agent = HarnessAgent(model_id=model, provider=provider, workspace_dir=workspace)
+
+    if agent.workspace.is_empty_heartbeat():
+        console.print(
+            "[yellow]HEARTBEAT.md is empty — nothing to check.[/yellow]\n"
+            f"Edit {agent.workspace.path / 'HEARTBEAT.md'} to add checklist items."
+        )
+        return
+
+    def on_alert(msg):
+        console.print(Panel(msg, title="[yellow]Heartbeat Alert[/yellow]", border_style="yellow"))
+
+    daemon = HeartbeatDaemon(agent, on_alert=on_alert)
+
+    # Override interval if provided
+    if interval is not None:
+        daemon._config.heartbeat.interval_minutes = interval
+
+    interval_min = daemon._config.heartbeat.interval_minutes
+    console.print(
+        f"[dim]Heartbeat daemon starting (interval={interval_min}m). "
+        f"Press Ctrl+C to stop.[/dim]"
+    )
+
+    async def _run():
+        daemon.start()
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            daemon.stop()
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        console.print("\n[dim]Heartbeat daemon stopped.[/dim]")
+
+
 @heartbeat.command("trigger")
 @MODEL_OPT
 @PROVIDER_OPT
@@ -347,7 +477,7 @@ def workspace_show(workspace):
     table.add_column("Status")
     table.add_column("Size")
 
-    for logical_name in ("agents", "soul", "user", "memory", "heartbeat", "boot"):
+    for logical_name in ("agents", "soul", "identity", "user", "memory", "tools", "heartbeat", "boot"):
         from agnoclaw.workspace import WORKSPACE_FILES
         filename = WORKSPACE_FILES.get(logical_name, f"{logical_name.upper()}.md")
         path = ws.path / filename
