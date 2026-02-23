@@ -15,8 +15,11 @@ Distills the best ideas from Claude Code's system prompt architecture, OpenClaw'
 | **Hackable agent loop** | No | No | Yes (Agno pre/post hooks, guardrails) |
 | **Multi-agent** | Task tool only | No | Native (coordinate, route, broadcast) |
 | **SKILL.md system** | Yes | Yes | Yes (compatible with both) |
-| **Heartbeat** | No | Yes | Yes |
+| **Heartbeat + Cron** | No | Yes | Yes (interval strings + cron expressions) |
 | **Workspace** | CLAUDE.md only | Full workspace | Full workspace |
+| **Self-improving** | No | Community skill | Bundled `self-improving-agent` skill |
+| **Atomic multi-edit** | Yes (MultiEdit) | No | Yes (`multi_edit_file`) |
+| **Service install** | No | Yes (launchd/systemd) | Yes (`install-service`) |
 | **Python-native** | No (TypeScript) | No | Yes |
 | **Production patterns** | N/A | N/A | HITL, streaming, tracing, eval |
 
@@ -102,6 +105,29 @@ async def main():
 
 asyncio.run(main())
 ```
+
+---
+
+## Tools
+
+agnoclaw ships a Claude Code-compatible tool set. Key tools:
+
+| Tool | Method | Notes |
+|---|---|---|
+| `Read` | `read_file()` | Line offset/limit support |
+| `Write` | `write_file()` | Creates parent dirs |
+| `Edit` | `edit_file()` | Unique string replacement |
+| `MultiEdit` | `multi_edit_file()` | Atomic multi-replacement — validates all before applying |
+| `Glob` | `glob_files()` | Pattern matching, sorted by mtime |
+| `Grep` | `grep_files()` | Regex search with context lines |
+| `LS` | `list_dir()` | Directory listing with sizes |
+| `Bash` | `bash()` | Shell execution with timeout |
+| `WebSearch` | `web_search()` | Domain allow/blocklists |
+| `WebFetch` | `web_fetch()` | URL fetch + AI summarization |
+| `TodoWrite/Read` | `create_todo()` / `list_todos()` | Task management |
+| `Task` | `spawn_subagent()` | Subagent spawning |
+
+For a full comparison with Claude Code v2.1.50 (missing tools, gaps, roadmap), see [`docs/claude-code-gaps.md`](docs/claude-code-gaps.md).
 
 ---
 
@@ -552,14 +578,14 @@ agnoclaw/
 │   │   └── system.py      # System prompt assembler
 │   ├── tools/
 │   │   ├── bash.py        # Shell execution
-│   │   ├── files.py       # Read/Write/Edit/Glob/Grep
+│   │   ├── files.py       # Read/Write/Edit/MultiEdit/Glob/Grep/LS
 │   │   ├── web.py         # WebSearch/WebFetch
 │   │   └── tasks.py       # TodoToolkit + ProgressToolkit + SubagentTool
 │   ├── skills/
-│   │   ├── loader.py      # SKILL.md parser (AgentSkills standard)
-│   │   └── registry.py    # Discovery + selective injection
+│   │   ├── loader.py      # SKILL.md parser (AgentSkills + OpenClaw frontmatter)
+│   │   └── registry.py    # Discovery + selective injection + gate checks
 │   ├── heartbeat/
-│   │   └── daemon.py      # Asyncio heartbeat scheduler
+│   │   └── daemon.py      # HeartbeatDaemon + CronJob (interval + cron expressions)
 │   └── cli/
 │       └── main.py        # Click CLI (init, chat, run, skill, heartbeat, workspace)
 ├── skills/                # Built-in skills
@@ -567,12 +593,18 @@ agnoclaw/
 │   ├── code-review/
 │   ├── git-workflow/
 │   ├── daily-standup/
-│   └── memory-manage/
-└── examples/              # 17 runnable examples
+│   ├── memory-manage/
+│   └── self-improving-agent/  # Capture corrections/errors → .learnings/
+├── docs/
+│   └── claude-code-gaps.md    # Tool-by-tool CC v2.1.50 vs agnoclaw comparison
+└── examples/              # 20 runnable examples
     ├── ollama_local.py    # Local inference (no API key)
     ├── openclaw_style.py  # Full OpenClaw-style setup
     ├── openclaw_skills.py # Skill hub creation and usage
-    ├── progress_tracking.py # ProgressToolkit lifecycle
+    ├── progress_tracking.py   # ProgressToolkit lifecycle
+    ├── cron_jobs.py           # CronJob scheduler + service install
+    ├── self_improving_agent.py # .learnings/ capture + promotion pattern
+    ├── claude_code_tools.py   # CC gap analysis + MultiEdit demo
     └── ...
 ```
 
