@@ -22,7 +22,7 @@ from typing import Optional
 
 from agno.team import Team, TeamMode
 
-from .agent import _make_model, _make_db
+from .agent import _resolve_model, _make_db
 from .config import HarnessConfig, get_config
 from .tools import FilesToolkit, WebToolkit, make_bash_tool, TodoToolkit
 
@@ -49,7 +49,7 @@ def research_team(
     provider = provider or cfg.default_provider
     db = _make_db(cfg)
 
-    model = _make_model(model_id, provider)
+    model = _resolve_model(model_id, provider, cfg)
     web = WebToolkit()
 
     # Learning machine for research patterns (namespaced to this team)
@@ -139,7 +139,7 @@ def code_team(
     provider = provider or cfg.default_provider
     db = _make_db(cfg)
 
-    model = _make_model(model_id, provider)
+    model = _resolve_model(model_id, provider, cfg)
     files = FilesToolkit()
     bash = make_bash_tool(timeout=cfg.bash_timeout_seconds)
 
@@ -235,7 +235,7 @@ def data_team(
     provider = provider or cfg.default_provider
     db = _make_db(cfg)
 
-    model = _make_model(model_id, provider)
+    model = _resolve_model(model_id, provider, cfg)
 
     fetcher = Agent(
         name="DataFetcher",

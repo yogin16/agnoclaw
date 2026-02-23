@@ -1,20 +1,16 @@
 """
 Memory management utilities.
 
-Agnoclaw uses three memory layers:
+Agnoclaw uses two memory layers (plus in-context workspace files):
 
   1. Workspace files — plain Markdown, human-readable, cross-session
      (AGENTS.md, SOUL.md, USER.md, MEMORY.md, daily logs)
      Scope: per-workspace / per-user / per-project
 
-  2. Agno MemoryManager — structured fact extraction per user_id,
-     stored in SQLite/Postgres, auto-injected into context.
-     Scope: per-user, cross-session
-
-  3. Agno LearningMachine — institutional, cross-user, cross-session
-     knowledge. Patterns, conventions, insights that accumulate over time
-     and benefit all users of the harness.
-     Scope: global (or namespaced per agent role)
+  2. Agno LearningMachine — unified memory system handling both per-user
+     facts AND institutional cross-user knowledge. Introduced in Agno v2.3.25
+     as the successor to the older MemoryManager pattern.
+     Scope: per-user AND global (namespaced per agent role)
 
 Memory Hierarchy:
   ┌───────────────────────────────────────────────────────┐
@@ -23,32 +19,27 @@ Memory Hierarchy:
   │ Workspace files (Markdown — per-workspace)            │
   │  AGENTS.md · SOUL.md · USER.md · MEMORY.md           │
   ├───────────────────────────────────────────────────────┤
-  │ MemoryManager (SQL — per-user facts, preferences)     │
-  ├───────────────────────────────────────────────────────┤
-  │ LearningMachine (SQL — institutional / cross-user)    │
-  │  Stores enabled by default:                           │
+  │ LearningMachine (SQL — unified memory)                │
+  │  Per-user stores (when enable_user_memory=True):      │
+  │    user_profile     — structured profile fields       │
+  │    user_memory      — unstructured observations       │
+  │  Institutional stores (when enable_learning=True):    │
   │    learned_knowledge — reusable insights/patterns     │
   │    entity_memory     — facts about projects/tools     │
   │    decision_log      — consequential decisions        │
-  │  Stores excluded (per-user, not institutional):       │
-  │    user_profile      — use MemoryManager instead      │
-  │    user_memory       — use MemoryManager instead      │
+  │  Optional:                                            │
+  │    session_context   — goals, plans, progress         │
   └───────────────────────────────────────────────────────┘
 
-LearningMachine Store Selection Rationale:
-  - learned_knowledge: Core institutional store. Captures patterns like
-    "always validate X before calling Y", "team prefers Z pattern". High
-    value across all agent types.
-  - entity_memory: Tracks named entities — projects, tools, APIs, people.
-    Enables "we use pytest in this project", "Alice owns the auth service".
-    Scoped globally or by namespace.
-  - decision_log: Captures WHY decisions were made. "Chose PostgreSQL over
-    SQLite because of concurrent writes". Prevents re-litigating decisions.
-  - user_profile: EXCLUDED from LearningMachine. This is per-user data —
-    use MemoryManager (Tier 2) for user preferences/facts.
-  - user_memory: EXCLUDED — use MemoryManager instead.
-  - session_context: Cross-session patterns. Useful but high noise.
-    Omitted by default; opt in via enable_session_context=True.
+LearningMachine Store Roles:
+  - user_profile: Structured per-user fields (name, preferences, custom).
+  - user_memory: Unstructured per-user observations (conversations, habits).
+    These two replace the older MemoryManager with better extraction prompts
+    and the Curator for memory maintenance.
+  - learned_knowledge: Institutional patterns — "always validate X before Y".
+  - entity_memory: Named entities — projects, tools, APIs, people.
+  - decision_log: WHY decisions were made. Prevents re-litigating.
+  - session_context: Cross-session goals/plans. Higher noise, opt-in.
 
 LearningMachine API Notes:
   LearningMachine is a dataclass — each store is configured individually
@@ -71,8 +62,11 @@ def build_memory_manager(
     """
     Build an Agno MemoryManager for structured per-user cross-session memory.
 
-    Uses a cheap model (Haiku by default) for memory extraction.
-    Stores facts per user_id in the configured database.
+    .. deprecated::
+        Use ``build_learning_machine(enable_user_memory=True)`` instead.
+        LearningMachine's user_memory and user_profile stores are a strict
+        superset of MemoryManager with better extraction prompts and the
+        Curator for memory maintenance.
 
     Args:
         model_id: Model to use for memory extraction.
@@ -83,6 +77,15 @@ def build_memory_manager(
     Returns:
         Configured MemoryManager instance.
     """
+    import warnings
+    warnings.warn(
+        "build_memory_manager() is deprecated. Use build_learning_machine("
+        "enable_user_memory=True) instead — LearningMachine's user_memory "
+        "store is a strict superset with better prompts and memory maintenance.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     from agno.memory import MemoryManager
 
     from .agent import _resolve_model
@@ -117,28 +120,31 @@ def build_learning_machine(
     provider: str = "anthropic",
     namespace: Optional[str] = None,
     mode: str = "agentic",
+    enable_user_memory: bool = False,
     enable_session_context: bool = False,
 ):
     """
-    Build an Agno LearningMachine for institutional cross-user memory.
+    Build an Agno LearningMachine — the unified memory system.
 
-    LearningMachine accumulates patterns, conventions, and insights that
-    persist across ALL sessions and ALL users — forming the agent's
-    institutional memory. Unlike MemoryManager (per-user facts), learnings
-    are shared globally (or within a namespace).
+    LearningMachine handles both per-user memory (user_profile, user_memory)
+    and institutional cross-user knowledge (learned_knowledge, entity_memory,
+    decision_log). It replaces the older MemoryManager with better extraction
+    prompts and the Curator for memory maintenance.
 
     Each store is configured individually with its own LearningMode.
     There is NO global mode parameter — modes are set per-store.
 
-    Enabled stores (see module docstring for rationale):
+    Institutional stores (always enabled):
     - learned_knowledge — reusable insights discovered through experience
     - entity_memory     — facts about named entities (projects, tools, APIs)
     - decision_log      — record of consequential decisions and their rationale
 
-    Excluded stores:
-    - user_profile      — per-user data; use MemoryManager (Tier 2) instead
-    - user_memory       — per-user data; use MemoryManager (Tier 2) instead
-    - session_context   — high noise; opt in via enable_session_context=True
+    Per-user stores (opt-in via enable_user_memory=True):
+    - user_profile      — structured profile fields (name, preferences)
+    - user_memory       — unstructured observations about users
+
+    Optional:
+    - session_context   — goals, plans, progress; opt in via enable_session_context
 
     Learning Modes:
     - 'always'  — extract and store learnings after every run (highest coverage)
@@ -156,6 +162,8 @@ def build_learning_machine(
         mode: Learning mode applied to entity_memory and decision_log stores:
               'always' | 'agentic' | 'propose' | 'hitl'.
               learned_knowledge always uses 'agentic' (knowledge is selective).
+        enable_user_memory: Enable per-user stores (user_profile + user_memory).
+                           Replaces the deprecated MemoryManager.
         enable_session_context: Include session_context store (higher noise,
                                 useful for long-running agents).
 
@@ -163,14 +171,18 @@ def build_learning_machine(
         Configured LearningMachine instance.
 
     Example:
-        # Shared institutional memory (all agents learn from all interactions)
+        # Institutional memory only (cross-user knowledge)
         lm = build_learning_machine(db=my_db)
 
-        # Isolated by role (research agent learns separately from code agent)
-        research_lm = build_learning_machine(db=my_db, namespace="research")
-        code_lm = build_learning_machine(db=my_db, namespace="code-review")
+        # Full memory: institutional + per-user
+        lm = build_learning_machine(db=my_db, enable_user_memory=True)
 
-        agent = AgentHarness(enable_learning=True, learning_namespace="code-review")
+        # Via AgentHarness (recommended)
+        agent = AgentHarness(
+            enable_learning=True,
+            enable_user_memory=True,
+            learning_namespace="code-review",
+        )
     """
     from agno.learn import LearningMachine, LearningMode
     from agno.learn.config import (
@@ -232,9 +244,9 @@ def build_learning_machine(
         db=db,
         model=model,
         namespace=_namespace,
-        # Exclude per-user stores — handled by MemoryManager (Tier 2)
-        user_profile=False,
-        user_memory=False,
+        # Per-user stores — enabled when enable_user_memory=True
+        user_profile=enable_user_memory,
+        user_memory=enable_user_memory,
         # Institutional stores
         entity_memory=entity_config,
         learned_knowledge=learned_config,

@@ -8,13 +8,14 @@ Wraps Agno's Agent with:
   - Default tool suite (bash, files, web, tasks, subagent)
   - Persistent session storage (SQLite or Postgres)
   - Multi-provider model support (any Agno-supported model)
-  - Three-tier memory: workspace files → MemoryManager → LearningMachine
+  - Unified memory: workspace files + LearningMachine (per-user + institutional)
+  - Context management: compression, session summaries, history limiting
 
-Memory tiers:
+Memory layers:
   1. Workspace files (Markdown) — human-readable, per-workspace context
-  2. MemoryManager — structured per-user facts, extracted and stored in SQL
-  3. LearningMachine — institutional cross-user knowledge that accumulates
-     over time (patterns, conventions, learnings from experience)
+  2. LearningMachine — unified memory system handling both per-user facts
+     (user_profile, user_memory) and institutional cross-user knowledge
+     (learned_knowledge, entity_memory, decision_log)
 
 Usage:
     from agnoclaw import AgentHarness
@@ -29,10 +30,10 @@ Usage:
     agent = AgentHarness("ollama:qwen3:8b")     # local, no API key
     agent = AgentHarness("groq:llama-3.3-70b-versatile")
 
-    # With learning enabled (institutional memory)
+    # With institutional learning
     agent = AgentHarness(enable_learning=True, learning_mode="agentic")
 
-    # With per-user memory + learning
+    # With per-user memory (via LearningMachine's user_profile + user_memory)
     agent = AgentHarness(
         user_id="alice",
         enable_user_memory=True,
@@ -40,11 +41,14 @@ Usage:
         learning_namespace="code-review",
     )
 
-    # With context compression (long sessions / many tool calls)
-    agent = AgentHarness(enable_compression=True, compress_token_limit=4000)
-
-    # With session summaries (continuity across sessions)
-    agent = AgentHarness(enable_session_summary=True)
+    # Full context management for long-running sessions
+    agent = AgentHarness(
+        enable_compression=True,
+        compress_token_limit=100_000,
+        enable_session_summary=True,
+        num_history_runs=5,
+        max_tool_calls_from_history=10,
+    )
 """
 
 from __future__ import annotations
@@ -147,6 +151,9 @@ class AgentHarness:
         enable_compression: Enable tool result compression for long sessions.
         compress_token_limit: Token threshold that triggers compression.
         enable_session_summary: Enable automatic session summaries for continuity.
+        num_history_runs: Number of prior runs to include in context (default: from config).
+        num_history_messages: Max history messages (alternative to num_history_runs).
+        max_tool_calls_from_history: Keep only N most recent tool calls from history.
         provider: Provider name — only needed when model is not in "provider:model_id"
                   format. Accepts "anthropic", "openai", "ollama", "groq", "google",
                   "aws"/"bedrock", "mistral", "xai"/"grok", "deepseek", "litellm".
@@ -175,6 +182,9 @@ class AgentHarness:
         enable_compression: Optional[bool] = None,
         compress_token_limit: Optional[int] = None,
         enable_session_summary: Optional[bool] = None,
+        num_history_runs: Optional[int] = None,
+        num_history_messages: Optional[int] = None,
+        max_tool_calls_from_history: Optional[int] = None,
         # Legacy compat — use model + provider instead
         model_id: Optional[str] = None,
         extra_tools: Optional[list] = None,
@@ -223,21 +233,18 @@ class AgentHarness:
         # Storage backend
         db = _make_db(self.config)
 
-        # ── Memory tier 2: per-user MemoryManager ─────────────────────────
-        memory_manager = None
-        if enable_user_memory:
-            from .memory import build_memory_manager
-            memory_manager = build_memory_manager(db=db)
-
-        # ── Memory tier 3: LearningMachine ────────────────────────────────
-        # Institutional cross-user knowledge — patterns, conventions, insights
+        # ── Memory: LearningMachine (unified per-user + institutional) ──────
+        # LearningMachine handles both per-user memory (user_profile,
+        # user_memory) and institutional knowledge (learned_knowledge,
+        # entity_memory, decision_log) in a single system.
         learning = None
-        if _enable_learning:
+        if _enable_learning or enable_user_memory:
             from .memory import build_learning_machine
             learning = build_learning_machine(
                 db=db,
                 namespace=learning_namespace or name,
                 mode=_learning_mode,
+                enable_user_memory=enable_user_memory,
             )
 
         # ── Context management: compression ───────────────────────────────
@@ -277,16 +284,14 @@ class AgentHarness:
             session_id=session_id,
             user_id=user_id,
             add_history_to_context=True,
-            num_history_runs=self.config.session_history_runs,
+            num_history_runs=num_history_runs or self.config.session_history_runs,
+            num_history_messages=num_history_messages,
+            max_tool_calls_from_history=max_tool_calls_from_history,
             markdown=True,
             debug_mode=debug or self.config.debug,
-            # Memory tier 2: per-user structured facts
-            memory_manager=memory_manager,
-            enable_agentic_memory=enable_user_memory,
-            add_memories_to_context=enable_user_memory,
-            # Memory tier 3: institutional cross-user knowledge
+            # Unified memory via LearningMachine (per-user + institutional)
             learning=learning,
-            add_learnings_to_context=_enable_learning,
+            add_learnings_to_context=bool(learning),
             # Context window management
             compress_tool_results=_enable_compression,
             compression_manager=compression_manager,
@@ -418,6 +423,35 @@ class AgentHarness:
         to preserve important context for future sessions.
         """
         self.workspace.write_session_summary(summary)
+
+    async def compact_session(self) -> None:
+        """
+        Pre-compaction memory flush (OpenClaw pattern).
+
+        Before clearing old history, triggers a silent agent turn that writes
+        important context to MEMORY.md. Then generates a session summary to
+        preserve continuity. Call this when the context window is getting full.
+
+        This is a manual escape hatch — Agno v2.5.x does not auto-compact.
+        """
+        # Step 1: Ask the agent to write important facts to memory
+        flush_prompt = (
+            "SYSTEM: Context compaction is about to occur. Before your conversation "
+            "history is cleared, write any important facts, decisions, code locations, "
+            "or context that should persist to MEMORY.md. Be concise — only preserve "
+            "what a future session would need to continue your work effectively."
+        )
+        await self._agent.arun(
+            flush_prompt,
+            session_id=self.session_id,
+            user_id=self.user_id,
+        )
+
+        # Step 2: Generate and persist a session summary
+        if self._agent.session_summary_manager:
+            session = self._agent.get_session(self.session_id)
+            if session:
+                self._agent.session_summary_manager.create_session_summary(session)
 
     @property
     def underlying_agent(self) -> Agent:

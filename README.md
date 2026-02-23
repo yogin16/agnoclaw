@@ -615,20 +615,23 @@ agent.run("Implement user auth with JWT")
 agent.run("Continue: add refresh tokens")
 ```
 
-### Three-tier memory hierarchy
+### Memory hierarchy
 
-| Tier | What | Scope | Storage |
-|------|------|-------|---------|
+| Layer | What | Scope | Storage |
+|-------|------|-------|---------|
 | **Workspace files** | MEMORY.md, AGENTS.md, SOUL.md | Per-workspace | Markdown files |
-| **MemoryManager** | Structured per-user facts | Per-user | SQL (auto-extracted) |
-| **LearningMachine** | Institutional patterns | Cross-user | SQL (accumulated) |
+| **LearningMachine** (per-user) | User profile + observations | Per-user | SQL |
+| **LearningMachine** (institutional) | Patterns, entities, decisions | Cross-user | SQL |
+
+All SQL-backed memory goes through Agno's LearningMachine — a unified system
+that handles both per-user facts and institutional knowledge in a single pass.
 
 ```python
 # Full memory stack
 agent = AgentHarness(
     user_id="alice",
-    enable_user_memory=True,       # tier 2: per-user facts
-    enable_learning=True,          # tier 3: institutional knowledge
+    enable_user_memory=True,       # per-user profile + observations
+    enable_learning=True,          # institutional knowledge
     learning_mode="agentic",       # agent decides when to learn
     enable_compression=True,       # keep context window manageable
     enable_session_summary=True,   # continuity across sessions
