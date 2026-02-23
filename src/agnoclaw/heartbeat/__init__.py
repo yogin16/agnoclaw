@@ -1,3 +1,3 @@
-from .daemon import HeartbeatDaemon, HEARTBEAT_OK_TOKEN
+from .daemon import HeartbeatDaemon, CronJob, HEARTBEAT_OK_TOKEN
 
-__all__ = ["HeartbeatDaemon", "HEARTBEAT_OK_TOKEN"]
+__all__ = ["HeartbeatDaemon", "CronJob", "HEARTBEAT_OK_TOKEN"]

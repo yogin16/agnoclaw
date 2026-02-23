@@ -13,12 +13,12 @@ Requires: ANTHROPIC_API_KEY env var
 """
 
 import shutil
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 
 
 # ── Inspect available skills ──────────────────────────────────────────────
 
-agent = HarnessAgent(name="skill-demo")
+agent = AgentHarness(name="skill-demo")
 registry = agent.skills
 
 print("=== Available Skills ===")
@@ -92,7 +92,7 @@ Focus on these 5 rules above all else. Be concise.
 (custom_review_dir / "SKILL.md").write_text(custom_skill_md, encoding="utf-8")
 
 # Reload registry — workspace skill now takes priority
-agent2 = HarnessAgent(name="skill-demo-2")
+agent2 = AgentHarness(name="skill-demo-2")
 print("\n=== Custom Workspace Code Review Skill ===")
 agent2.print_response(
     "Review: def add(a, b): return a + b",

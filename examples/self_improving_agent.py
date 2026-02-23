@@ -164,11 +164,11 @@ def demo_with_agent(tmp: Path, learnings_dir: Path):
     Run the self-improving-agent skill with a live agent.
     Ask it to review pending learnings and summarize.
     """
-    from agnoclaw import HarnessAgent
+    from agnoclaw import AgentHarness
 
     print("=== Live Agent Demo: Review Learnings ===")
 
-    agent = HarnessAgent(
+    agent = AgentHarness(
         provider=PROVIDER,
         model_id=MODEL,
         workspace_dir=tmp,

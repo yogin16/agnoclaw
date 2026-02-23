@@ -5,10 +5,10 @@ Run: uv run python examples/basic_agent.py
 Requires: ANTHROPIC_API_KEY env var
 """
 
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 
 # Create agent with defaults (Claude Sonnet, SQLite storage, ~/.agnoclaw/workspace)
-agent = HarnessAgent(
+agent = AgentHarness(
     name="my-agent",
     session_id="basic-example",  # persistent session
 )

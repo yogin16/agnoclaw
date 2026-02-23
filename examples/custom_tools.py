@@ -4,12 +4,12 @@ Example: Custom Tools Integration
 Demonstrates:
 - Creating a custom @tool function
 - Creating a custom Toolkit class
-- Adding custom tools to HarnessAgent
+- Adding custom tools to AgentHarness
 - Per-run tool restrictions via skills
 """
 
 from agno.tools import tool, Toolkit
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 
 
 # ── Custom @tool function ─────────────────────────────────────────────────
@@ -82,11 +82,11 @@ class TextAnalysisToolkit(Toolkit):
         return "\n".join(lines)
 
 
-# ── Use with HarnessAgent ─────────────────────────────────────────────────
+# ── Use with AgentHarness ─────────────────────────────────────────────────
 
 toolkit = TextAnalysisToolkit()
 
-agent = HarnessAgent(
+agent = AgentHarness(
     name="TextAnalyst",
     extra_tools=[toolkit],
 )
@@ -103,7 +103,7 @@ print(result.content)
 
 from agnoclaw.tools import make_bash_tool
 
-minimal_agent = HarnessAgent(
+minimal_agent = AgentHarness(
     name="MinimalAgent",
     extra_tools=[word_count],
     # Disable defaults via config

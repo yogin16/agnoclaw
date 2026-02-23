@@ -1,5 +1,5 @@
 """
-HarnessAgent — the central class of agnoclaw.
+AgentHarness — the central class of agnoclaw.
 
 Wraps Agno's Agent with:
   - Claude Code-inspired system prompt (layered, assembled at runtime)
@@ -17,17 +17,23 @@ Memory tiers:
      over time (patterns, conventions, learnings from experience)
 
 Usage:
-    from agnoclaw import HarnessAgent
+    from agnoclaw import AgentHarness
 
-    # Basic
-    agent = HarnessAgent()
+    # Basic — works out of the box with defaults
+    agent = AgentHarness()
     agent.print_response("Find and fix the bug in src/auth.py")
 
+    # Specify model as a single string (provider:model_id)
+    agent = AgentHarness("anthropic:claude-sonnet-4-6")
+    agent = AgentHarness("openai:gpt-4o")
+    agent = AgentHarness("ollama:qwen3:8b")     # local, no API key
+    agent = AgentHarness("groq:llama-3.3-70b-versatile")
+
     # With learning enabled (institutional memory)
-    agent = HarnessAgent(enable_learning=True, learning_mode="agentic")
+    agent = AgentHarness(enable_learning=True, learning_mode="agentic")
 
     # With per-user memory + learning
-    agent = HarnessAgent(
+    agent = AgentHarness(
         user_id="alice",
         enable_user_memory=True,
         enable_learning=True,
@@ -35,10 +41,10 @@ Usage:
     )
 
     # With context compression (long sessions / many tool calls)
-    agent = HarnessAgent(enable_compression=True, compress_token_limit=4000)
+    agent = AgentHarness(enable_compression=True, compress_token_limit=4000)
 
     # With session summaries (continuity across sessions)
-    agent = HarnessAgent(enable_session_summary=True)
+    agent = AgentHarness(enable_session_summary=True)
 """
 
 from __future__ import annotations
@@ -55,49 +61,38 @@ from .skills.registry import SkillRegistry
 from .tools import get_default_tools
 from .workspace import Workspace
 
+# Provider name aliases → Agno's canonical provider names
+_PROVIDER_ALIASES: dict[str, str] = {
+    "bedrock": "aws-bedrock",
+    "aws": "aws-bedrock",
+    "grok": "xai",
+}
 
-def _make_model(model_id: str, provider: str) -> Any:
-    """
-    Instantiate an Agno model from provider name and model ID.
-    Returns the appropriate Agno model class instance.
-    """
-    provider = provider.lower()
 
-    if provider == "anthropic":
-        from agno.models.anthropic import Claude
-        return Claude(id=model_id)
-    elif provider == "openai":
-        from agno.models.openai import OpenAIChat
-        return OpenAIChat(id=model_id)
-    elif provider == "google":
-        from agno.models.google import Gemini
-        return Gemini(id=model_id)
-    elif provider == "groq":
-        from agno.models.groq import Groq
-        return Groq(id=model_id)
-    elif provider == "ollama":
-        from agno.models.ollama import Ollama
-        return Ollama(id=model_id)
-    elif provider == "aws" or provider == "bedrock":
-        from agno.models.aws.bedrock import AwsBedrock
-        return AwsBedrock(id=model_id)
-    elif provider == "mistral":
-        from agno.models.mistral import MistralChat
-        return MistralChat(id=model_id)
-    elif provider == "xai" or provider == "grok":
-        from agno.models.xai import xAI
-        return xAI(id=model_id)
-    elif provider == "deepseek":
-        from agno.models.deepseek import DeepSeek
-        return DeepSeek(id=model_id)
-    elif provider == "litellm":
-        from agno.models.litellm import LiteLLM
-        return LiteLLM(id=model_id)
-    else:
-        raise ValueError(
-            f"Unknown provider '{provider}'. "
-            f"Supported: anthropic, openai, google, groq, ollama, aws, mistral, xai, deepseek, litellm"
-        )
+def _resolve_model(model: Optional[str], provider: Optional[str], config: HarnessConfig) -> str:
+    """
+    Return an Agno-compatible 'provider:model_id' string.
+
+    Accepts:
+      - "anthropic:claude-sonnet-4-6"  (combined, no provider arg needed)
+      - "claude-sonnet-4-6" + provider="anthropic"
+      - None → falls back to config defaults
+
+    Provider aliases: "aws"/"bedrock" → "aws-bedrock", "grok" → "xai"
+    """
+    model_str = model or config.default_model
+    prov = provider or config.default_provider
+
+    # Already in "provider:model_id" format?
+    if ":" in model_str:
+        parts = model_str.split(":", 1)
+        p = _PROVIDER_ALIASES.get(parts[0].lower(), parts[0].lower())
+        return f"{p}:{parts[1]}"
+
+    # Separate model_id + provider
+    p = prov.lower()
+    p = _PROVIDER_ALIASES.get(p, p)
+    return f"{p}:{model_str}"
 
 
 def _make_db(config: HarnessConfig):
@@ -124,11 +119,11 @@ def _make_db(config: HarnessConfig):
         )
 
 
-class HarnessAgent:
+class AgentHarness:
     """
     A hackable, model-agnostic agent harness built on Agno.
 
-    HarnessAgent is the primary public interface. It wires together:
+    AgentHarness is the primary public interface. It wires together:
     - System prompt assembly (Claude Code-inspired, layered)
     - Workspace (persistent Markdown context files)
     - Skills (SKILL.md selective injection)
@@ -136,13 +131,15 @@ class HarnessAgent:
     - Agno Agent (model invocation, tool calling, storage, streaming)
 
     Args:
-        model_id: Model identifier (e.g. "claude-sonnet-4-6", "gpt-4o", "llama3.2").
-        provider: Model provider name (e.g. "anthropic", "openai", "ollama").
+        model: Model string. Accepts "provider:model_id" format
+               (e.g. "anthropic:claude-sonnet-4-6", "ollama:qwen3:8b")
+               or just "model_id" when provider is also given.
+               Falls back to config default if not provided.
         session_id: Session ID for persistence. Auto-generated if not provided.
         user_id: User identifier for per-user memory.
         workspace_dir: Workspace path override. Defaults to ~/.agnoclaw/workspace.
-        extra_tools: Additional tools to add alongside the defaults.
-        extra_instructions: Additional instructions appended to the system prompt.
+        tools: Additional tools to add alongside the defaults.
+        instructions: Additional instructions appended to the system prompt.
         config: HarnessConfig override. Loaded from env/TOML if not provided.
         name: Agent name (cosmetic).
         agent_id: Stable agent ID (cosmetic, used in logs).
@@ -150,17 +147,21 @@ class HarnessAgent:
         enable_compression: Enable tool result compression for long sessions.
         compress_token_limit: Token threshold that triggers compression.
         enable_session_summary: Enable automatic session summaries for continuity.
+        provider: Provider name — only needed when model is not in "provider:model_id"
+                  format. Accepts "anthropic", "openai", "ollama", "groq", "google",
+                  "aws"/"bedrock", "mistral", "xai"/"grok", "deepseek", "litellm".
     """
 
     def __init__(
         self,
-        model_id: Optional[str] = None,
+        model: Optional[str] = None,
+        *,
         provider: Optional[str] = None,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
         workspace_dir: Optional[str | Path] = None,
-        extra_tools: Optional[list] = None,
-        extra_instructions: Optional[str] = None,
+        tools: Optional[list] = None,
+        instructions: Optional[str] = None,
         config: Optional[HarnessConfig] = None,
         name: str = "agnoclaw",
         agent_id: Optional[str] = None,
@@ -174,16 +175,23 @@ class HarnessAgent:
         enable_compression: Optional[bool] = None,
         compress_token_limit: Optional[int] = None,
         enable_session_summary: Optional[bool] = None,
+        # Legacy compat — use model + provider instead
+        model_id: Optional[str] = None,
+        extra_tools: Optional[list] = None,
+        extra_instructions: Optional[str] = None,
     ):
         self.config = config or get_config()
         self.name = name
         self.user_id = user_id
         self.session_id = session_id
 
-        # Resolve model
-        _model_id = model_id or self.config.default_model
-        _provider = provider or self.config.default_provider
-        self._model = _make_model(_model_id, _provider)
+        # Legacy compat: model_id / extra_tools / extra_instructions
+        _model = model or model_id
+        _tools = tools or extra_tools
+        _instructions = instructions or extra_instructions
+
+        # Resolve model → Agno-native "provider:model_id" string
+        self._model = _resolve_model(_model, provider, self.config)
 
         # Workspace
         _ws_dir = workspace_dir or self.config.workspace_dir
@@ -197,9 +205,9 @@ class HarnessAgent:
         self._prompt_builder = SystemPromptBuilder(self.workspace.path)
 
         # Build tool list
-        tools = get_default_tools(self.config)
-        if extra_tools:
-            tools.extend(extra_tools)
+        _all_tools = get_default_tools(self.config)
+        if _tools:
+            _all_tools.extend(_tools)
 
         # Resolve learning flags before building system prompt
         _enable_learning = enable_learning if enable_learning is not None else self.config.enable_learning
@@ -207,7 +215,7 @@ class HarnessAgent:
 
         # Assemble system prompt (initial — skills injected dynamically)
         system_prompt = self._prompt_builder.build(
-            extra_context=extra_instructions,
+            extra_context=_instructions,
             include_learning=_enable_learning,
             session_id=session_id,
         )
@@ -258,13 +266,13 @@ class HarnessAgent:
             from agno.session import SessionSummaryManager
             session_summary_manager = SessionSummaryManager()
 
-        # Core Agno Agent
+        # Core Agno Agent — model accepted as "provider:model_id" string
         self._agent = Agent(
             model=self._model,
             name=name,
             id=agent_id,
             system_message=system_prompt,
-            tools=tools,
+            tools=_all_tools,
             db=db,
             session_id=session_id,
             user_id=user_id,
@@ -314,11 +322,9 @@ class HarnessAgent:
         Returns:
             RunOutput (or Iterator[RunOutputEvent] if stream=True).
         """
-        # Inject skill content if specified
         if skill:
             skill_content = self.skills.load_skill(skill)
             if skill_content:
-                # Rebuild system prompt with active skill injected
                 system_prompt = self._prompt_builder.build(skill_content=skill_content)
                 self._agent.system_message = system_prompt
 
@@ -417,3 +423,7 @@ class HarnessAgent:
     def underlying_agent(self) -> Agent:
         """Access the underlying Agno Agent for advanced use cases."""
         return self._agent
+
+
+# Backward-compatible alias
+HarnessAgent = AgentHarness

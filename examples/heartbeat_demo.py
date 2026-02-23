@@ -16,7 +16,7 @@ The example:
 import asyncio
 from pathlib import Path
 
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 from agnoclaw.heartbeat import HeartbeatDaemon
 from agnoclaw.workspace import Workspace
 
@@ -39,7 +39,7 @@ If nothing needs attention, reply HEARTBEAT_OK.
     print()
 
     # Create agent
-    agent = HarnessAgent(
+    agent = AgentHarness(
         session_id="heartbeat-demo",
         workspace_dir=ws.path,
     )

@@ -8,7 +8,7 @@ Demonstrates:
 - Combined MemoryManager + LearningMachine
 """
 
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 
 # ── Single user with persistent memory ───────────────────────────────────
 # The MemoryManager extracts and stores facts about "alice" in the DB.
@@ -16,7 +16,7 @@ from agnoclaw import HarnessAgent
 
 print("=== User Memory: alice ===\n")
 
-alice_agent = HarnessAgent(
+alice_agent = AgentHarness(
     name="personal-assistant",
     user_id="alice",
     enable_user_memory=True,  # enables MemoryManager (Tier 2)
@@ -33,7 +33,7 @@ alice_agent.print_response(
 print("\n--- Second interaction (memory should be recalled) ---\n")
 
 # Second interaction — agent recalls alice's preferences
-alice_agent2 = HarnessAgent(
+alice_agent2 = AgentHarness(
     name="personal-assistant",
     user_id="alice",
     enable_user_memory=True,
@@ -49,7 +49,7 @@ alice_agent2.print_response(
 
 print("\n\n=== User Memory: bob (isolated from alice) ===\n")
 
-bob_agent = HarnessAgent(
+bob_agent = AgentHarness(
     name="personal-assistant",
     user_id="bob",
     enable_user_memory=True,
@@ -63,7 +63,7 @@ bob_agent.print_response(
 )
 
 # Bob's agent has no knowledge of alice's preferences
-bob_agent2 = HarnessAgent(
+bob_agent2 = AgentHarness(
     name="personal-assistant",
     user_id="bob",
     enable_user_memory=True,
@@ -81,7 +81,7 @@ bob_agent2.print_response(
 
 print("\n\n=== Combined Memory + Learning ===\n")
 
-combined_agent = HarnessAgent(
+combined_agent = AgentHarness(
     name="combined",
     user_id="charlie",
     enable_user_memory=True,    # per-user preferences (private)

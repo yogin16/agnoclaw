@@ -15,16 +15,27 @@ Selective injection principle (from OpenClaw):
   Never load more than one skill per turn.
 
 This keeps context lean and avoids prompt bloat.
+
+Install support (metadata.openclaw.install):
+  When a skill declares install specs, the registry runs them before
+  loading the skill if the required binary/package is missing.
+  Supports: uv, pip, brew, npm, go.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import platform
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
-from .loader import Skill, load_skill_from_path
+from .loader import Skill, SkillInstaller, load_skill_from_path
+
+logger = logging.getLogger("agnoclaw.skills")
 
 
 class SkillRegistry:
@@ -82,6 +93,8 @@ class SkillRegistry:
         """
         Load a skill by name and return its rendered content for injection.
 
+        Runs any declared install specs before loading if dependencies are missing.
+
         Args:
             name: Skill name (matches the directory name or `name` frontmatter field).
             arguments: Arguments to substitute into the skill content.
@@ -94,6 +107,8 @@ class SkillRegistry:
             return None
         if not self._passes_gates(skill):
             return None
+        # Run any declared installers (only installs if dependency is missing)
+        self._run_install(skill)
         return skill.render(arguments)
 
     def list_skills(self) -> list[dict]:
@@ -140,28 +155,7 @@ class SkillRegistry:
 
         return "\n".join(lines)
 
-    def _get_skill(self, name: str) -> Optional[Skill]:
-        """Find a skill by name, checking cache first then scanning dirs."""
-        if name in self._cache:
-            return self._cache[name]
-
-        # Scan all dirs for this specific skill
-        for skills_dir in self._dirs:
-            # Try exact directory match
-            skill_md = skills_dir / name / "SKILL.md"
-            skill = load_skill_from_path(skill_md)
-            if skill:
-                self._cache[skill.name] = skill
-                return skill
-
-            # Try scanning all subdirs for a skill with this name in frontmatter
-            for skill_md in skills_dir.glob("*/SKILL.md"):
-                skill = load_skill_from_path(skill_md)
-                if skill and skill.name == name:
-                    self._cache[skill.name] = skill
-                    return skill
-
-        return None
+    # ── Gate checks ────────────────────────────────────────────────────────────
 
     def _passes_gates(self, skill: Skill) -> bool:
         """
@@ -171,9 +165,8 @@ class SkillRegistry:
         if skill.meta.always:
             return True
 
-        # OS restriction (list of platforms: "darwin", "linux", "win32")
+        # OS restriction
         if skill.meta.os_platforms:
-            import platform
             current_os = platform.system().lower()
             mapping = {"darwin": "darwin", "linux": "linux", "windows": "win32"}
             current = mapping.get(current_os, current_os)
@@ -182,12 +175,12 @@ class SkillRegistry:
 
         # Required binaries (all must exist)
         for bin_name in skill.meta.requires_bins:
-            if not self._which(bin_name):
+            if not shutil.which(bin_name):
                 return False
 
         # anyBins (at least one must exist)
         if skill.meta.requires_any_bins:
-            if not any(self._which(b) for b in skill.meta.requires_any_bins):
+            if not any(shutil.which(b) for b in skill.meta.requires_any_bins):
                 return False
 
         # Required env vars
@@ -197,16 +190,134 @@ class SkillRegistry:
 
         return True
 
+    # ── Install support ────────────────────────────────────────────────────────
+
+    def _run_install(self, skill: Skill) -> None:
+        """
+        Run declared install specs for a skill.
+
+        Only installs if the package/binary is not already present.
+        Logs warnings on failure but does not raise — skill loading continues.
+
+        Supported types: uv, pip, brew, npm, go
+        """
+        if not skill.meta.install:
+            return
+
+        current_os = platform.system().lower()
+        os_map = {"darwin": "darwin", "linux": "linux", "windows": "win32"}
+        current_platform = os_map.get(current_os, current_os)
+
+        for installer in skill.meta.install:
+            # Platform filter
+            if installer.os and current_platform not in installer.os:
+                continue
+
+            if not self._needs_install(installer):
+                continue
+
+            pkg = installer.package
+            if installer.version:
+                pkg = f"{pkg}=={installer.version}" if installer.type in ("uv", "pip") else f"{pkg}@{installer.version}"
+
+            cmd = self._build_install_cmd(installer.type, pkg)
+            if cmd is None:
+                logger.warning("Skill '%s': unknown installer type '%s'", skill.name, installer.type)
+                continue
+
+            logger.info("Skill '%s': installing %s (%s)", skill.name, pkg, installer.type)
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    logger.warning(
+                        "Skill '%s': install failed (exit %d): %s",
+                        skill.name,
+                        result.returncode,
+                        result.stderr[:200],
+                    )
+            except FileNotFoundError:
+                logger.warning(
+                    "Skill '%s': installer '%s' not found on PATH", skill.name, installer.type
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning("Skill '%s': install timed out for %s", skill.name, pkg)
+            except Exception as e:
+                logger.warning("Skill '%s': install error: %s", skill.name, e)
+
+    def _needs_install(self, installer: SkillInstaller) -> bool:
+        """
+        Check if an installer's package/binary is already present.
+        Returns True if install should run, False if already satisfied.
+        """
+        itype = installer.type
+        pkg = installer.package
+
+        if itype in ("uv", "pip"):
+            # Check if importable (covers most Python package checks)
+            import_name = pkg.replace("-", "_").split("[")[0].split("==")[0]
+            try:
+                __import__(import_name)
+                return False  # already installed
+            except ImportError:
+                return True
+
+        elif itype == "brew":
+            return shutil.which(pkg) is None
+
+        elif itype == "npm":
+            return shutil.which(pkg) is None
+
+        elif itype == "go":
+            # Go binaries land in $GOPATH/bin or $HOME/go/bin
+            return shutil.which(pkg.split("/")[-1]) is None
+
+        return True  # unknown type — try anyway
+
     @staticmethod
-    def _which(name: str) -> bool:
-        """Check if a binary is available on PATH."""
-        import shutil
-        return shutil.which(name) is not None
+    def _build_install_cmd(itype: str, pkg: str) -> Optional[list[str]]:
+        """Build the install command for the given installer type."""
+        if itype == "uv":
+            return [sys.executable, "-m", "uv", "pip", "install", pkg]
+        elif itype == "pip":
+            return [sys.executable, "-m", "pip", "install", "--quiet", pkg]
+        elif itype == "brew":
+            return ["brew", "install", pkg]
+        elif itype == "npm":
+            return ["npm", "install", "-g", pkg]
+        elif itype == "go":
+            return ["go", "install", pkg]
+        return None
+
+    # ── Internal helpers ───────────────────────────────────────────────────────
+
+    def _get_skill(self, name: str) -> Optional[Skill]:
+        """Find a skill by name, checking cache first then scanning dirs."""
+        if name in self._cache:
+            return self._cache[name]
+
+        for skills_dir in self._dirs:
+            skill_md = skills_dir / name / "SKILL.md"
+            skill = load_skill_from_path(skill_md)
+            if skill:
+                self._cache[skill.name] = skill
+                return skill
+
+            for skill_md in skills_dir.glob("*/SKILL.md"):
+                skill = load_skill_from_path(skill_md)
+                if skill and skill.name == name:
+                    self._cache[skill.name] = skill
+                    return skill
+
+        return None
 
     @staticmethod
     def _find_bundled_skills_dir() -> Optional[Path]:
         """Find the bundled skills/ directory shipped with the package."""
-        # When installed, skills/ is at the project root (two levels up from this file)
         candidates = [
             Path(__file__).parent.parent.parent.parent / "skills",  # src layout
             Path(sys.prefix) / "share" / "agnoclaw" / "skills",

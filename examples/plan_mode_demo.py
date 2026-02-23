@@ -8,10 +8,10 @@ Demonstrates:
 - Exiting plan mode
 """
 
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 from pathlib import Path
 
-agent = HarnessAgent(name="planner")
+agent = AgentHarness(name="planner")
 
 # ── Enter plan mode ───────────────────────────────────────────────────────
 # Agent will only read/search — no writes, edits, or shell commands
@@ -61,7 +61,7 @@ else:
 
 def automated_plan_and_implement(task: str, auto_approve: bool = False):
     """Run a task through plan-then-implement workflow."""
-    a = HarnessAgent(name="auto-planner")
+    a = AgentHarness(name="auto-planner")
 
     a.enter_plan_mode()
     plan_result = a.run(f"Plan how to: {task}")

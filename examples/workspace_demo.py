@@ -12,7 +12,7 @@ from pathlib import Path
 import tempfile
 
 from agnoclaw.workspace import Workspace
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 
 
 # ── Create a project-specific workspace ──────────────────────────────────
@@ -116,7 +116,7 @@ Do NOT run tests or make changes during boot — only gather context.
     )
 
     # ── Use the workspace with an agent ──────────────────────────────────
-    agent = HarnessAgent(
+    agent = AgentHarness(
         name="project-agent",
         workspace_dir=workspace_path,
     )

@@ -1,129 +1,129 @@
-"""Tests for HarnessAgent and related utilities."""
+"""Tests for AgentHarness and related utilities."""
 
 import pytest
 from unittest.mock import MagicMock, patch
 
 
-# ── _make_model tests ────────────────────────────────────────────────────
+# ── _resolve_model tests ─────────────────────────────────────────────────────
 
 
-def test_make_model_anthropic():
-    from agnoclaw.agent import _make_model
-    with patch("agno.models.anthropic.Claude") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        model = _make_model("claude-sonnet-4-6", "anthropic")
-        mock_cls.assert_called_once_with(id="claude-sonnet-4-6")
+def test_resolve_model_combined_string():
+    """'provider:model_id' string returned as-is (normalized)."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("anthropic:claude-sonnet-4-6", None, cfg) == "anthropic:claude-sonnet-4-6"
 
 
-def test_make_model_openai():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.openai")
-    with patch("agno.models.openai.OpenAIChat") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("gpt-4o", "openai")
-        mock_cls.assert_called_once_with(id="gpt-4o")
+def test_resolve_model_separate_provider():
+    """model_id + provider combined into 'provider:model_id'."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("claude-sonnet-4-6", "anthropic", cfg) == "anthropic:claude-sonnet-4-6"
 
 
-def test_make_model_google():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.google")
-    with patch("agno.models.google.Gemini") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("gemini-2.0-flash", "google")
-        mock_cls.assert_called_once_with(id="gemini-2.0-flash")
+def test_resolve_model_openai():
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("gpt-4o", "openai", cfg) == "openai:gpt-4o"
 
 
-def test_make_model_groq():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.groq")
-    with patch("agno.models.groq.Groq") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("llama3-70b", "groq")
-        mock_cls.assert_called_once_with(id="llama3-70b")
+def test_resolve_model_google():
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("gemini-2.0-flash", "google", cfg) == "google:gemini-2.0-flash"
 
 
-def test_make_model_ollama():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.ollama")
-    with patch("agno.models.ollama.Ollama") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("llama3.2", "ollama")
-        mock_cls.assert_called_once_with(id="llama3.2")
+def test_resolve_model_groq():
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("llama3-70b", "groq", cfg) == "groq:llama3-70b"
 
 
-def test_make_model_bedrock():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.aws.bedrock")
-    with patch("agno.models.aws.bedrock.AwsBedrock") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("anthropic.claude-3-haiku", "aws")
-        mock_cls.assert_called_once_with(id="anthropic.claude-3-haiku")
+def test_resolve_model_ollama():
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("llama3.2", "ollama", cfg) == "ollama:llama3.2"
 
 
-def test_make_model_bedrock_alias():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.aws.bedrock")
-    with patch("agno.models.aws.bedrock.AwsBedrock") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("anthropic.claude-3-haiku", "bedrock")
+def test_resolve_model_aws_alias():
+    """'aws' provider alias → 'aws-bedrock'."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("anthropic.claude-3-haiku", "aws", cfg) == "aws-bedrock:anthropic.claude-3-haiku"
 
 
-def test_make_model_mistral():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.mistral")
-    with patch("agno.models.mistral.MistralChat") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("mistral-large", "mistral")
+def test_resolve_model_bedrock_alias():
+    """'bedrock' provider alias → 'aws-bedrock'."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("anthropic.claude-3-haiku", "bedrock", cfg) == "aws-bedrock:anthropic.claude-3-haiku"
 
 
-def test_make_model_xai():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.xai")
-    with patch("agno.models.xai.xAI") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("grok-2", "xai")
+def test_resolve_model_grok_alias():
+    """'grok' provider alias → 'xai'."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("grok-2", "grok", cfg) == "xai:grok-2"
 
 
-def test_make_model_grok_alias():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.xai")
-    with patch("agno.models.xai.xAI") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("grok-2", "grok")
+def test_resolve_model_xai():
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("grok-2", "xai", cfg) == "xai:grok-2"
 
 
-def test_make_model_deepseek():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.deepseek")
-    with patch("agno.models.deepseek.DeepSeek") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("deepseek-chat", "deepseek")
+def test_resolve_model_mistral():
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("mistral-large", "mistral", cfg) == "mistral:mistral-large"
 
 
-def test_make_model_litellm():
-    from agnoclaw.agent import _make_model
-    pytest.importorskip("agno.models.litellm")
-    with patch("agno.models.litellm.LiteLLM") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("gpt-4o", "litellm")
+def test_resolve_model_deepseek():
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("deepseek-chat", "deepseek", cfg) == "deepseek:deepseek-chat"
 
 
-def test_make_model_unknown_provider_raises():
-    from agnoclaw.agent import _make_model
-    with pytest.raises(ValueError, match="Unknown provider"):
-        _make_model("some-model", "unknown-provider")
+def test_resolve_model_case_insensitive():
+    """Provider name should be normalized to lowercase."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert _resolve_model("claude-sonnet-4-6", "Anthropic", cfg) == "anthropic:claude-sonnet-4-6"
+    assert _resolve_model("claude-sonnet-4-6", "ANTHROPIC", cfg) == "anthropic:claude-sonnet-4-6"
 
 
-def test_make_model_case_insensitive():
-    """Provider name should be case-insensitive."""
-    from agnoclaw.agent import _make_model
-    with patch("agno.models.anthropic.Claude") as mock_cls:
-        mock_cls.return_value = MagicMock()
-        _make_model("claude-sonnet-4-6", "Anthropic")
-        _make_model("claude-sonnet-4-6", "ANTHROPIC")
+def test_resolve_model_falls_back_to_config():
+    """None model/provider falls back to config defaults."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig(default_model="claude-haiku-4-5-20251001", default_provider="anthropic")
+    result = _resolve_model(None, None, cfg)
+    assert result == "anthropic:claude-haiku-4-5-20251001"
 
 
-# ── _make_db tests ───────────────────────────────────────────────────────
+def test_resolve_model_combined_string_with_alias():
+    """Combined string with alias provider is normalized."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    result = _resolve_model("aws-bedrock:my-model", None, cfg)
+    assert result == "aws-bedrock:my-model"
+
+
+# ── _make_db tests ───────────────────────────────────────────────────────────
 
 
 def test_make_db_sqlite(tmp_path):
@@ -173,46 +173,91 @@ def test_make_db_postgres_missing_url_raises():
         _make_db(cfg)
 
 
-# ── HarnessAgent construction tests ─────────────────────────────────────
+# ── AgentHarness construction tests ──────────────────────────────────────────
 
 
 def _make_mock_agent_deps():
-    """Return a patcher context for HarnessAgent dependencies."""
+    """Return a patcher context for AgentHarness dependencies."""
     return patch.multiple(
         "agnoclaw.agent",
-        _make_model=MagicMock(return_value=MagicMock()),
+        _resolve_model=MagicMock(return_value="anthropic:claude-sonnet-4-6"),
         _make_db=MagicMock(return_value=MagicMock()),
     )
 
 
-def test_harness_agent_init_no_culture_param(tmp_path):
-    """HarnessAgent should not accept enable_culture parameter."""
-    from agnoclaw.agent import HarnessAgent
+def test_agent_harness_is_primary_name():
+    """AgentHarness is the primary class name."""
+    from agnoclaw.agent import AgentHarness
+    assert AgentHarness is not None
+
+
+def test_harness_agent_is_alias():
+    """HarnessAgent is a backward-compat alias for AgentHarness."""
+    from agnoclaw.agent import AgentHarness, HarnessAgent
+    assert HarnessAgent is AgentHarness
+
+
+def test_agent_harness_init_no_culture_param(tmp_path):
+    """AgentHarness should not accept enable_culture parameter."""
+    from agnoclaw.agent import AgentHarness
     import inspect
-    sig = inspect.signature(HarnessAgent.__init__)
+    sig = inspect.signature(AgentHarness.__init__)
     assert "enable_culture" not in sig.parameters
 
 
-def test_harness_agent_has_plan_mode_methods(tmp_path):
-    """HarnessAgent must have enter_plan_mode and exit_plan_mode."""
-    from agnoclaw.agent import HarnessAgent
-    assert hasattr(HarnessAgent, "enter_plan_mode")
-    assert hasattr(HarnessAgent, "exit_plan_mode")
+def test_agent_harness_has_plan_mode_methods():
+    """AgentHarness must have enter_plan_mode and exit_plan_mode."""
+    from agnoclaw.agent import AgentHarness
+    assert hasattr(AgentHarness, "enter_plan_mode")
+    assert hasattr(AgentHarness, "exit_plan_mode")
 
 
-def test_harness_agent_has_save_session_summary(tmp_path):
-    from agnoclaw.agent import HarnessAgent
-    assert hasattr(HarnessAgent, "save_session_summary")
+def test_agent_harness_has_save_session_summary():
+    from agnoclaw.agent import AgentHarness
+    assert hasattr(AgentHarness, "save_session_summary")
 
 
-def test_harness_agent_underlying_agent_property():
-    """underlying_agent property should return Agno Agent."""
-    from agnoclaw.agent import HarnessAgent
-    prop = HarnessAgent.__dict__.get("underlying_agent")
-    assert prop is not None or hasattr(HarnessAgent, "underlying_agent")
+def test_agent_harness_underlying_agent_property():
+    """underlying_agent property should exist."""
+    from agnoclaw.agent import AgentHarness
+    assert hasattr(AgentHarness, "underlying_agent")
 
 
-# ── Config integration tests ─────────────────────────────────────────────
+def test_agent_harness_model_as_positional_string():
+    """AgentHarness accepts model as first positional arg."""
+    from agnoclaw.agent import AgentHarness
+    import inspect
+    sig = inspect.signature(AgentHarness.__init__)
+    params = list(sig.parameters.keys())
+    # 'model' should be first positional param after self
+    assert params[1] == "model"
+
+
+def test_agent_harness_tools_param():
+    """AgentHarness should accept 'tools' as primary name."""
+    from agnoclaw.agent import AgentHarness
+    import inspect
+    sig = inspect.signature(AgentHarness.__init__)
+    assert "tools" in sig.parameters
+
+
+def test_agent_harness_instructions_param():
+    """AgentHarness should accept 'instructions' as primary name."""
+    from agnoclaw.agent import AgentHarness
+    import inspect
+    sig = inspect.signature(AgentHarness.__init__)
+    assert "instructions" in sig.parameters
+
+
+def test_agent_harness_legacy_model_id_param():
+    """AgentHarness should still accept legacy model_id param."""
+    from agnoclaw.agent import AgentHarness
+    import inspect
+    sig = inspect.signature(AgentHarness.__init__)
+    assert "model_id" in sig.parameters
+
+
+# ── Config integration tests ──────────────────────────────────────────────────
 
 
 def test_config_no_enable_culture_field():
@@ -234,37 +279,37 @@ def test_config_learning_mode_default_agentic():
     assert cfg.learning_mode == "agentic"
 
 
-# ── Compression / session summary parameter tests ────────────────────────
+# ── Compression / session summary parameter tests ─────────────────────────────
 
 
-def test_harness_agent_accepts_compression_params():
-    """HarnessAgent should accept enable_compression and compress_token_limit."""
+def test_agent_harness_accepts_compression_params():
+    """AgentHarness should accept enable_compression and compress_token_limit."""
     import inspect
-    from agnoclaw.agent import HarnessAgent
-    sig = inspect.signature(HarnessAgent.__init__)
+    from agnoclaw.agent import AgentHarness
+    sig = inspect.signature(AgentHarness.__init__)
     assert "enable_compression" in sig.parameters
     assert "compress_token_limit" in sig.parameters
 
 
-def test_harness_agent_accepts_session_summary_param():
-    """HarnessAgent should accept enable_session_summary."""
+def test_agent_harness_accepts_session_summary_param():
+    """AgentHarness should accept enable_session_summary."""
     import inspect
-    from agnoclaw.agent import HarnessAgent
-    sig = inspect.signature(HarnessAgent.__init__)
+    from agnoclaw.agent import AgentHarness
+    sig = inspect.signature(AgentHarness.__init__)
     assert "enable_session_summary" in sig.parameters
 
 
-def test_harness_agent_compression_default_none():
+def test_agent_harness_compression_default_none():
     """enable_compression default should be None (falls back to config)."""
     import inspect
-    from agnoclaw.agent import HarnessAgent
-    sig = inspect.signature(HarnessAgent.__init__)
+    from agnoclaw.agent import AgentHarness
+    sig = inspect.signature(AgentHarness.__init__)
     assert sig.parameters["enable_compression"].default is None
 
 
-def test_harness_agent_session_summary_default_none():
+def test_agent_harness_session_summary_default_none():
     """enable_session_summary default should be None (falls back to config)."""
     import inspect
-    from agnoclaw.agent import HarnessAgent
-    sig = inspect.signature(HarnessAgent.__init__)
+    from agnoclaw.agent import AgentHarness
+    sig = inspect.signature(AgentHarness.__init__)
     assert sig.parameters["enable_session_summary"].default is None

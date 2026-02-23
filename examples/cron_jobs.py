@@ -120,7 +120,7 @@ async def demo_live_daemon(tmp_workspace: Path):
     Start a daemon with two cron jobs, trigger them manually to show execution.
     Runs with a 5-second loop for demo purposes.
     """
-    from agnoclaw import HarnessAgent
+    from agnoclaw import AgentHarness
     from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
 
     print("=== Live Daemon Demo ===")
@@ -131,7 +131,7 @@ async def demo_live_daemon(tmp_workspace: Path):
         "# Heartbeat\n\n- Check that Python is available\n\nReply HEARTBEAT_OK if OK.\n"
     )
 
-    agent = HarnessAgent(
+    agent = AgentHarness(
         provider=PROVIDER,
         model_id=MODEL,
         workspace_dir=tmp_workspace,

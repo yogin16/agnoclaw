@@ -85,9 +85,9 @@ def build_memory_manager(
     """
     from agno.memory import MemoryManager
 
-    from .agent import _make_model
-
-    model = _make_model(model_id, provider)
+    from .agent import _resolve_model
+    from .config import get_config
+    model = _resolve_model(model_id, provider, get_config())
 
     instructions = """
 Capture the following types of information:
@@ -179,7 +179,8 @@ def build_learning_machine(
         LearnedKnowledgeConfig,
     )
 
-    from .agent import _make_model
+    from .agent import _resolve_model
+    from .config import get_config
 
     mode_map = {
         "always": LearningMode.ALWAYS,
@@ -199,7 +200,7 @@ def build_learning_machine(
         db_path.parent.mkdir(parents=True, exist_ok=True)
         db = SqliteDb(db_file=str(db_path))
 
-    model = _make_model(model_id, provider)
+    model = _resolve_model(model_id, provider, get_config())
 
     # ── Per-store configs ──────────────────────────────────────────────────
     # entity_memory: tracks named entities with configurable mode

@@ -8,14 +8,14 @@ Demonstrates:
 - Namespace isolation between agents
 """
 
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 
 
 # ── HITL mode: human approves each learning ───────────────────────────────
 # Best for: high-stakes environments, regulated industries, personal agents
 # where you want full control over what gets persisted.
 
-hitl_agent = HarnessAgent(
+hitl_agent = AgentHarness(
     name="hitl-agent",
     enable_learning=True,
     learning_mode="hitl",
@@ -34,7 +34,7 @@ hitl_agent.print_response(
 # Best for: team settings where a lead reviews before institutional knowledge
 # is committed. Learnings are queued, not auto-applied.
 
-propose_agent = HarnessAgent(
+propose_agent = AgentHarness(
     name="propose-agent",
     enable_learning=True,
     learning_mode="propose",
@@ -54,7 +54,7 @@ propose_agent.print_response(
 # Best for: general use. The agent uses judgment about what's worth storing.
 # Most balanced cost/coverage trade-off.
 
-agentic_agent = HarnessAgent(
+agentic_agent = AgentHarness(
     name="agentic-agent",
     enable_learning=True,
     learning_mode="agentic",
@@ -72,13 +72,13 @@ agentic_agent.print_response(
 # ── Namespace isolation: agents don't share learnings ────────────────────
 # research-agent and code-agent have completely isolated institutional memory
 
-research_agent = HarnessAgent(
+research_agent = AgentHarness(
     name="research",
     enable_learning=True,
     learning_namespace="research-v2",
 )
 
-code_agent = HarnessAgent(
+code_agent = AgentHarness(
     name="code",
     enable_learning=True,
     learning_namespace="code-v2",

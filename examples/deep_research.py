@@ -11,7 +11,7 @@ import asyncio
 from pydantic import BaseModel, Field
 from typing import List
 
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 from agno.run.agent import RunEvent
 
 
@@ -28,7 +28,7 @@ class ResearchReport(BaseModel):
 print("Option A: Streaming with deep-research skill")
 print("-" * 50)
 
-agent = HarnessAgent(session_id="deep-research-example")
+agent = AgentHarness(session_id="deep-research-example")
 agent.print_response(
     "What are the most significant AI agent breakthroughs in early 2026?",
     stream=True,
@@ -41,7 +41,7 @@ async def research_with_events():
     print("\nOption B: Async with streaming events")
     print("-" * 50)
 
-    agent = HarnessAgent(session_id="deep-research-async")
+    agent = AgentHarness(session_id="deep-research-async")
     skill_content = agent.skills.load_skill("deep-research")
 
     async for event in agent.arun(

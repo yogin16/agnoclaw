@@ -25,6 +25,8 @@ Distills the best ideas from Claude Code's system prompt architecture, OpenClaw'
 
 **TL;DR:** Claude Code is a consumer product. OpenClaw is a standalone app. agnoclaw is a library — embed it in anything, hack it for everything.
 
+`HarnessAgent` is available as a backward-compatible alias for `AgentHarness`.
+
 ---
 
 ## Installation
@@ -51,20 +53,23 @@ pip install "agnoclaw[local]"
 ## Quick Start
 
 ```python
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 
-agent = HarnessAgent()
+agent = AgentHarness()
 agent.print_response("Summarize the files in this directory", stream=True)
 ```
 
-### With a different model
+### With a different model — `"provider:model_id"` format
 
 ```python
-agent = HarnessAgent(model_id="gpt-4o", provider="openai")
-agent = HarnessAgent(model_id="gemini-2.0-flash", provider="google")
-agent = HarnessAgent(model_id="llama3.2", provider="ollama")
-agent = HarnessAgent(model_id="llama-3.3-70b-versatile", provider="groq")
+agent = AgentHarness("anthropic:claude-sonnet-4-6")
+agent = AgentHarness("openai:gpt-4o")
+agent = AgentHarness("google:gemini-2.0-flash")
+agent = AgentHarness("groq:llama-3.3-70b-versatile")
+agent = AgentHarness("ollama:qwen3:8b")   # local, no API key
 ```
+
+The model string `"provider:model_id"` is parsed natively by Agno — no separate `provider=` needed. Legacy `model_id=` + `provider=` kwargs still work.
 
 ### With a skill
 
@@ -87,7 +92,7 @@ team.print_response("Compare the top AI agent frameworks in 2026", stream=True)
 ### Local inference with Ollama (no API key)
 
 ```python
-agent = HarnessAgent(model_id="qwen3:8b", provider="ollama")
+agent = AgentHarness("ollama:qwen3:8b")
 agent.print_response("Explain async/await in Python", stream=True)
 ```
 
@@ -98,7 +103,7 @@ import asyncio
 from agno.run.agent import RunEvent
 
 async def main():
-    agent = HarnessAgent()
+    agent = AgentHarness()
     async for event in agent.arun("Analyze this codebase", stream=True, stream_events=True):
         if event.event == RunEvent.run_content:
             print(event.content, end="", flush=True)
@@ -122,8 +127,8 @@ agnoclaw ships a Claude Code-compatible tool set. Key tools:
 | `Grep` | `grep_files()` | Regex search with context lines |
 | `LS` | `list_dir()` | Directory listing with sizes |
 | `Bash` | `bash()` | Shell execution with timeout |
-| `WebSearch` | `web_search()` | Domain allow/blocklists |
-| `WebFetch` | `web_fetch()` | URL fetch + AI summarization |
+| `WebSearch` | `web_search()` | Auto-detects best backend: Tavily → Exa → Brave → DDGS |
+| `WebFetch` | `web_fetch()` | URL fetch + HTML-to-text extraction |
 | `TodoWrite/Read` | `create_todo()` / `list_todos()` | Task management |
 | `Task` | `spawn_subagent()` | Subagent spawning |
 
@@ -312,10 +317,10 @@ can run in the main session or in an **isolated session** (fresh, no prior conte
 
 ```python
 import asyncio
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 from agnoclaw.heartbeat import HeartbeatDaemon, CronJob
 
-agent = HarnessAgent()
+agent = AgentHarness()
 
 def on_alert(message: str):
     # Send to Slack, email, desktop notification, etc.
@@ -416,7 +421,7 @@ AGNOCLAW_HB_INTERVAL_MINUTES=30
 
 ```python
 from agno.tools import tool
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 
 @tool(description="Query our internal API")
 def query_internal_api(endpoint: str, params: dict = {}) -> str:
@@ -424,16 +429,16 @@ def query_internal_api(endpoint: str, params: dict = {}) -> str:
     # your implementation
     return "{...}"
 
-agent = HarnessAgent(extra_tools=[query_internal_api])
+agent = AgentHarness(extra_tools=[query_internal_api])
 ```
 
 ### Custom system prompt section
 
 ```python
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 from agnoclaw.prompts import SystemPromptBuilder
 
-agent = HarnessAgent()
+agent = AgentHarness()
 agent._prompt_builder.add_section("""
 # Company Context
 
@@ -448,7 +453,7 @@ Follow the Acme style guide for all code changes.
 
 ```python
 from agno.tools import tool
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 
 @tool(requires_confirmation=True)
 def deploy_to_production(service: str, version: str) -> str:
@@ -456,7 +461,7 @@ def deploy_to_production(service: str, version: str) -> str:
     # deployment logic
     return f"Deployed {service}:{version}"
 
-agent = HarnessAgent(extra_tools=[deploy_to_production])
+agent = AgentHarness(extra_tools=[deploy_to_production])
 response = agent.run("Deploy the auth service version 2.1.0 to production")
 
 # Check if paused for approval
@@ -568,7 +573,7 @@ print(toolkit.read_features())
 ```
 agnoclaw/
 ├── src/agnoclaw/
-│   ├── agent.py           # HarnessAgent — main class
+│   ├── agent.py           # AgentHarness — main class (HarnessAgent = alias)
 │   ├── workspace.py       # Workspace (~/.agnoclaw/workspace/)
 │   ├── memory.py          # Memory management utilities
 │   ├── config.py          # Settings (TOML + env vars)

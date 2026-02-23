@@ -111,11 +111,11 @@ def demo_with_agent(project_dir: str) -> None:
     """Show ProgressToolkit used by an agent during a task."""
     print("\n=== Agent Using ProgressToolkit ===\n")
 
-    from agnoclaw import HarnessAgent
+    from agnoclaw import AgentHarness
     from agnoclaw.tools.tasks import ProgressToolkit
 
     # Pass a custom ProgressToolkit pointed at our project dir
-    agent = HarnessAgent(
+    agent = AgentHarness(
         name="progress-demo-agent",
         extra_tools=[ProgressToolkit(project_dir=project_dir)],
     )

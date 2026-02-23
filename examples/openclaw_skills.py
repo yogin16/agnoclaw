@@ -17,7 +17,7 @@ Requires: ANTHROPIC_API_KEY env var
 import tempfile
 from pathlib import Path
 
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 from agnoclaw.skills import SkillRegistry
 
 
@@ -209,7 +209,7 @@ def demonstrate_render(hub_dir: Path) -> None:
     print(f"  $ARGUMENTS substituted: 'api' argument injected")
 
 
-# ── 4. Use skills with HarnessAgent ──────────────────────────────────────────
+# ── 4. Use skills with AgentHarness ──────────────────────────────────────────
 
 def demonstrate_agent_with_skills(hub_dir: Path, workspace_dir: Path) -> None:
     """Run the agent with skills from a custom hub directory."""
@@ -227,7 +227,7 @@ def demonstrate_agent_with_skills(hub_dir: Path, workspace_dir: Path) -> None:
                 shutil.rmtree(dest)
             shutil.copytree(skill_dir, dest)
 
-    agent = HarnessAgent(
+    agent = AgentHarness(
         name="skill-hub-demo",
         workspace_dir=workspace_dir,
     )
@@ -295,7 +295,7 @@ Review against our 6 non-negotiable rules:
 Flag violations as BLOCKER. Everything else is a suggestion.
 """, encoding="utf-8")
 
-    agent = HarnessAgent(name="priority-demo", workspace_dir=workspace_dir)
+    agent = AgentHarness(name="priority-demo", workspace_dir=workspace_dir)
 
     # The workspace skill takes priority over any bundled code-review skill
     print("Using workspace-level code-review skill (team rules override):")

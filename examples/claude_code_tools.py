@@ -40,7 +40,7 @@ def _check_ollama() -> bool:
 # ── Part 1: Tool inventory ─────────────────────────────────────────────────────
 
 def demo_tool_inventory():
-    """Show all tools registered in a default HarnessAgent."""
+    """Show all tools registered in a default AgentHarness."""
     print("=== agnoclaw Default Tool Inventory ===")
     print()
 
@@ -252,7 +252,7 @@ def demo_gap_analysis():
 
 def demo_agent_multi_edit(tmp: Path):
     """Show an agent using MultiEdit to refactor a file."""
-    from agnoclaw import HarnessAgent
+    from agnoclaw import AgentHarness
 
     print("=== Agent Using MultiEdit ===")
 
@@ -265,7 +265,7 @@ def demo_agent_multi_edit(tmp: Path):
         encoding="utf-8",
     )
 
-    agent = HarnessAgent(
+    agent = AgentHarness(
         provider=PROVIDER,
         model_id=MODEL,
         workspace_dir=tmp,

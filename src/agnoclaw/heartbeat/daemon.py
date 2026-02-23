@@ -267,10 +267,11 @@ class HeartbeatDaemon:
         model_id = job.model_id or cfg.heartbeat.model or cfg.default_model
         provider = job.provider or cfg.default_provider
 
-        from agnoclaw.agent import _make_model
-        model = _make_model(model_id, provider)
+        # Build Agno-native "provider:model_id" string
+        from agnoclaw.agent import _resolve_model
+        model_str = _resolve_model(model_id, provider, cfg)
         isolated_agent = Agent(
-            model=model,
+            model=model_str,
             instructions=(
                 "You are a scheduled task agent. Complete the task and respond concisely. "
                 "You do not have access to conversation history."

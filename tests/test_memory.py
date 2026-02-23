@@ -13,7 +13,7 @@ def test_build_memory_manager_returns_object():
 
     with patch("agno.memory.MemoryManager") as mock_mm:
         mock_mm.return_value = MagicMock()
-        with patch("agnoclaw.agent._make_model") as mock_model:
+        with patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
             mock_model.return_value = MagicMock()
             result = build_memory_manager()
             assert mock_mm.called
@@ -23,20 +23,20 @@ def test_build_memory_manager_uses_haiku_by_default():
     from agnoclaw.memory import build_memory_manager
 
     with patch("agno.memory.MemoryManager"):
-        with patch("agnoclaw.agent._make_model") as mock_model:
+        with patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
             mock_model.return_value = MagicMock()
             build_memory_manager()
-            mock_model.assert_called_once_with("claude-haiku-4-5-20251001", "anthropic")
+            args = mock_model.call_args[0]; assert args[0] == "claude-haiku-4-5-20251001" and args[1] == "anthropic"
 
 
 def test_build_memory_manager_accepts_custom_model():
     from agnoclaw.memory import build_memory_manager
 
     with patch("agno.memory.MemoryManager"):
-        with patch("agnoclaw.agent._make_model") as mock_model:
+        with patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
             mock_model.return_value = MagicMock()
             build_memory_manager(model_id="gpt-4o-mini", provider="openai")
-            mock_model.assert_called_once_with("gpt-4o-mini", "openai")
+            args = mock_model.call_args[0]; assert args[0] == "gpt-4o-mini" and args[1] == "openai"
 
 
 def test_build_memory_manager_passes_db():
@@ -46,7 +46,7 @@ def test_build_memory_manager_passes_db():
 
     with patch("agno.memory.MemoryManager") as mock_mm:
         mock_mm.return_value = MagicMock()
-        with patch("agnoclaw.agent._make_model") as mock_model:
+        with patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
             mock_model.return_value = MagicMock()
             build_memory_manager(db=mock_db)
             call_kwargs = mock_mm.call_args[1]
@@ -59,7 +59,7 @@ def test_build_memory_manager_no_db_kwarg_without_db():
 
     with patch("agno.memory.MemoryManager") as mock_mm:
         mock_mm.return_value = MagicMock()
-        with patch("agnoclaw.agent._make_model") as mock_model:
+        with patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
             mock_model.return_value = MagicMock()
             build_memory_manager(db=None)
             call_kwargs = mock_mm.call_args[1]
@@ -71,7 +71,7 @@ def test_build_memory_manager_extra_instructions():
 
     with patch("agno.memory.MemoryManager") as mock_mm:
         mock_mm.return_value = MagicMock()
-        with patch("agnoclaw.agent._make_model") as mock_model:
+        with patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
             mock_model.return_value = MagicMock()
             build_memory_manager(extra_instructions="Remember passwords.")
             call_kwargs = mock_mm.call_args[1]
@@ -97,7 +97,7 @@ def test_build_learning_machine_returns_object():
          patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
          patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
          patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -119,7 +119,7 @@ def test_build_learning_machine_no_top_level_mode():
          patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
          patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
          patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -140,7 +140,7 @@ def test_build_learning_machine_excludes_per_user_stores():
          patch("agno.learn.config.EntityMemoryConfig"), \
          patch("agno.learn.config.LearnedKnowledgeConfig"), \
          patch("agno.learn.config.DecisionLogConfig"), \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -160,7 +160,7 @@ def test_build_learning_machine_has_per_store_configs():
          patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
          patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
          patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -184,7 +184,7 @@ def test_build_learning_machine_session_context_disabled_by_default():
          patch("agno.learn.config.EntityMemoryConfig"), \
          patch("agno.learn.config.LearnedKnowledgeConfig"), \
          patch("agno.learn.config.DecisionLogConfig"), \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -204,7 +204,7 @@ def test_build_learning_machine_session_context_opt_in():
          patch("agno.learn.config.LearnedKnowledgeConfig"), \
          patch("agno.learn.config.DecisionLogConfig"), \
          patch("agno.learn.config.SessionContextConfig") as mock_scc, \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -224,7 +224,7 @@ def test_build_learning_machine_entity_memory_mode_propagated():
          patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
          patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
          patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -246,7 +246,7 @@ def test_build_learning_machine_learned_knowledge_always_agentic():
          patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
          patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
          patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -267,7 +267,7 @@ def test_build_learning_machine_all_modes_accepted():
              patch("agno.learn.config.EntityMemoryConfig"), \
              patch("agno.learn.config.LearnedKnowledgeConfig"), \
              patch("agno.learn.config.DecisionLogConfig"), \
-             patch("agnoclaw.agent._make_model") as mock_model:
+             patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
             mock_model.return_value = MagicMock()
             mock_lm.return_value = MagicMock()
             mock_mode.AGENTIC = "agentic"
@@ -287,7 +287,7 @@ def test_build_learning_machine_invalid_mode_fallback_to_agentic():
          patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
          patch("agno.learn.config.LearnedKnowledgeConfig"), \
          patch("agno.learn.config.DecisionLogConfig"), \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -306,7 +306,7 @@ def test_build_learning_machine_namespace():
          patch("agno.learn.config.EntityMemoryConfig"), \
          patch("agno.learn.config.LearnedKnowledgeConfig"), \
          patch("agno.learn.config.DecisionLogConfig"), \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -325,7 +325,7 @@ def test_build_learning_machine_default_namespace_global():
          patch("agno.learn.config.EntityMemoryConfig"), \
          patch("agno.learn.config.LearnedKnowledgeConfig"), \
          patch("agno.learn.config.DecisionLogConfig"), \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
@@ -343,7 +343,7 @@ def test_build_learning_machine_creates_db_if_none(tmp_path):
          patch("agno.learn.config.EntityMemoryConfig"), \
          patch("agno.learn.config.LearnedKnowledgeConfig"), \
          patch("agno.learn.config.DecisionLogConfig"), \
-         patch("agnoclaw.agent._make_model") as mock_model, \
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model, \
          patch("pathlib.Path.home", return_value=tmp_path):
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
@@ -364,7 +364,7 @@ def test_build_learning_machine_uses_provided_db():
          patch("agno.learn.config.EntityMemoryConfig"), \
          patch("agno.learn.config.LearnedKnowledgeConfig"), \
          patch("agno.learn.config.DecisionLogConfig"), \
-         patch("agnoclaw.agent._make_model") as mock_model:
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"

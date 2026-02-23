@@ -12,6 +12,21 @@ A skill is a directory containing a SKILL.md file with YAML frontmatter:
     user-invocable: true
     disable-model-invocation: false
     allowed-tools: bash, web_search, web_fetch, spawn_subagent
+    argument-hint: "[topic]"
+    metadata:
+      openclaw:
+        emoji: 🔍
+        os: [darwin, linux]
+        requires:
+          bins: [git]
+          anyBins: [brew, apt]
+          env: [GITHUB_TOKEN]
+        install:
+          - type: uv
+            package: httpx
+          - type: brew
+            package: gh
+            os: [darwin]
     ---
 
     ## Deep Research Skill
@@ -25,6 +40,13 @@ Special syntax in SKILL.md content:
   $ARGUMENTS    — all arguments passed at invocation
   $ARGUMENTS[N] — nth argument (0-indexed)
   !`cmd`        — shell command run before content is injected (dynamic context)
+
+Installer types (metadata.openclaw.install):
+  uv      — Python package (uv add / uv pip install)
+  pip     — Python package (pip install) — use uv when possible
+  brew    — Homebrew formula (macOS)
+  npm     — Node.js package (npm install -g)
+  go      — Go binary (go install)
 """
 
 from __future__ import annotations
@@ -39,6 +61,16 @@ import frontmatter
 
 
 @dataclass
+class SkillInstaller:
+    """A single installer spec from metadata.openclaw.install."""
+
+    type: str                           # "uv", "pip", "brew", "npm", "go"
+    package: str                        # package/formula name
+    os: list[str] = field(default_factory=list)  # platform filter (empty = all)
+    version: Optional[str] = None      # optional version constraint
+
+
+@dataclass
 class SkillMeta:
     """Parsed metadata from a SKILL.md frontmatter."""
 
@@ -48,17 +80,19 @@ class SkillMeta:
     disable_model_invocation: bool = False
     allowed_tools: list[str] = field(default_factory=list)
     model: Optional[str] = None
-    context: Optional[str] = None  # "fork" for isolated subagent
+    context: Optional[str] = None       # "fork" for isolated subagent
     argument_hint: Optional[str] = None
     homepage: Optional[str] = None
-    # OpenClaw extensions
-    requires_bins: list[str] = field(default_factory=list)
-    requires_any_bins: list[str] = field(default_factory=list)  # at least one must exist
-    requires_env: list[str] = field(default_factory=list)
-    os_platforms: list[str] = field(default_factory=list)  # ["darwin", "linux", "win32"]
-    always: bool = False  # skip all gate checks
+    # OpenClaw gating
+    requires_bins: list[str] = field(default_factory=list)    # all must be on PATH
+    requires_any_bins: list[str] = field(default_factory=list) # at least one must exist
+    requires_env: list[str] = field(default_factory=list)      # all must be set
+    os_platforms: list[str] = field(default_factory=list)      # ["darwin", "linux", "win32"]
+    always: bool = False                # skip all gate checks
+    # OpenClaw install — runs before the skill is loaded if dependency is missing
+    install: list[SkillInstaller] = field(default_factory=list)
     # Command dispatch (OpenClaw: bypass model, run tool directly)
-    command_dispatch: Optional[str] = None  # "tool"
+    command_dispatch: Optional[str] = None   # "tool"
     command_tool: Optional[str] = None
     # Display
     emoji: Optional[str] = None
@@ -69,8 +103,8 @@ class Skill:
     """A fully loaded and parsed skill."""
 
     meta: SkillMeta
-    content: str  # The SKILL.md body (instructions)
-    path: Path    # Path to the SKILL.md file
+    content: str   # The SKILL.md body (instructions)
+    path: Path     # Path to the SKILL.md file
 
     @property
     def name(self) -> str:
@@ -85,9 +119,9 @@ class Skill:
         Render the skill content with argument substitution.
 
         Substitutes:
-          $ARGUMENTS   → full arguments string
+          $ARGUMENTS    → full arguments string
           $ARGUMENTS[N] → nth space-split argument
-          !`cmd`       → output of shell command (dynamic context injection)
+          !`cmd`        → output of shell command (dynamic context injection)
         """
         content = self.content
 
@@ -148,7 +182,6 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
     # Accepts aliases: metadata.openclaw, metadata.clawdbot, metadata.clawdis
     raw_meta = metadata.get("metadata") or {}
     if isinstance(raw_meta, str):
-        # Some tools serialize metadata as single-line JSON
         try:
             import json as _json
             raw_meta = _json.loads(raw_meta)
@@ -163,12 +196,31 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
     requires = openclaw_meta.get("requires", {})
 
     # os_platforms: normalize string or list → list of strings
-    # OpenClaw uses ["darwin", "linux", "win32"] or a single string
     raw_os = openclaw_meta.get("os", [])
     if isinstance(raw_os, str):
         os_platforms = [raw_os] if raw_os else []
     else:
         os_platforms = list(raw_os)
+
+    # Parse install specs
+    install: list[SkillInstaller] = []
+    for entry in openclaw_meta.get("install", []):
+        if not isinstance(entry, dict):
+            continue
+        installer_type = entry.get("type", "")
+        package = entry.get("package", "")
+        if not installer_type or not package:
+            continue
+        installer_os_raw = entry.get("os", [])
+        installer_os = (
+            [installer_os_raw] if isinstance(installer_os_raw, str) else list(installer_os_raw)
+        )
+        install.append(SkillInstaller(
+            type=installer_type.lower(),
+            package=package,
+            os=installer_os,
+            version=entry.get("version"),
+        ))
 
     meta = SkillMeta(
         name=name,
@@ -188,6 +240,7 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
         requires_env=requires.get("env", []),
         os_platforms=os_platforms,
         always=openclaw_meta.get("always", False),
+        install=install,
         command_dispatch=metadata.get("command-dispatch", metadata.get("command_dispatch")),
         command_tool=metadata.get("command-tool", metadata.get("command_tool")),
         emoji=openclaw_meta.get("emoji"),

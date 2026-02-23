@@ -19,7 +19,7 @@ Available models (check `ollama ls`):
     gemma3:4b    — 3.3 GB, Google's model
 """
 
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 from agnoclaw.tools.tasks import ProgressToolkit
 
 
@@ -35,7 +35,7 @@ print("(No API key required — runs 100% locally)\n")
 
 # ── Basic agent ───────────────────────────────────────────────────────────────
 
-agent = HarnessAgent(
+agent = AgentHarness(
     name="ollama-agent",
     provider="ollama",
     model_id=MODEL,

@@ -19,7 +19,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from agnoclaw import HarnessAgent
+from agnoclaw import AgentHarness
 from agnoclaw.heartbeat import HeartbeatDaemon
 from agnoclaw.workspace import Workspace
 
@@ -166,7 +166,7 @@ You are conducting a thorough code review. For each file or change:
     return ws
 
 
-async def demo_heartbeat(agent: HarnessAgent, ws: Workspace) -> None:
+async def demo_heartbeat(agent: AgentHarness, ws: Workspace) -> None:
     """Trigger a single heartbeat check to demonstrate the system."""
 
     def on_alert(msg: str) -> None:
@@ -185,7 +185,7 @@ async def demo_heartbeat(agent: HarnessAgent, ws: Workspace) -> None:
         print("HEARTBEAT_OK — nothing needs attention.")
 
 
-def demo_agent_with_skill(agent: HarnessAgent) -> None:
+def demo_agent_with_skill(agent: AgentHarness) -> None:
     """Run the agent with the code-review skill activated."""
     print("\n--- Agent with code-review skill ---")
     agent.print_response(
@@ -207,7 +207,7 @@ async def main() -> None:
         ws = setup_workspace(workspace_path)
 
         # 2. Boot agent — workspace context injected into system prompt automatically
-        agent = HarnessAgent(
+        agent = AgentHarness(
             name="openclaw-demo",
             session_id="openclaw-demo-session",
             workspace_dir=workspace_path,
