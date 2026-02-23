@@ -161,7 +161,6 @@ class HarnessAgent:
         enable_learning: Optional[bool] = None,
         learning_mode: Optional[str] = None,
         learning_namespace: Optional[str] = None,
-        enable_culture: Optional[bool] = None,
     ):
         self.config = config or get_config()
         self.name = name
@@ -192,12 +191,12 @@ class HarnessAgent:
         # Resolve learning flags before building system prompt
         _enable_learning = enable_learning if enable_learning is not None else self.config.enable_learning
         _learning_mode = learning_mode or self.config.learning_mode
-        _enable_culture = enable_culture if enable_culture is not None else self.config.enable_culture
 
         # Assemble system prompt (initial — skills injected dynamically)
         system_prompt = self._prompt_builder.build(
             extra_context=extra_instructions,
             include_learning=_enable_learning,
+            session_id=session_id,
         )
 
         # Storage backend
@@ -220,11 +219,6 @@ class HarnessAgent:
                 mode=_learning_mode,
             )
 
-        culture_manager = None
-        if _enable_culture:
-            from .memory import build_culture_manager
-            culture_manager = build_culture_manager(db=db)
-
         # Core Agno Agent
         self._agent = Agent(
             model=self._model,
@@ -246,7 +240,6 @@ class HarnessAgent:
             # Memory tier 3: institutional cross-user knowledge
             learning=learning,
             add_learnings_to_context=_enable_learning,
-            culture_manager=culture_manager,
         )
 
     def run(
@@ -334,6 +327,29 @@ class HarnessAgent:
             **kwargs,
         )
 
+    def enter_plan_mode(self) -> None:
+        """
+        Activate plan mode: injects plan mode instructions into the system prompt.
+
+        In plan mode the agent is instructed to:
+        - Only read/search — no writes, edits, or shell commands
+        - Write a .plan.md file with the implementation plan
+        - Wait for user approval before implementing
+
+        Use exit_plan_mode() to return to normal operation.
+        """
+        system_prompt = self._prompt_builder.build(
+            include_learning=False,
+            include_plan_mode=True,
+            session_id=self.session_id,
+        )
+        self._agent.system_message = system_prompt
+
+    def exit_plan_mode(self) -> None:
+        """Deactivate plan mode: restores normal system prompt."""
+        system_prompt = self._prompt_builder.build(session_id=self.session_id)
+        self._agent.system_message = system_prompt
+
     def add_tool(self, tool) -> None:
         """Add a tool or toolkit to the agent."""
         self._agent.add_tool(tool)
@@ -341,6 +357,15 @@ class HarnessAgent:
     def get_chat_history(self) -> list:
         """Return the chat history for the current session."""
         return self._agent.get_chat_history(self.session_id or "")
+
+    def save_session_summary(self, summary: str) -> None:
+        """
+        Persist a session summary to today's daily log in the workspace.
+
+        Useful for context compaction: call this at the end of long sessions
+        to preserve important context for future sessions.
+        """
+        self.workspace.write_session_summary(summary)
 
     @property
     def underlying_agent(self) -> Agent:

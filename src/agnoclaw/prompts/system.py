@@ -29,6 +29,7 @@ from .sections import (
     IDENTITY,
     LEARNING_INSTRUCTIONS,
     MEMORY_INSTRUCTIONS,
+    PLAN_MODE,
     SECURITY,
     SKILL_INSTRUCTIONS,
     TONE_AND_STYLE,
@@ -55,6 +56,8 @@ class SystemPromptBuilder:
         include_datetime: bool = True,
         extra_context: Optional[str] = None,
         include_learning: bool = False,
+        include_plan_mode: bool = False,
+        session_id: Optional[str] = None,
     ) -> str:
         """
         Build the full system prompt string.
@@ -64,6 +67,8 @@ class SystemPromptBuilder:
             include_datetime: Inject current date/time into context.
             extra_context: Additional instructions (enterprise config, project CLAUDE.md).
             include_learning: Include the Learning section (only when LearningMachine is active).
+            include_plan_mode: Include plan mode instructions.
+            session_id: Active session ID (injected into runtime context).
         """
         parts: list[str] = []
 
@@ -77,44 +82,59 @@ class SystemPromptBuilder:
         parts.append(MEMORY_INSTRUCTIONS)
         parts.append(SKILL_INSTRUCTIONS)
 
-        # 9: Learning instructions (only injected when LearningMachine is active)
+        # 9: Plan mode (optional — enabled when entering plan mode)
+        if include_plan_mode:
+            parts.append(PLAN_MODE)
+
+        # 10: Learning instructions (only injected when LearningMachine is active)
         if include_learning:
             parts.append(LEARNING_INSTRUCTIONS)
 
-        # 9: Custom enterprise/user sections
+        # 11: Custom enterprise/user sections
         parts.extend(self._custom_sections)
 
-        # 10: Workspace context files (injected if they exist)
+        # 12: Workspace context files (injected if they exist)
+        # Order: AGENTS.md → SOUL.md → IDENTITY.md → USER.md → MEMORY.md → TOOLS.md → BOOT.md
         workspace_context = self._load_workspace_context()
         if workspace_context:
             parts.append(workspace_context)
 
-        # 11: Active skill content
+        # 13: Active skill content
         if skill_content:
             parts.append(f"# Active Skill\n\n{skill_content}")
 
-        # 12: Extra context (e.g. project CLAUDE.md contents)
+        # 14: Extra context (e.g. project CLAUDE.md contents)
         if extra_context:
             parts.append(f"# Project Context\n\n{extra_context}")
 
-        # 13: Runtime reminders
+        # 15: Runtime reminders
         if include_datetime:
             now = datetime.now()
-            parts.append(
-                f"# Runtime\n\n"
-                f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
-                f"Workspace: {self.workspace_dir}"
-            )
+            runtime_lines = [
+                f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}",
+                f"Workspace: {self.workspace_dir}",
+            ]
+            if session_id:
+                runtime_lines.append(f"Session ID: {session_id}")
+            parts.append("# Runtime\n\n" + "\n".join(runtime_lines))
 
         return "\n\n---\n\n".join(parts)
 
     def _load_workspace_context(self) -> Optional[str]:
-        """Load and concatenate workspace context files if they exist."""
+        """
+        Load and concatenate workspace context files if they exist.
+
+        Loading order: AGENTS.md → SOUL.md → IDENTITY.md → USER.md →
+                       MEMORY.md → TOOLS.md → BOOT.md
+        """
         files = [
             ("AGENTS.md", "Agent Guidelines (AGENTS.md)"),
             ("SOUL.md", "Persona (SOUL.md)"),
+            ("IDENTITY.md", "Identity (IDENTITY.md)"),
             ("USER.md", "User Preferences (USER.md)"),
             ("MEMORY.md", "Long-term Memory (MEMORY.md)"),
+            ("TOOLS.md", "Tool Configuration (TOOLS.md)"),
+            ("BOOT.md", "Startup Protocol (BOOT.md)"),
         ]
 
         loaded: list[str] = []

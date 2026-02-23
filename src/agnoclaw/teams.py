@@ -33,7 +33,6 @@ def research_team(
     config: Optional[HarnessConfig] = None,
     session_id: Optional[str] = None,
     enable_learning: bool = False,
-    enable_culture: bool = False,
 ) -> Team:
     """
     A three-agent research team:
@@ -58,15 +57,6 @@ def research_team(
     if enable_learning:
         from .memory import build_learning_machine
         _learning = build_learning_machine(db=db, namespace="research-team")
-
-    _culture = None
-    if enable_culture:
-        from .memory import build_culture_manager
-        _culture = build_culture_manager(
-            db=db,
-            extra_instructions="Focus on research methodology norms: source quality standards, "
-            "citation practices, synthesis conventions this team has adopted.",
-        )
 
     researcher = Agent(
         name="Researcher",
@@ -123,7 +113,6 @@ def research_team(
         show_members_responses=True,
         markdown=True,
         learning=_learning,
-        culture_manager=_culture,
         add_learnings_to_context=enable_learning,
     )
 
@@ -134,7 +123,6 @@ def code_team(
     config: Optional[HarnessConfig] = None,
     session_id: Optional[str] = None,
     enable_learning: bool = False,
-    enable_culture: bool = False,
 ) -> Team:
     """
     A three-agent software development team:
@@ -160,15 +148,6 @@ def code_team(
     if enable_learning:
         from .memory import build_learning_machine
         _learning = build_learning_machine(db=db, namespace="code-team")
-
-    _culture = None
-    if enable_culture:
-        from .memory import build_culture_manager
-        _culture = build_culture_manager(
-            db=db,
-            extra_instructions="Focus on engineering norms: code review standards, "
-            "testing conventions, architecture decision patterns, anti-patterns to avoid.",
-        )
 
     architect = Agent(
         name="Architect",
@@ -232,7 +211,6 @@ def code_team(
         show_members_responses=True,
         markdown=True,
         learning=_learning,
-        culture_manager=_culture,
         add_learnings_to_context=enable_learning,
     )
 

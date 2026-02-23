@@ -106,13 +106,6 @@ class HarnessConfig(BaseSettings):
     - hitl:    human must approve each learning before it is stored
     """
 
-    # Culture (Agno CultureManager — team-level norms)
-    enable_culture: bool = False
-    """Enable team-level cultural knowledge (Agno CultureManager).
-    Useful when multiple users share an agent and want to accumulate
-    team norms, conventions, and shared context.
-    Requires enable_learning=True to be meaningful."""
-
     # Heartbeat
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 

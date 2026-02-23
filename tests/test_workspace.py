@@ -82,3 +82,72 @@ def test_workspace_daily_log(ws):
     log_path = ws.path / "memory" / f"{today}.md"
     assert log_path.exists()
     assert "Completed feature X" in log_path.read_text()
+
+
+def test_workspace_identity_md(ws):
+    ws.write_file("identity", "# Identity\n\nI am an AI assistant.")
+    content = ws.read_file("identity")
+    assert "I am an AI assistant." in content
+
+
+def test_workspace_tools_md(ws):
+    ws.write_file("tools", "# Tools\n\nAllow: bash, files")
+    content = ws.read_file("tools")
+    assert "Allow: bash, files" in content
+
+
+def test_workspace_boot_md(ws):
+    ws.write_file("boot", "# Boot\n\n1. Run git status\n2. Check MEMORY.md")
+    content = ws.read_file("boot")
+    assert "git status" in content
+
+
+def test_workspace_context_files_includes_boot(ws):
+    ws.write_file("boot", "# Boot\n\nRun startup checks.")
+    context = ws.context_files()
+    assert "boot" in context
+    assert "startup checks" in context["boot"]
+
+
+def test_workspace_context_files_includes_identity(ws):
+    ws.write_file("identity", "# Identity\n\nCustom identity here.")
+    context = ws.context_files()
+    assert "identity" in context
+
+
+def test_workspace_context_files_includes_tools(ws):
+    ws.write_file("tools", "# Tools\n\nCustom tools config.")
+    context = ws.context_files()
+    assert "tools" in context
+
+
+def test_workspace_context_files_order(ws):
+    """boot should appear last in context_files dict."""
+    for key in ("agents", "soul", "identity", "user", "memory", "tools", "boot"):
+        ws.write_file(key, f"# {key.capitalize()}\n\nContent for {key}.")
+    context = ws.context_files()
+    keys = list(context.keys())
+    assert keys.index("boot") > keys.index("memory")
+    assert keys.index("agents") < keys.index("user")
+
+
+def test_workspace_write_session_summary(ws):
+    ws.write_session_summary("Summarized research on quantum computing.")
+    from datetime import date
+    today = date.today().isoformat()
+    log_path = ws.path / "memory" / f"{today}.md"
+    assert log_path.exists()
+    content = log_path.read_text()
+    assert "Summarized research on quantum computing." in content
+    assert "Session Summary" in content
+
+
+def test_workspace_workspace_files_mapping():
+    """WORKSPACE_FILES should include all new file types."""
+    from agnoclaw.workspace import WORKSPACE_FILES
+    assert "identity" in WORKSPACE_FILES
+    assert "tools" in WORKSPACE_FILES
+    assert "boot" in WORKSPACE_FILES
+    assert WORKSPACE_FILES["identity"] == "IDENTITY.md"
+    assert WORKSPACE_FILES["tools"] == "TOOLS.md"
+    assert WORKSPACE_FILES["boot"] == "BOOT.md"

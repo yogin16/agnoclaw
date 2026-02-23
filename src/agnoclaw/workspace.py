@@ -12,11 +12,16 @@ Key files:
   SOUL.md      — persona, tone, and identity boundaries
   USER.md      — user identity, timezone, communication preferences
   MEMORY.md    — long-term curated memory (cross-session)
+  IDENTITY.md  — detailed agent identity, capabilities, and self-description
+  TOOLS.md     — workspace-specific tool configuration and overrides
   HEARTBEAT.md — heartbeat checklist (what to check on each heartbeat)
-  BOOT.md      — optional startup sequence
+  BOOT.md      — startup sequence: commands to run and checks to perform
   skills/      — workspace-specific skill overrides (highest priority)
   memory/      — daily memory logs (YYYY-MM-DD.md)
   sessions/    — session transcripts (optional local backup)
+
+Context loading order (loaded into system prompt):
+  AGENTS.md → SOUL.md → IDENTITY.md → USER.md → MEMORY.md → TOOLS.md → BOOT.md
 """
 
 from __future__ import annotations
@@ -29,8 +34,10 @@ from typing import Optional
 WORKSPACE_FILES = {
     "agents": "AGENTS.md",
     "soul": "SOUL.md",
+    "identity": "IDENTITY.md",
     "user": "USER.md",
     "memory": "MEMORY.md",
+    "tools": "TOOLS.md",
     "heartbeat": "HEARTBEAT.md",
     "boot": "BOOT.md",
 }
@@ -147,13 +154,24 @@ class Workspace:
         return self.heartbeat_md() is None
 
     def context_files(self) -> dict[str, str]:
-        """Load all existing workspace context files. Returns {logical_name: content}."""
+        """
+        Load all existing workspace context files. Returns {logical_name: content}.
+
+        Loading order: AGENTS.md → SOUL.md → IDENTITY.md → USER.md → MEMORY.md → TOOLS.md → BOOT.md
+        BOOT.md is returned last so the agent acts on it at session start.
+        """
         result = {}
-        for name in ("agents", "soul", "user", "memory"):
+        for name in ("agents", "soul", "identity", "user", "memory", "tools", "boot"):
             content = self.read_file(name)
             if content:
                 result[name] = content
         return result
+
+    def write_session_summary(self, summary: str) -> None:
+        """Write a session summary to today's daily log (used for context compaction)."""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_to_daily(f"## Session Summary [{timestamp}]\n\n{summary}")
 
     def __repr__(self) -> str:
         return f"Workspace({self.path})"

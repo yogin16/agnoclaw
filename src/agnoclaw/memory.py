@@ -26,9 +26,27 @@ Memory Hierarchy:
   │ MemoryManager (SQL — per-user facts, preferences)     │
   ├───────────────────────────────────────────────────────┤
   │ LearningMachine (SQL — institutional / cross-user)    │
-  │  user_profile · entity_memory · learned_knowledge     │
-  │  decision_log · session_context                       │
+  │  Stores enabled by default:                           │
+  │    learned_knowledge — reusable insights/patterns     │
+  │    entity_memory     — facts about projects/tools     │
+  │    decision_log      — consequential decisions        │
+  │  Stores excluded (per-user, not institutional):       │
+  │    user_profile      — use MemoryManager instead      │
   └───────────────────────────────────────────────────────┘
+
+LearningMachine Store Selection Rationale:
+  - learned_knowledge: Core institutional store. Captures patterns like
+    "always validate X before calling Y", "team prefers Z pattern". High
+    value across all agent types.
+  - entity_memory: Tracks named entities — projects, tools, APIs, people.
+    Enables "we use pytest in this project", "Alice owns the auth service".
+    Scoped globally or by namespace.
+  - decision_log: Captures WHY decisions were made. "Chose PostgreSQL over
+    SQLite because of concurrent writes". Prevents re-litigating decisions.
+  - user_profile: EXCLUDED from LearningMachine. This is per-user data —
+    use MemoryManager (Tier 2) for user preferences/facts.
+  - session_context: Cross-session patterns. Useful but high noise.
+    Omitted by default; teams can opt in via extra configuration.
 """
 
 from __future__ import annotations
@@ -100,12 +118,14 @@ def build_learning_machine(
     institutional memory. Unlike MemoryManager (per-user facts), learnings
     are shared globally (or within a namespace).
 
-    Components stored:
-    - user_profile     — aggregated user behavior and preference patterns
-    - entity_memory    — facts about named entities (people, projects, tools)
+    Enabled stores (see module docstring for rationale):
     - learned_knowledge — reusable insights discovered through experience
-    - decision_log     — record of consequential decisions and their outcomes
-    - session_context  — cross-session contextual patterns
+    - entity_memory     — facts about named entities (projects, tools, APIs)
+    - decision_log      — record of consequential decisions and their rationale
+
+    Excluded stores:
+    - user_profile      — per-user data; use MemoryManager (Tier 2) instead
+    - session_context   — high noise; opt in if needed for your use case
 
     Learning Modes:
     - 'always'  — extract and store learnings after every run (highest coverage)
@@ -133,7 +153,7 @@ def build_learning_machine(
         research_lm = build_learning_machine(db=my_db, namespace="research")
         code_lm = build_learning_machine(db=my_db, namespace="code-review")
 
-        agent = HarnessAgent(learning_machine=research_lm)
+        agent = HarnessAgent(enable_learning=True, learning_namespace="code-review")
     """
     from agno.learn import LearningMachine, LearningMode
     from .agent import _make_model
@@ -159,65 +179,5 @@ def build_learning_machine(
         db=db,
         model=model,
         namespace=namespace,
-    )
-
-
-def build_culture_manager(
-    db=None,
-    model_id: str = "claude-haiku-4-5-20251001",
-    provider: str = "anthropic",
-    extra_instructions: Optional[str] = None,
-):
-    """
-    Build an Agno CultureManager for team-level cultural knowledge.
-
-    CultureManager captures team norms, conventions, and shared context
-    that apply across all agents in a team. Think of it as the team's
-    "operating principles" that emerge and evolve through usage.
-
-    Best used with multi-agent teams (research_team, code_team) to
-    accumulate team-specific conventions:
-    - Code style decisions ("we use snake_case for all variables")
-    - Review standards ("always check for N+1 queries")
-    - Research protocols ("always cite primary sources")
-    - Communication norms ("be direct, no fluff")
-
-    Args:
-        db: Agno database backend.
-        model_id: Model for culture extraction.
-        provider: Model provider.
-        extra_instructions: Domain-specific culture capture instructions.
-
-    Returns:
-        Configured CultureManager instance.
-    """
-    from agno.culture import CultureManager
-    from .agent import _make_model
-
-    if db is None:
-        from pathlib import Path
-        from agno.db.sqlite import SqliteDb
-        db_path = Path.home() / ".agnoclaw" / "sessions.db"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        db = SqliteDb(db_file=str(db_path))
-
-    model = _make_model(model_id, provider)
-
-    instructions = (extra_instructions or "") + """
-Capture team norms, conventions, and shared principles:
-- Technical standards (language choices, patterns, anti-patterns to avoid)
-- Process conventions (how we structure reviews, how we document decisions)
-- Communication norms (tone, format, level of detail expected)
-- Quality standards (what constitutes "done", review checklist items)
-
-Do NOT capture:
-- Individual user preferences (use MemoryManager for that)
-- Session-specific decisions (use decision_log in LearningMachine for that)
-- Project-specific facts (use knowledge base for that)
-"""
-
-    return CultureManager(
-        model=model,
-        db=db,
-        culture_capture_instructions=instructions,
+        mode=learning_mode,
     )
