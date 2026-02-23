@@ -107,3 +107,42 @@ def test_session_history_runs_default():
     from agnoclaw.config import HarnessConfig
     cfg = HarnessConfig()
     assert cfg.session_history_runs == 10
+
+
+def test_compression_disabled_by_default():
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert cfg.enable_compression is False
+
+
+def test_compress_token_limit_none_by_default():
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert cfg.compress_token_limit is None
+
+
+def test_session_summary_disabled_by_default():
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert cfg.enable_session_summary is False
+
+
+def test_env_override_enable_compression(monkeypatch):
+    from agnoclaw.config import HarnessConfig
+    monkeypatch.setenv("AGNOCLAW_ENABLE_COMPRESSION", "true")
+    cfg = HarnessConfig()
+    assert cfg.enable_compression is True
+
+
+def test_env_override_compress_token_limit(monkeypatch):
+    from agnoclaw.config import HarnessConfig
+    monkeypatch.setenv("AGNOCLAW_COMPRESS_TOKEN_LIMIT", "4000")
+    cfg = HarnessConfig()
+    assert cfg.compress_token_limit == 4000
+
+
+def test_env_override_enable_session_summary(monkeypatch):
+    from agnoclaw.config import HarnessConfig
+    monkeypatch.setenv("AGNOCLAW_ENABLE_SESSION_SUMMARY", "true")
+    cfg = HarnessConfig()
+    assert cfg.enable_session_summary is True

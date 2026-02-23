@@ -232,3 +232,39 @@ def test_config_learning_mode_default_agentic():
     from agnoclaw.config import HarnessConfig
     cfg = HarnessConfig()
     assert cfg.learning_mode == "agentic"
+
+
+# ── Compression / session summary parameter tests ────────────────────────
+
+
+def test_harness_agent_accepts_compression_params():
+    """HarnessAgent should accept enable_compression and compress_token_limit."""
+    import inspect
+    from agnoclaw.agent import HarnessAgent
+    sig = inspect.signature(HarnessAgent.__init__)
+    assert "enable_compression" in sig.parameters
+    assert "compress_token_limit" in sig.parameters
+
+
+def test_harness_agent_accepts_session_summary_param():
+    """HarnessAgent should accept enable_session_summary."""
+    import inspect
+    from agnoclaw.agent import HarnessAgent
+    sig = inspect.signature(HarnessAgent.__init__)
+    assert "enable_session_summary" in sig.parameters
+
+
+def test_harness_agent_compression_default_none():
+    """enable_compression default should be None (falls back to config)."""
+    import inspect
+    from agnoclaw.agent import HarnessAgent
+    sig = inspect.signature(HarnessAgent.__init__)
+    assert sig.parameters["enable_compression"].default is None
+
+
+def test_harness_agent_session_summary_default_none():
+    """enable_session_summary default should be None (falls back to config)."""
+    import inspect
+    from agnoclaw.agent import HarnessAgent
+    sig = inspect.signature(HarnessAgent.__init__)
+    assert sig.parameters["enable_session_summary"].default is None

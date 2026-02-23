@@ -81,22 +81,149 @@ def test_build_memory_manager_extra_instructions():
 # ── build_learning_machine tests ─────────────────────────────────────────
 
 
+def _lm_patches():
+    """Return patch.multiple context for all LearningMachine dependencies."""
+    return patch.multiple(
+        "agnoclaw.memory",
+        **{},
+    )
+
+
 def test_build_learning_machine_returns_object():
-    from agnoclaw.memory import build_learning_machine
-
-    with patch("agno.learn.LearningMachine") as mock_lm:
-        mock_lm.return_value = MagicMock()
-        with patch("agnoclaw.agent._make_model") as mock_model:
-            mock_model.return_value = MagicMock()
-            result = build_learning_machine()
-            assert mock_lm.called
-
-
-def test_build_learning_machine_default_mode_agentic():
     from agnoclaw.memory import build_learning_machine
 
     with patch("agno.learn.LearningMachine") as mock_lm, \
          patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
+         patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
+         patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
+         patch("agnoclaw.agent._make_model") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        result = build_learning_machine()
+        assert mock_lm.called
+
+
+def test_build_learning_machine_no_top_level_mode():
+    """LearningMachine should NOT receive a top-level mode= param.
+
+    Mode is configured per-store via EntityMemoryConfig, DecisionLogConfig, etc.
+    Passing mode= at the top level to LearningMachine would raise a TypeError.
+    """
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
+         patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
+         patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
+         patch("agnoclaw.agent._make_model") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        build_learning_machine()
+        call_kwargs = mock_lm.call_args[1]
+        assert "mode" not in call_kwargs, (
+            "LearningMachine should not receive top-level mode=; use per-store configs"
+        )
+
+
+def test_build_learning_machine_excludes_per_user_stores():
+    """user_profile and user_memory should be disabled — use MemoryManager instead."""
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig"), \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
+         patch("agnoclaw.agent._make_model") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        build_learning_machine()
+        call_kwargs = mock_lm.call_args[1]
+        assert call_kwargs.get("user_profile") is False, "user_profile should be False"
+        assert call_kwargs.get("user_memory") is False, "user_memory should be False"
+
+
+def test_build_learning_machine_has_per_store_configs():
+    """entity_memory, learned_knowledge, decision_log should be configured."""
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
+         patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
+         patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
+         patch("agnoclaw.agent._make_model") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        mock_emc.return_value = MagicMock(name="entity_config")
+        mock_lkc.return_value = MagicMock(name="learned_config")
+        mock_dlc.return_value = MagicMock(name="decision_config")
+        build_learning_machine()
+        call_kwargs = mock_lm.call_args[1]
+        assert "entity_memory" in call_kwargs and call_kwargs["entity_memory"] is not None
+        assert "learned_knowledge" in call_kwargs and call_kwargs["learned_knowledge"] is not None
+        assert "decision_log" in call_kwargs and call_kwargs["decision_log"] is not None
+
+
+def test_build_learning_machine_session_context_disabled_by_default():
+    """session_context should NOT be present by default."""
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig"), \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
+         patch("agnoclaw.agent._make_model") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        build_learning_machine()
+        call_kwargs = mock_lm.call_args[1]
+        assert "session_context" not in call_kwargs
+
+
+def test_build_learning_machine_session_context_opt_in():
+    """enable_session_context=True should add session_context store."""
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig"), \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
+         patch("agno.learn.config.SessionContextConfig") as mock_scc, \
+         patch("agnoclaw.agent._make_model") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        mock_scc.return_value = MagicMock(name="session_config")
+        build_learning_machine(enable_session_context=True)
+        call_kwargs = mock_lm.call_args[1]
+        assert "session_context" in call_kwargs and call_kwargs["session_context"] is not None
+
+
+def test_build_learning_machine_entity_memory_mode_propagated():
+    """The mode string should be propagated to EntityMemoryConfig."""
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
+         patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
+         patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
          patch("agnoclaw.agent._make_model") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
@@ -104,30 +231,71 @@ def test_build_learning_machine_default_mode_agentic():
         mock_mode.ALWAYS = "always"
         mock_mode.PROPOSE = "propose"
         mock_mode.HITL = "hitl"
-        build_learning_machine()
-        call_kwargs = mock_lm.call_args[1]
-        assert call_kwargs["mode"] == "agentic"
+        build_learning_machine(mode="always")
+        # EntityMemoryConfig should have been called with mode=ALWAYS
+        emc_kwargs = mock_emc.call_args[1]
+        assert emc_kwargs["mode"] == "always"
 
 
-def test_build_learning_machine_all_modes():
+def test_build_learning_machine_learned_knowledge_always_agentic():
+    """learned_knowledge should always use AGENTIC mode regardless of mode param."""
     from agnoclaw.memory import build_learning_machine
 
-    modes = ["always", "agentic", "propose", "hitl"]
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
+         patch("agno.learn.config.LearnedKnowledgeConfig") as mock_lkc, \
+         patch("agno.learn.config.DecisionLogConfig") as mock_dlc, \
+         patch("agnoclaw.agent._make_model") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        build_learning_machine(mode="always")  # even when mode=always is requested
+        lkc_kwargs = mock_lkc.call_args[1]
+        # learned_knowledge always uses AGENTIC
+        assert lkc_kwargs["mode"] == "agentic"
 
-    for mode in modes:
+
+def test_build_learning_machine_all_modes_accepted():
+    """All four mode strings should be accepted without error."""
+    from agnoclaw.memory import build_learning_machine
+
+    for mode in ["always", "agentic", "propose", "hitl"]:
         with patch("agno.learn.LearningMachine") as mock_lm, \
              patch("agno.learn.LearningMode") as mock_mode, \
+             patch("agno.learn.config.EntityMemoryConfig"), \
+             patch("agno.learn.config.LearnedKnowledgeConfig"), \
+             patch("agno.learn.config.DecisionLogConfig"), \
              patch("agnoclaw.agent._make_model") as mock_model:
             mock_model.return_value = MagicMock()
             mock_lm.return_value = MagicMock()
-            # Map mode strings to themselves for testing
-            setattr(mock_mode, mode.upper(), mode)
-            # Fallback handling
             mock_mode.AGENTIC = "agentic"
             mock_mode.ALWAYS = "always"
             mock_mode.PROPOSE = "propose"
             mock_mode.HITL = "hitl"
             build_learning_machine(mode=mode)
+            assert mock_lm.called, f"LearningMachine not called for mode={mode}"
+
+
+def test_build_learning_machine_invalid_mode_fallback_to_agentic():
+    """Unknown mode string should fall back to AGENTIC."""
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig") as mock_emc, \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
+         patch("agnoclaw.agent._make_model") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        build_learning_machine(mode="invalid_mode")
+        emc_kwargs = mock_emc.call_args[1]
+        # Falls back to AGENTIC
+        assert emc_kwargs["mode"] == "agentic"
 
 
 def test_build_learning_machine_namespace():
@@ -135,13 +303,36 @@ def test_build_learning_machine_namespace():
 
     with patch("agno.learn.LearningMachine") as mock_lm, \
          patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig"), \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
          patch("agnoclaw.agent._make_model") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
         build_learning_machine(namespace="research-v2")
         call_kwargs = mock_lm.call_args[1]
         assert call_kwargs["namespace"] == "research-v2"
+
+
+def test_build_learning_machine_default_namespace_global():
+    """When namespace=None, should use 'global' namespace."""
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig"), \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
+         patch("agnoclaw.agent._make_model") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        build_learning_machine(namespace=None)
+        call_kwargs = mock_lm.call_args[1]
+        assert call_kwargs["namespace"] == "global"
 
 
 def test_build_learning_machine_creates_db_if_none(tmp_path):
@@ -149,11 +340,15 @@ def test_build_learning_machine_creates_db_if_none(tmp_path):
 
     with patch("agno.learn.LearningMachine") as mock_lm, \
          patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig"), \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
          patch("agnoclaw.agent._make_model") as mock_model, \
          patch("pathlib.Path.home", return_value=tmp_path):
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
         build_learning_machine(db=None)
         call_kwargs = mock_lm.call_args[1]
         # Should have created a db
@@ -166,28 +361,17 @@ def test_build_learning_machine_uses_provided_db():
     mock_db = MagicMock()
     with patch("agno.learn.LearningMachine") as mock_lm, \
          patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig"), \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
          patch("agnoclaw.agent._make_model") as mock_model:
         mock_model.return_value = MagicMock()
         mock_lm.return_value = MagicMock()
         mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
         build_learning_machine(db=mock_db)
         call_kwargs = mock_lm.call_args[1]
         assert call_kwargs["db"] is mock_db
-
-
-def test_build_learning_machine_invalid_mode_fallback_to_agentic():
-    from agnoclaw.memory import build_learning_machine
-
-    with patch("agno.learn.LearningMachine") as mock_lm, \
-         patch("agno.learn.LearningMode") as mock_mode, \
-         patch("agnoclaw.agent._make_model") as mock_model:
-        mock_model.return_value = MagicMock()
-        mock_lm.return_value = MagicMock()
-        mock_mode.AGENTIC = "agentic"
-        # "invalid" mode should fall back to AGENTIC
-        build_learning_machine(mode="invalid_mode")
-        call_kwargs = mock_lm.call_args[1]
-        assert call_kwargs["mode"] == "agentic"
 
 
 # ── No CultureManager tests ───────────────────────────────────────────────

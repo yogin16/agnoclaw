@@ -32,6 +32,7 @@ Memory Hierarchy:
   │    decision_log      — consequential decisions        │
   │  Stores excluded (per-user, not institutional):       │
   │    user_profile      — use MemoryManager instead      │
+  │    user_memory       — use MemoryManager instead      │
   └───────────────────────────────────────────────────────┘
 
 LearningMachine Store Selection Rationale:
@@ -45,8 +46,15 @@ LearningMachine Store Selection Rationale:
     SQLite because of concurrent writes". Prevents re-litigating decisions.
   - user_profile: EXCLUDED from LearningMachine. This is per-user data —
     use MemoryManager (Tier 2) for user preferences/facts.
+  - user_memory: EXCLUDED — use MemoryManager instead.
   - session_context: Cross-session patterns. Useful but high noise.
-    Omitted by default; teams can opt in via extra configuration.
+    Omitted by default; opt in via enable_session_context=True.
+
+LearningMachine API Notes:
+  LearningMachine is a dataclass — each store is configured individually
+  via its own config object (EntityMemoryConfig, LearnedKnowledgeConfig,
+  DecisionLogConfig, SessionContextConfig). There is NO global mode= param;
+  mode is set per-store through the individual config objects.
 """
 
 from __future__ import annotations
@@ -109,6 +117,7 @@ def build_learning_machine(
     provider: str = "anthropic",
     namespace: Optional[str] = None,
     mode: str = "agentic",
+    enable_session_context: bool = False,
 ):
     """
     Build an Agno LearningMachine for institutional cross-user memory.
@@ -118,6 +127,9 @@ def build_learning_machine(
     institutional memory. Unlike MemoryManager (per-user facts), learnings
     are shared globally (or within a namespace).
 
+    Each store is configured individually with its own LearningMode.
+    There is NO global mode parameter — modes are set per-store.
+
     Enabled stores (see module docstring for rationale):
     - learned_knowledge — reusable insights discovered through experience
     - entity_memory     — facts about named entities (projects, tools, APIs)
@@ -125,7 +137,8 @@ def build_learning_machine(
 
     Excluded stores:
     - user_profile      — per-user data; use MemoryManager (Tier 2) instead
-    - session_context   — high noise; opt in if needed for your use case
+    - user_memory       — per-user data; use MemoryManager (Tier 2) instead
+    - session_context   — high noise; opt in via enable_session_context=True
 
     Learning Modes:
     - 'always'  — extract and store learnings after every run (highest coverage)
@@ -140,7 +153,11 @@ def build_learning_machine(
         namespace: Optional namespace to isolate learnings by agent role
                    (e.g. "research", "code-review", "heartbeat").
                    Prevents cross-contamination between different agent purposes.
-        mode: Learning mode: 'always' | 'agentic' | 'propose' | 'hitl'.
+        mode: Learning mode applied to entity_memory and decision_log stores:
+              'always' | 'agentic' | 'propose' | 'hitl'.
+              learned_knowledge always uses 'agentic' (knowledge is selective).
+        enable_session_context: Include session_context store (higher noise,
+                                useful for long-running agents).
 
     Returns:
         Configured LearningMachine instance.
@@ -156,6 +173,12 @@ def build_learning_machine(
         agent = HarnessAgent(enable_learning=True, learning_namespace="code-review")
     """
     from agno.learn import LearningMachine, LearningMode
+    from agno.learn.config import (
+        DecisionLogConfig,
+        EntityMemoryConfig,
+        LearnedKnowledgeConfig,
+    )
+
     from .agent import _make_model
 
     mode_map = {
@@ -165,19 +188,66 @@ def build_learning_machine(
         "hitl": LearningMode.HITL,
     }
     learning_mode = mode_map.get(mode, LearningMode.AGENTIC)
+    _namespace = namespace or "global"
 
     if db is None:
         from pathlib import Path
+
         from agno.db.sqlite import SqliteDb
+
         db_path = Path.home() / ".agnoclaw" / "sessions.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         db = SqliteDb(db_file=str(db_path))
 
     model = _make_model(model_id, provider)
 
-    return LearningMachine(
+    # ── Per-store configs ──────────────────────────────────────────────────
+    # entity_memory: tracks named entities with configurable mode
+    entity_config = EntityMemoryConfig(
         db=db,
         model=model,
-        namespace=namespace,
         mode=learning_mode,
+        namespace=_namespace,
+        enable_agent_tools=True,
     )
+
+    # learned_knowledge: always AGENTIC — knowledge capture is selective by nature
+    learned_config = LearnedKnowledgeConfig(
+        model=model,
+        mode=LearningMode.AGENTIC,
+        namespace=_namespace,
+        enable_agent_tools=True,
+    )
+
+    # decision_log: tracks WHY decisions were made, configurable mode
+    decision_config = DecisionLogConfig(
+        db=db,
+        model=model,
+        mode=learning_mode,
+        enable_agent_tools=True,
+    )
+
+    kwargs = dict(
+        db=db,
+        model=model,
+        namespace=_namespace,
+        # Exclude per-user stores — handled by MemoryManager (Tier 2)
+        user_profile=False,
+        user_memory=False,
+        # Institutional stores
+        entity_memory=entity_config,
+        learned_knowledge=learned_config,
+        decision_log=decision_config,
+    )
+
+    if enable_session_context:
+        from agno.learn.config import SessionContextConfig
+
+        kwargs["session_context"] = SessionContextConfig(
+            db=db,
+            model=model,
+            mode=LearningMode.ALWAYS,
+            enable_planning=True,
+        )
+
+    return LearningMachine(**kwargs)

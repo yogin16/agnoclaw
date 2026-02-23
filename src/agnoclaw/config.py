@@ -106,6 +106,24 @@ class HarnessConfig(BaseSettings):
     - hitl:    human must approve each learning before it is stored
     """
 
+    # Compression (context window management)
+    enable_compression: bool = False
+    """Enable tool result compression to keep context window manageable.
+    When enabled, Agno's CompressionManager compresses tool outputs before
+    each LLM API call. Recommended for long-running sessions or agents that
+    generate many tool results."""
+
+    compress_token_limit: Optional[int] = None
+    """Token limit that triggers compression. When the accumulated tool results
+    exceed this limit, compression runs. None uses Agno's default count-based
+    trigger (compress_tool_results_limit=3)."""
+
+    # Session summaries
+    enable_session_summary: bool = False
+    """Enable automatic session summaries at the end of each run.
+    SessionSummaryManager generates a summary of the run and injects it
+    into subsequent runs for continuity across sessions."""
+
     # Heartbeat
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 

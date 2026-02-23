@@ -33,6 +33,12 @@ Usage:
         enable_learning=True,
         learning_namespace="code-review",
     )
+
+    # With context compression (long sessions / many tool calls)
+    agent = HarnessAgent(enable_compression=True, compress_token_limit=4000)
+
+    # With session summaries (continuity across sessions)
+    agent = HarnessAgent(enable_session_summary=True)
 """
 
 from __future__ import annotations
@@ -141,6 +147,9 @@ class HarnessAgent:
         name: Agent name (cosmetic).
         agent_id: Stable agent ID (cosmetic, used in logs).
         debug: Enable debug mode (show tool calls, verbose output).
+        enable_compression: Enable tool result compression for long sessions.
+        compress_token_limit: Token threshold that triggers compression.
+        enable_session_summary: Enable automatic session summaries for continuity.
     """
 
     def __init__(
@@ -161,6 +170,10 @@ class HarnessAgent:
         enable_learning: Optional[bool] = None,
         learning_mode: Optional[str] = None,
         learning_namespace: Optional[str] = None,
+        # Context management
+        enable_compression: Optional[bool] = None,
+        compress_token_limit: Optional[int] = None,
+        enable_session_summary: Optional[bool] = None,
     ):
         self.config = config or get_config()
         self.name = name
@@ -219,6 +232,32 @@ class HarnessAgent:
                 mode=_learning_mode,
             )
 
+        # ── Context management: compression ───────────────────────────────
+        _enable_compression = (
+            enable_compression if enable_compression is not None
+            else self.config.enable_compression
+        )
+        _compress_token_limit = compress_token_limit or self.config.compress_token_limit
+        compression_manager = None
+        if _enable_compression:
+            from agno.compression.manager import CompressionManager
+            if _compress_token_limit:
+                compression_manager = CompressionManager(
+                    compress_token_limit=_compress_token_limit
+                )
+            else:
+                compression_manager = CompressionManager()
+
+        # ── Context management: session summaries ─────────────────────────
+        _enable_session_summary = (
+            enable_session_summary if enable_session_summary is not None
+            else self.config.enable_session_summary
+        )
+        session_summary_manager = None
+        if _enable_session_summary:
+            from agno.session import SessionSummaryManager
+            session_summary_manager = SessionSummaryManager()
+
         # Core Agno Agent
         self._agent = Agent(
             model=self._model,
@@ -240,6 +279,13 @@ class HarnessAgent:
             # Memory tier 3: institutional cross-user knowledge
             learning=learning,
             add_learnings_to_context=_enable_learning,
+            # Context window management
+            compress_tool_results=_enable_compression,
+            compression_manager=compression_manager,
+            # Session continuity
+            enable_session_summaries=_enable_session_summary,
+            session_summary_manager=session_summary_manager,
+            add_session_summary_to_context=_enable_session_summary,
         )
 
     def run(
