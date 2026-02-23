@@ -38,6 +38,9 @@ pip install "agnoclaw[postgres]"
 
 # With all model providers
 pip install "agnoclaw[all-models]"
+
+# With local Ollama support (no API key needed)
+pip install "agnoclaw[local]"
 ```
 
 ---
@@ -78,15 +81,22 @@ team = research_team()
 team.print_response("Compare the top AI agent frameworks in 2026", stream=True)
 ```
 
+### Local inference with Ollama (no API key)
+
+```python
+agent = HarnessAgent(model_id="qwen3:8b", provider="ollama")
+agent.print_response("Explain async/await in Python", stream=True)
+```
+
 ### Async + streaming events
 
 ```python
 import asyncio
-from agno.run.response import RunEvent
+from agno.run.agent import RunEvent
 
 async def main():
     agent = HarnessAgent()
-    async for event in await agent.arun("Analyze this codebase", stream=True, stream_events=True):
+    async for event in agent.arun("Analyze this codebase", stream=True, stream_events=True):
         if event.event == RunEvent.run_content:
             print(event.content, end="", flush=True)
 
@@ -98,6 +108,9 @@ asyncio.run(main())
 ## CLI
 
 ```bash
+# First-run onboarding wizard (persona, user identity, default model)
+agnoclaw init
+
 # Interactive chat
 agnoclaw chat
 
@@ -106,6 +119,9 @@ agnoclaw run "Find and fix the bug in src/auth.py"
 
 # With model override
 agnoclaw run "Summarize the README" --model gpt-4o --provider openai
+
+# With Ollama (local, no API key)
+agnoclaw run "Summarize the README" --model qwen3:8b --provider ollama
 
 # With skill
 agnoclaw run "Research quantum computing trends" --skill deep-research
@@ -119,13 +135,16 @@ agnoclaw skill inspect deep-research
 # Install a skill from a local directory
 agnoclaw skill install path/to/my-skill/
 
-# Initialize workspace
+# Initialize workspace (non-interactive)
 agnoclaw workspace init
 
-# Show workspace
+# Show workspace files
 agnoclaw workspace show
 
-# Trigger heartbeat check
+# Start heartbeat daemon (runs until Ctrl+C)
+agnoclaw heartbeat start
+
+# Trigger one heartbeat check immediately
 agnoclaw heartbeat trigger
 ```
 
@@ -139,14 +158,19 @@ The workspace is your agent's home directory. Default: `~/.agnoclaw/workspace/`
 ~/.agnoclaw/workspace/
 ├── AGENTS.md       ← behavioral guidelines
 ├── SOUL.md         ← persona and tone
+├── IDENTITY.md     ← capabilities, limitations, specializations
 ├── USER.md         ← user preferences (create this yourself)
-├── MEMORY.md       ← long-term memory (agent-maintained)
+├── MEMORY.md       ← long-term memory (agent-maintained, first 200 lines loaded)
+├── TOOLS.md        ← tool policy (allowed commands, restrictions)
 ├── HEARTBEAT.md    ← heartbeat checklist
+├── BOOT.md         ← startup sequence (run on session start)
 ├── skills/         ← workspace-level skill overrides (highest priority)
 └── memory/         ← daily session logs (YYYY-MM-DD.md)
 ```
 
 All workspace files are plain Markdown — grep-able, git-backup-friendly, fully transparent.
+
+Populate them with `agnoclaw init` (interactive wizard) or write them directly.
 
 ### Example SOUL.md
 
@@ -441,6 +465,39 @@ review_team.print_response("Review src/database.py", stream=True)
 
 ---
 
+## Multi-session project tracking (ProgressToolkit)
+
+For complex projects that span multiple sessions or context windows:
+
+```python
+import json
+from agnoclaw.tools.tasks import ProgressToolkit
+
+toolkit = ProgressToolkit(project_dir=".")
+
+# Define requirements upfront (all start as failing)
+toolkit.write_features(json.dumps([
+    {"id": "auth-01", "description": "Users can register"},
+    {"id": "api-01",  "description": "GET /users/{id} returns profile"},
+]))
+
+# Mark features passing as you implement them
+toolkit.update_feature_status("auth-01", "passing")
+
+# Save progress before a session ends / context compacts
+toolkit.write_progress(
+    summary="Auth complete. Starting API layer.",
+    next_steps="1. Implement GET /users/{id}\n2. Write tests",
+    context="JWT secret in JWT_SECRET env var",
+)
+
+# Resume at the start of the next session
+print(toolkit.read_progress())
+print(toolkit.read_features())
+```
+
+---
+
 ## Architecture
 
 ```
@@ -458,21 +515,44 @@ agnoclaw/
 │   │   ├── bash.py        # Shell execution
 │   │   ├── files.py       # Read/Write/Edit/Glob/Grep
 │   │   ├── web.py         # WebSearch/WebFetch
-│   │   └── tasks.py       # TodoTool + SubagentTool
+│   │   └── tasks.py       # TodoToolkit + ProgressToolkit + SubagentTool
 │   ├── skills/
 │   │   ├── loader.py      # SKILL.md parser (AgentSkills standard)
 │   │   └── registry.py    # Discovery + selective injection
 │   ├── heartbeat/
 │   │   └── daemon.py      # Asyncio heartbeat scheduler
 │   └── cli/
-│       └── main.py        # Click CLI
+│       └── main.py        # Click CLI (init, chat, run, skill, heartbeat, workspace)
 ├── skills/                # Built-in skills
 │   ├── deep-research/
 │   ├── code-review/
 │   ├── git-workflow/
 │   ├── daily-standup/
 │   └── memory-manage/
-└── examples/
+└── examples/              # 17 runnable examples
+    ├── ollama_local.py    # Local inference (no API key)
+    ├── openclaw_style.py  # Full OpenClaw-style setup
+    ├── openclaw_skills.py # Skill hub creation and usage
+    ├── progress_tracking.py # ProgressToolkit lifecycle
+    └── ...
+```
+
+---
+
+## Testing
+
+```bash
+# Unit tests (no API key needed, ~0.8s)
+uv run pytest tests/ -m "not integration" -q
+
+# Integration tests with Ollama (local, no API key)
+uv run pytest tests/test_integration.py -v
+
+# Integration tests with a larger local model
+AGNOCLAW_TEST_MODEL=qwen3:8b uv run pytest tests/test_integration.py -v
+
+# Integration tests with Anthropic
+AGNOCLAW_TEST_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-... pytest tests/test_integration.py
 ```
 
 ---
