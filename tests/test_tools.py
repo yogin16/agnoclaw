@@ -402,3 +402,155 @@ def test_web_toolkit_both_enabled_by_default():
     toolkit = WebToolkit()
     assert toolkit.search_enabled is True
     assert toolkit.fetch_enabled is True
+
+
+# ── ProgressToolkit tests ────────────────────────────────────────────────
+
+
+def test_progress_toolkit_write_and_read(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    result = tk.write_progress("Completed auth module", "Implement API endpoints")
+    assert isinstance(result, str)
+    assert "progress.md" in result
+
+    content = tk.read_progress()
+    assert "Completed auth module" in content
+    assert "Implement API endpoints" in content
+
+
+def test_progress_toolkit_write_progress_includes_context(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    tk.write_progress("Done", "Next: tests", context="Use pytest, not unittest")
+    content = tk.read_progress()
+    assert "Use pytest, not unittest" in content
+
+
+def test_progress_toolkit_read_missing(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    result = tk.read_progress()
+    assert "No previous progress" in result or "fresh" in result.lower()
+
+
+def test_progress_toolkit_write_features(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+    import json
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    features = json.dumps([
+        {"id": "auth-01", "description": "Users can register"},
+        {"id": "auth-02", "description": "Users can log in"},
+    ])
+    result = tk.write_features(features)
+    assert isinstance(result, str)
+    assert "features.md" in result
+
+
+def test_progress_toolkit_read_features(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+    import json
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    features = json.dumps([{"id": "api-01", "description": "GET /items returns list"}])
+    tk.write_features(features)
+
+    content = tk.read_features()
+    assert "api-01" in content
+    assert "GET /items" in content
+    assert "failing" in content  # default status
+
+
+def test_progress_toolkit_read_features_missing(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    result = tk.read_features()
+    assert "No features" in result or "write_features" in result
+
+
+def test_progress_toolkit_update_feature_passing(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+    import json
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    tk.write_features(json.dumps([{"id": "feat-01", "description": "Basic CRUD"}]))
+
+    result = tk.update_feature_status("feat-01", "passing")
+    assert "passing" in result
+
+    content = tk.read_features()
+    assert "`passing`" in content
+    assert "✅" in content
+
+
+def test_progress_toolkit_update_feature_failing(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+    import json
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    tk.write_features(json.dumps([{"id": "feat-01", "description": "Basic CRUD", "status": "passing"}]))
+
+    result = tk.update_feature_status("feat-01", "failing")
+    assert "failing" in result
+
+    content = tk.read_features()
+    assert "`failing`" in content
+
+
+def test_progress_toolkit_update_feature_not_found(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+    import json
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    tk.write_features(json.dumps([{"id": "feat-01", "description": "CRUD"}]))
+
+    result = tk.update_feature_status("nonexistent-99", "passing")
+    assert "error" in result.lower() or "not found" in result.lower()
+
+
+def test_progress_toolkit_update_feature_invalid_status(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+    import json
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    tk.write_features(json.dumps([{"id": "feat-01", "description": "CRUD"}]))
+
+    result = tk.update_feature_status("feat-01", "unknown_status")
+    assert "error" in result.lower()
+
+
+def test_progress_toolkit_write_features_invalid_json(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    result = tk.write_features("not valid json {{")
+    assert "error" in result.lower()
+
+
+def test_progress_toolkit_update_without_features_file(tmp_path):
+    from agnoclaw.tools.tasks import ProgressToolkit
+
+    tk = ProgressToolkit(project_dir=str(tmp_path))
+    result = tk.update_feature_status("feat-01", "passing")
+    assert "error" in result.lower()
+
+
+def test_progress_toolkit_default_project_dir():
+    from agnoclaw.tools.tasks import ProgressToolkit
+    tk = ProgressToolkit()
+    assert tk._project_dir == "."
+
+
+def test_get_default_tools_includes_progress():
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.tasks import ProgressToolkit
+    from agnoclaw.config import HarnessConfig
+
+    cfg = HarnessConfig()
+    tools = get_default_tools(cfg)
+    assert any(isinstance(t, ProgressToolkit) for t in tools)

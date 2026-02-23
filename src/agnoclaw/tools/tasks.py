@@ -1,10 +1,16 @@
 """
 Task and planning tools.
 
-TodoTool — no-op planning tool (context engineering, not execution).
-            Models that write todos reason more clearly about multi-step work.
-            Inspired by Claude Code's TodoWrite/TaskUpdate pattern and
-            LangChain DeepAgents' TodoListMiddleware.
+TodoToolkit — no-op planning tool (context engineering, not execution).
+              Models that write todos reason more clearly about multi-step work.
+              Inspired by Claude Code's TodoWrite/TaskUpdate pattern and
+              LangChain DeepAgents' TodoListMiddleware.
+
+ProgressToolkit — multi-context-window project persistence.
+                  Writes progress.md (session continuity) and features.md
+                  (requirement checklist). Inspired by Claude Code's
+                  progress.md pattern and the initializer-then-coder pattern
+                  for complex multi-phase projects.
 
 SubagentTool — spawns an isolated sub-agent for a discrete subtask.
                Protects main context window from bloat (research, analysis,
@@ -15,6 +21,7 @@ SubagentTool — spawns an isolated sub-agent for a discrete subtask.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Optional
 
 from agno.tools import tool
@@ -136,6 +143,192 @@ class TodoToolkit(Toolkit):
             return f"[error] Todo #{todo_id} not found."
         subject = self._todos.pop(todo_id)["subject"]
         return f"Deleted todo #{todo_id}: {subject}"
+
+
+class ProgressToolkit(Toolkit):
+    """
+    Multi-context-window project persistence toolkit.
+
+    Designed for complex, long-running projects that span multiple sessions
+    or require more context than a single window can hold. The agent uses
+    this to:
+
+    - Save progress before context compaction or session end so the NEXT
+      session picks up exactly where things left off (progress.md)
+    - Track feature-level requirements as a pass/fail checklist — all
+      features start failing and get marked passing as they're implemented
+      (features.md)
+
+    Typical workflow for a large project:
+      1. write_features — define all requirements upfront (all start failing)
+      2. Do work across multiple sessions / context windows
+      3. update_feature_status — mark each feature passing as it's completed
+      4. write_progress — save state before session ends / context compacts
+      5. read_progress — at the start of the next session to resume
+
+    Modeled after Claude Code's progress.md + initializer-then-coder pattern
+    and the OpenClaw pre-compaction memory flush.
+
+    Args:
+        project_dir: Directory where progress.md and features.md are written.
+                     Defaults to the current working directory.
+    """
+
+    def __init__(self, project_dir: str = "."):
+        super().__init__(name="progress")
+        self._project_dir = project_dir
+        self.register(self.write_progress)
+        self.register(self.read_progress)
+        self.register(self.write_features)
+        self.register(self.read_features)
+        self.register(self.update_feature_status)
+
+    def _path(self, filename: str) -> Path:
+        return Path(self._project_dir).expanduser() / filename
+
+    def write_progress(self, summary: str, next_steps: str, context: str = "") -> str:
+        """
+        Save progress for the next session/context window to pick up.
+
+        Call this BEFORE a session ends, when context is nearly full, or
+        after completing a major milestone. The next session should call
+        read_progress first thing to understand the current state.
+
+        Args:
+            summary: What was accomplished so far (plain prose or bullet list).
+            next_steps: Concrete next steps for the next session to execute.
+            context: Important context the next session needs — file paths,
+                     decisions made, known issues, architecture notes.
+
+        Returns:
+            Confirmation with the file path written.
+        """
+        from datetime import datetime
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        parts = [
+            f"# Progress — {timestamp}\n",
+            f"## Summary\n{summary}",
+            f"## Next Steps\n{next_steps}",
+        ]
+        if context:
+            parts.append(f"## Context\n{context}")
+
+        content = "\n\n".join(parts) + "\n"
+        path = self._path("progress.md")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return f"Progress saved to {path}"
+
+    def read_progress(self) -> str:
+        """
+        Read the progress file from a previous session.
+
+        Call this at the START of a new session or after context compaction
+        to understand what was done and what needs to happen next.
+
+        Returns:
+            Progress file content, or a message if no progress file exists.
+        """
+        path = self._path("progress.md")
+        if not path.exists():
+            return "No previous progress found. Starting fresh."
+        return path.read_text(encoding="utf-8")
+
+    def write_features(self, features: str) -> str:
+        """
+        Write a feature requirements checklist for a complex project.
+
+        Use this at the START of a complex project (or in an initializer
+        session) to define all requirements upfront. All features begin as
+        'failing'. Mark them 'passing' as they are implemented and verified
+        with update_feature_status.
+
+        Args:
+            features: JSON array of feature objects, each with:
+                - id: short identifier (e.g. "auth-01", "api-pagination")
+                - description: what this feature should do (one sentence)
+                - status (optional): "failing" (default) or "passing"
+              Example: [{"id": "auth-01", "description": "Users can register"}]
+
+        Returns:
+            Confirmation with the feature count.
+        """
+        try:
+            items = json.loads(features)
+        except (json.JSONDecodeError, TypeError):
+            return "[error] features must be a JSON array of {id, description} objects"
+
+        lines = ["# Feature Requirements\n"]
+        for item in items:
+            fid = item.get("id", "?")
+            desc = item.get("description", "")
+            status = item.get("status", "failing")
+            icon = "✅" if status == "passing" else "❌"
+            lines.append(f"{icon} **{fid}**: {desc} `{status}`")
+
+        content = "\n".join(lines) + "\n"
+        path = self._path("features.md")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return f"Features written to {path} ({len(items)} items)"
+
+    def read_features(self) -> str:
+        """
+        Read the feature requirements checklist.
+
+        Shows which features are passing and which are still failing.
+        Use this to understand overall project completion at a glance.
+
+        Returns:
+            Features checklist, or a message if no features file exists.
+        """
+        path = self._path("features.md")
+        if not path.exists():
+            return "No features file found. Use write_features to create one."
+        return path.read_text(encoding="utf-8")
+
+    def update_feature_status(self, feature_id: str, status: str) -> str:
+        """
+        Mark a feature as passing or failing.
+
+        Call this after implementing and verifying each feature. Keeping
+        features.md up to date gives you an accurate project completion view
+        across sessions.
+
+        Args:
+            feature_id: The feature ID to update (e.g. "auth-01").
+            status: New status — "passing" or "failing".
+
+        Returns:
+            Confirmation, or an error if the feature ID was not found.
+        """
+        path = self._path("features.md")
+        if not path.exists():
+            return "[error] No features file found. Use write_features first."
+        if status not in {"passing", "failing"}:
+            return "[error] status must be 'passing' or 'failing'"
+
+        content = path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        new_lines = []
+        updated = False
+
+        for line in lines:
+            if f"**{feature_id}**" in line:
+                if status == "passing":
+                    line = line.replace("❌", "✅").replace("`failing`", "`passing`")
+                else:
+                    line = line.replace("✅", "❌").replace("`passing`", "`failing`")
+                updated = True
+            new_lines.append(line)
+
+        if not updated:
+            return f"[error] Feature '{feature_id}' not found in features.md"
+
+        path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        icon = "✅" if status == "passing" else "❌"
+        return f"{icon} Feature '{feature_id}' → {status}"
 
 
 def make_subagent_tool(default_model: Optional[str] = None):

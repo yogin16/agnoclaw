@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from .bash import make_bash_tool
 from .files import FilesToolkit
-from .tasks import TodoToolkit, make_subagent_tool
+from .tasks import ProgressToolkit, TodoToolkit, make_subagent_tool
 from .web import WebToolkit
 
 __all__ = [
@@ -25,6 +25,7 @@ __all__ = [
     "FilesToolkit",
     "WebToolkit",
     "TodoToolkit",
+    "ProgressToolkit",
     "make_subagent_tool",
     "get_default_tools",
 ]
@@ -58,6 +59,9 @@ def get_default_tools(config: Optional["HarnessConfig"] = None) -> list:
 
     # Planning (always enabled — context engineering)
     tools.append(TodoToolkit())
+
+    # Multi-window project tracking (always enabled)
+    tools.append(ProgressToolkit())
 
     # Sub-agent spawning
     tools.append(make_subagent_tool(default_model=cfg.default_model))
