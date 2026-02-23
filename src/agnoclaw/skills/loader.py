@@ -53,9 +53,15 @@ class SkillMeta:
     homepage: Optional[str] = None
     # OpenClaw extensions
     requires_bins: list[str] = field(default_factory=list)
+    requires_any_bins: list[str] = field(default_factory=list)  # at least one must exist
     requires_env: list[str] = field(default_factory=list)
-    os_restriction: Optional[str] = None  # "darwin", "linux", "win32"
+    os_platforms: list[str] = field(default_factory=list)  # ["darwin", "linux", "win32"]
     always: bool = False  # skip all gate checks
+    # Command dispatch (OpenClaw: bypass model, run tool directly)
+    command_dispatch: Optional[str] = None  # "tool"
+    command_tool: Optional[str] = None
+    # Display
+    emoji: Optional[str] = None
 
 
 @dataclass
@@ -138,9 +144,31 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
     else:
         allowed_tools = list(allowed_tools_raw)
 
-    # Parse OpenClaw gating metadata
-    openclaw_meta = metadata.get("metadata", {}).get("openclaw", {})
+    # Parse OpenClaw gating metadata.
+    # Accepts aliases: metadata.openclaw, metadata.clawdbot, metadata.clawdis
+    raw_meta = metadata.get("metadata") or {}
+    if isinstance(raw_meta, str):
+        # Some tools serialize metadata as single-line JSON
+        try:
+            import json as _json
+            raw_meta = _json.loads(raw_meta)
+        except Exception:
+            raw_meta = {}
+    openclaw_meta = (
+        raw_meta.get("openclaw")
+        or raw_meta.get("clawdbot")
+        or raw_meta.get("clawdis")
+        or {}
+    )
     requires = openclaw_meta.get("requires", {})
+
+    # os_platforms: normalize string or list → list of strings
+    # OpenClaw uses ["darwin", "linux", "win32"] or a single string
+    raw_os = openclaw_meta.get("os", [])
+    if isinstance(raw_os, str):
+        os_platforms = [raw_os] if raw_os else []
+    else:
+        os_platforms = list(raw_os)
 
     meta = SkillMeta(
         name=name,
@@ -156,9 +184,13 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
         argument_hint=metadata.get("argument-hint", metadata.get("argument_hint")),
         homepage=metadata.get("homepage"),
         requires_bins=requires.get("bins", []),
+        requires_any_bins=requires.get("anyBins", requires.get("any_bins", [])),
         requires_env=requires.get("env", []),
-        os_restriction=openclaw_meta.get("os"),
+        os_platforms=os_platforms,
         always=openclaw_meta.get("always", False),
+        command_dispatch=metadata.get("command-dispatch", metadata.get("command_dispatch")),
+        command_tool=metadata.get("command-tool", metadata.get("command_tool")),
+        emoji=openclaw_meta.get("emoji"),
     )
 
     return Skill(meta=meta, content=content, path=skill_md_path)

@@ -171,18 +171,23 @@ class SkillRegistry:
         if skill.meta.always:
             return True
 
-        # OS restriction
-        if skill.meta.os_restriction:
+        # OS restriction (list of platforms: "darwin", "linux", "win32")
+        if skill.meta.os_platforms:
             import platform
             current_os = platform.system().lower()
             mapping = {"darwin": "darwin", "linux": "linux", "windows": "win32"}
             current = mapping.get(current_os, current_os)
-            if current != skill.meta.os_restriction:
+            if current not in skill.meta.os_platforms:
                 return False
 
-        # Required binaries
+        # Required binaries (all must exist)
         for bin_name in skill.meta.requires_bins:
             if not self._which(bin_name):
+                return False
+
+        # anyBins (at least one must exist)
+        if skill.meta.requires_any_bins:
+            if not any(self._which(b) for b in skill.meta.requires_any_bins):
                 return False
 
         # Required env vars
