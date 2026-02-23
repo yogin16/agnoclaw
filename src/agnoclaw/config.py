@@ -91,6 +91,28 @@ class HarnessConfig(BaseSettings):
     skills_dirs: list[str] = Field(default_factory=list)
     """Additional skill directories to load from."""
 
+    # Learning (Agno LearningMachine)
+    enable_learning: bool = False
+    """Enable cross-session institutional learning (Agno LearningMachine).
+    When enabled, the agent accumulates patterns and insights that persist
+    across all sessions and users — forming institutional memory.
+    Disable if data isolation between users is required."""
+
+    learning_mode: str = "agentic"
+    """Learning mode: 'always' | 'agentic' | 'propose' | 'hitl'.
+    - always:  extract learnings after every run (automatic)
+    - agentic: agent decides when to record learnings (default)
+    - propose: learnings are proposed to the human for review
+    - hitl:    human must approve each learning before it is stored
+    """
+
+    # Culture (Agno CultureManager — team-level norms)
+    enable_culture: bool = False
+    """Enable team-level cultural knowledge (Agno CultureManager).
+    Useful when multiple users share an agent and want to accumulate
+    team norms, conventions, and shared context.
+    Requires enable_learning=True to be meaningful."""
+
     # Heartbeat
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 

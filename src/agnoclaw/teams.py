@@ -32,6 +32,8 @@ def research_team(
     provider: Optional[str] = None,
     config: Optional[HarnessConfig] = None,
     session_id: Optional[str] = None,
+    enable_learning: bool = False,
+    enable_culture: bool = False,
 ) -> Team:
     """
     A three-agent research team:
@@ -51,6 +53,21 @@ def research_team(
     model = _make_model(model_id, provider)
     web = WebToolkit()
 
+    # Learning machine for research patterns (namespaced to this team)
+    _learning = None
+    if enable_learning:
+        from .memory import build_learning_machine
+        _learning = build_learning_machine(db=db, namespace="research-team")
+
+    _culture = None
+    if enable_culture:
+        from .memory import build_culture_manager
+        _culture = build_culture_manager(
+            db=db,
+            extra_instructions="Focus on research methodology norms: source quality standards, "
+            "citation practices, synthesis conventions this team has adopted.",
+        )
+
     researcher = Agent(
         name="Researcher",
         role="Find factual information from multiple sources. Search broadly, read deeply. Always cite URLs.",
@@ -58,6 +75,8 @@ def research_team(
         tools=[web, TodoToolkit()],
         db=db,
         markdown=True,
+        learning=_learning,
+        add_learnings_to_context=enable_learning,
     )
 
     analyst = Agent(
@@ -70,6 +89,8 @@ def research_team(
         tools=[TodoToolkit()],
         db=db,
         markdown=True,
+        learning=_learning,
+        add_learnings_to_context=enable_learning,
     )
 
     writer = Agent(
@@ -82,6 +103,8 @@ def research_team(
         model=model,
         db=db,
         markdown=True,
+        learning=_learning,
+        add_learnings_to_context=enable_learning,
     )
 
     return Team(
@@ -99,6 +122,9 @@ def research_team(
         session_id=session_id,
         show_members_responses=True,
         markdown=True,
+        learning=_learning,
+        culture_manager=_culture,
+        add_learnings_to_context=enable_learning,
     )
 
 
@@ -107,6 +133,8 @@ def code_team(
     provider: Optional[str] = None,
     config: Optional[HarnessConfig] = None,
     session_id: Optional[str] = None,
+    enable_learning: bool = False,
+    enable_culture: bool = False,
 ) -> Team:
     """
     A three-agent software development team:
@@ -127,6 +155,21 @@ def code_team(
     files = FilesToolkit()
     bash = make_bash_tool(timeout=cfg.bash_timeout_seconds)
 
+    # Learning for code patterns — namespaced separately from research
+    _learning = None
+    if enable_learning:
+        from .memory import build_learning_machine
+        _learning = build_learning_machine(db=db, namespace="code-team")
+
+    _culture = None
+    if enable_culture:
+        from .memory import build_culture_manager
+        _culture = build_culture_manager(
+            db=db,
+            extra_instructions="Focus on engineering norms: code review standards, "
+            "testing conventions, architecture decision patterns, anti-patterns to avoid.",
+        )
+
     architect = Agent(
         name="Architect",
         role=(
@@ -138,6 +181,8 @@ def code_team(
         tools=[files, TodoToolkit()],
         db=db,
         markdown=True,
+        learning=_learning,
+        add_learnings_to_context=enable_learning,
     )
 
     implementer = Agent(
@@ -151,6 +196,8 @@ def code_team(
         tools=[files, bash, TodoToolkit()],
         db=db,
         markdown=True,
+        learning=_learning,
+        add_learnings_to_context=enable_learning,
     )
 
     reviewer = Agent(
@@ -165,6 +212,8 @@ def code_team(
         tools=[files, bash],
         db=db,
         markdown=True,
+        learning=_learning,
+        add_learnings_to_context=enable_learning,
     )
 
     return Team(
@@ -182,6 +231,9 @@ def code_team(
         session_id=session_id,
         show_members_responses=True,
         markdown=True,
+        learning=_learning,
+        culture_manager=_culture,
+        add_learnings_to_context=enable_learning,
     )
 
 

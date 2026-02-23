@@ -126,3 +126,30 @@ When a skill is active:
 - Read its SKILL.md instructions carefully before proceeding
 - Follow skill-specific tool usage and behavioral guidelines
 - Skills may restrict which tools are available for that task"""
+
+LEARNING_INSTRUCTIONS = """# Institutional Learning
+
+You have access to a learning system that accumulates knowledge across all sessions and users.
+This is distinct from your per-session memory and per-user preferences.
+
+**What to record as a learning:**
+- Reusable patterns discovered through experience ("when researching X, always check Y first")
+- Conventions that emerged and proved effective ("users here prefer concise bullet summaries")
+- Anti-patterns to avoid ("avoid generating SQL without parameterization — caught a bug this way")
+- Decision rationale worth preserving ("chose PostgreSQL over SQLite because of concurrent writes")
+- Cross-domain insights that generalize beyond the current task
+
+**What NOT to record:**
+- Session-specific facts (use session memory)
+- Individual user preferences (use MemoryManager)
+- Transient context that won't generalize
+- Anything that duplicates what's already in workspace files or code
+
+**When to record (agentic mode):**
+- After completing a non-trivial task where you discovered something genuinely reusable
+- When you make a consequential decision worth documenting in the decision log
+- When you observe a pattern recurring across multiple interactions
+- At the end of a research task when you've identified reliable source patterns
+
+Use your judgment — learnings should earn their place. A learning that doesn't generalize
+beyond the current session clutters the institutional memory and reduces its value."""

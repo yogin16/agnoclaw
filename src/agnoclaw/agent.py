@@ -8,23 +8,30 @@ Wraps Agno's Agent with:
   - Default tool suite (bash, files, web, tasks, subagent)
   - Persistent session storage (SQLite or Postgres)
   - Multi-provider model support (any Agno-supported model)
+  - Three-tier memory: workspace files → MemoryManager → LearningMachine
+
+Memory tiers:
+  1. Workspace files (Markdown) — human-readable, per-workspace context
+  2. MemoryManager — structured per-user facts, extracted and stored in SQL
+  3. LearningMachine — institutional cross-user knowledge that accumulates
+     over time (patterns, conventions, learnings from experience)
 
 Usage:
     from agnoclaw import HarnessAgent
 
+    # Basic
     agent = HarnessAgent()
-    response = agent.run("Summarize the latest news about AI")
-    print(response.content)
-
-    # Or interactive:
     agent.print_response("Find and fix the bug in src/auth.py")
 
-    # With custom config:
+    # With learning enabled (institutional memory)
+    agent = HarnessAgent(enable_learning=True, learning_mode="agentic")
+
+    # With per-user memory + learning
     agent = HarnessAgent(
-        model_id="gpt-4o",
-        provider="openai",
-        session_id="my-session",
         user_id="alice",
+        enable_user_memory=True,
+        enable_learning=True,
+        learning_namespace="code-review",
     )
 """
 
@@ -149,6 +156,12 @@ class HarnessAgent:
         name: str = "agnoclaw",
         agent_id: Optional[str] = None,
         debug: bool = False,
+        # Memory options
+        enable_user_memory: bool = False,
+        enable_learning: Optional[bool] = None,
+        learning_mode: Optional[str] = None,
+        learning_namespace: Optional[str] = None,
+        enable_culture: Optional[bool] = None,
     ):
         self.config = config or get_config()
         self.name = name
@@ -176,13 +189,41 @@ class HarnessAgent:
         if extra_tools:
             tools.extend(extra_tools)
 
+        # Resolve learning flags before building system prompt
+        _enable_learning = enable_learning if enable_learning is not None else self.config.enable_learning
+        _learning_mode = learning_mode or self.config.learning_mode
+        _enable_culture = enable_culture if enable_culture is not None else self.config.enable_culture
+
         # Assemble system prompt (initial — skills injected dynamically)
         system_prompt = self._prompt_builder.build(
             extra_context=extra_instructions,
+            include_learning=_enable_learning,
         )
 
         # Storage backend
         db = _make_db(self.config)
+
+        # ── Memory tier 2: per-user MemoryManager ─────────────────────────
+        memory_manager = None
+        if enable_user_memory:
+            from .memory import build_memory_manager
+            memory_manager = build_memory_manager(db=db)
+
+        # ── Memory tier 3: LearningMachine ────────────────────────────────
+        # Institutional cross-user knowledge — patterns, conventions, insights
+        learning = None
+        if _enable_learning:
+            from .memory import build_learning_machine
+            learning = build_learning_machine(
+                db=db,
+                namespace=learning_namespace or name,
+                mode=_learning_mode,
+            )
+
+        culture_manager = None
+        if _enable_culture:
+            from .memory import build_culture_manager
+            culture_manager = build_culture_manager(db=db)
 
         # Core Agno Agent
         self._agent = Agent(
@@ -198,6 +239,14 @@ class HarnessAgent:
             num_history_runs=self.config.session_history_runs,
             markdown=True,
             debug_mode=debug or self.config.debug,
+            # Memory tier 2: per-user structured facts
+            memory_manager=memory_manager,
+            enable_agentic_memory=enable_user_memory,
+            add_memories_to_context=enable_user_memory,
+            # Memory tier 3: institutional cross-user knowledge
+            learning=learning,
+            add_learnings_to_context=_enable_learning,
+            culture_manager=culture_manager,
         )
 
     def run(

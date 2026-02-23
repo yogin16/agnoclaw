@@ -27,6 +27,7 @@ from .sections import (
     DOING_TASKS,
     GIT_PROTOCOL,
     IDENTITY,
+    LEARNING_INSTRUCTIONS,
     MEMORY_INSTRUCTIONS,
     SECURITY,
     SKILL_INSTRUCTIONS,
@@ -53,8 +54,17 @@ class SystemPromptBuilder:
         skill_content: Optional[str] = None,
         include_datetime: bool = True,
         extra_context: Optional[str] = None,
+        include_learning: bool = False,
     ) -> str:
-        """Build the full system prompt string."""
+        """
+        Build the full system prompt string.
+
+        Args:
+            skill_content: Active skill's SKILL.md content (selective injection).
+            include_datetime: Inject current date/time into context.
+            extra_context: Additional instructions (enterprise config, project CLAUDE.md).
+            include_learning: Include the Learning section (only when LearningMachine is active).
+        """
         parts: list[str] = []
 
         # 1-8: Core sections
@@ -66,6 +76,10 @@ class SystemPromptBuilder:
         parts.append(GIT_PROTOCOL)
         parts.append(MEMORY_INSTRUCTIONS)
         parts.append(SKILL_INSTRUCTIONS)
+
+        # 9: Learning instructions (only injected when LearningMachine is active)
+        if include_learning:
+            parts.append(LEARNING_INSTRUCTIONS)
 
         # 9: Custom enterprise/user sections
         parts.extend(self._custom_sections)
