@@ -624,3 +624,220 @@ def test_get_default_tools_includes_progress():
     cfg = HarnessConfig()
     tools = get_default_tools(cfg)
     assert any(isinstance(t, ProgressToolkit) for t in tools)
+
+
+# ── SubagentDefinition tests ─────────────────────────────────────────────
+
+
+def test_subagent_definition_fields():
+    """SubagentDefinition should have expected fields with correct defaults."""
+    from agnoclaw.tools.tasks import SubagentDefinition
+
+    defn = SubagentDefinition(description="A test agent")
+    assert defn.description == "A test agent"
+    assert defn.prompt == ""
+    assert defn.tools == ["all"]
+    assert defn.model is None
+
+
+def test_subagent_definition_custom_fields():
+    from agnoclaw.tools.tasks import SubagentDefinition
+
+    defn = SubagentDefinition(
+        description="Code reviewer",
+        prompt="Review code for security issues.",
+        tools=["files", "bash"],
+        model="anthropic:claude-sonnet-4-6",
+    )
+    assert defn.description == "Code reviewer"
+    assert defn.prompt == "Review code for security issues."
+    assert defn.tools == ["files", "bash"]
+    assert defn.model == "anthropic:claude-sonnet-4-6"
+
+
+def test_subagent_definition_importable_from_package():
+    """SubagentDefinition should be importable from the top-level package."""
+    from agnoclaw import SubagentDefinition
+    assert SubagentDefinition is not None
+
+
+def test_subagent_definition_importable_from_tools():
+    """SubagentDefinition should be importable from agnoclaw.tools."""
+    from agnoclaw.tools import SubagentDefinition
+    assert SubagentDefinition is not None
+
+
+# ── make_subagent_tool tests ─────────────────────────────────────────────
+
+
+def test_make_subagent_tool_returns_function():
+    from agnoclaw.tools.tasks import make_subagent_tool
+
+    tool = make_subagent_tool()
+    assert hasattr(tool, "name")
+    assert tool.name == "spawn_subagent"
+
+
+def test_make_subagent_tool_with_named_agents():
+    """Named agents should appear in the tool description."""
+    from agnoclaw.tools.tasks import make_subagent_tool, SubagentDefinition
+
+    subagents = {
+        "researcher": SubagentDefinition(description="Searches the web for information"),
+        "reviewer": SubagentDefinition(description="Reviews code for bugs"),
+    }
+    tool = make_subagent_tool(subagents=subagents)
+    desc = tool.description
+    assert "researcher" in desc
+    assert "reviewer" in desc
+    assert "Searches the web" in desc
+    assert "Reviews code" in desc
+
+
+def test_make_subagent_tool_no_named_agents():
+    """Without named agents, description should not mention 'Named agents'."""
+    from agnoclaw.tools.tasks import make_subagent_tool
+
+    tool = make_subagent_tool()
+    assert "Named agents" not in tool.description
+
+
+def test_make_subagent_tool_runs_subagent():
+    """spawn_subagent should create and run an Agent."""
+    from agnoclaw.tools.tasks import make_subagent_tool
+
+    tool = make_subagent_tool(default_model="anthropic:test-model")
+
+    with patch("agnoclaw.tools.tasks._run_subagent") as mock_run:
+        mock_run.return_value = "subagent result"
+        result = tool.entrypoint("Analyze this code")
+        mock_run.assert_called_once()
+        assert result == "subagent result"
+
+
+def test_make_subagent_tool_named_agent_lookup():
+    """When agent_name matches, use the named definition's prompt and model."""
+    from agnoclaw.tools.tasks import make_subagent_tool, SubagentDefinition
+
+    subagents = {
+        "analyst": SubagentDefinition(
+            description="Data analyst",
+            prompt="You are an expert data analyst.",
+            model="openai:gpt-4o",
+        ),
+    }
+    tool = make_subagent_tool(subagents=subagents)
+
+    with patch("agnoclaw.tools.tasks._run_subagent") as mock_run:
+        mock_run.return_value = "analysis done"
+        result = tool.entrypoint("Analyze sales data", agent_name="analyst")
+        call_args = mock_run.call_args
+        assert call_args[0][1] == "You are an expert data analyst."  # instructions
+        assert call_args[0][2] == "openai:gpt-4o"  # model_id
+        assert result == "analysis done"
+
+
+def test_make_subagent_tool_ad_hoc_type():
+    """Ad-hoc agent_type should set instructions from _TYPE_INSTRUCTIONS."""
+    from agnoclaw.tools.tasks import make_subagent_tool
+
+    tool = make_subagent_tool()
+
+    with patch("agnoclaw.tools.tasks._run_subagent") as mock_run:
+        mock_run.return_value = "done"
+        tool.entrypoint("Research AI trends", agent_type="research")
+        instructions = mock_run.call_args[0][1]
+        assert "research" in instructions.lower()
+
+
+def test_make_subagent_tool_custom_prompt_overrides_type():
+    """Custom prompt should override agent_type instructions."""
+    from agnoclaw.tools.tasks import make_subagent_tool
+
+    tool = make_subagent_tool()
+
+    with patch("agnoclaw.tools.tasks._run_subagent") as mock_run:
+        mock_run.return_value = "done"
+        tool.entrypoint("Do X", prompt="Custom instructions here", agent_type="research")
+        instructions = mock_run.call_args[0][1]
+        assert instructions == "Custom instructions here"
+
+
+def test_make_subagent_tool_handles_errors():
+    """spawn_subagent should return error string on failure, not raise."""
+    from agnoclaw.tools.tasks import make_subagent_tool
+
+    tool = make_subagent_tool()
+
+    with patch("agnoclaw.tools.tasks._run_subagent", side_effect=RuntimeError("boom")):
+        result = tool.entrypoint("fail task")
+        assert "[error]" in result
+        assert "boom" in result
+
+
+# ── _run_subagent / _build_subagent_tools tests ─────────────────────────
+
+
+def test_build_subagent_tools_all():
+    """'all' should include web, files, and bash tools."""
+    from agnoclaw.tools.tasks import _build_subagent_tools
+
+    tools = _build_subagent_tools(["all"])
+    assert len(tools) == 3  # WebToolkit, FilesToolkit, bash
+
+
+def test_build_subagent_tools_specific():
+    """Specific tool names should only include those tools."""
+    from agnoclaw.tools.tasks import _build_subagent_tools
+
+    tools = _build_subagent_tools(["web"])
+    assert len(tools) == 1
+
+    tools = _build_subagent_tools(["files", "bash"])
+    assert len(tools) == 2
+
+
+def test_build_subagent_tools_none_defaults_to_all():
+    """None should default to all tools."""
+    from agnoclaw.tools.tasks import _build_subagent_tools
+
+    tools = _build_subagent_tools(None)
+    assert len(tools) == 3
+
+
+def test_run_subagent_truncates_long_output():
+    """_run_subagent should truncate responses over 8000 chars."""
+    from agnoclaw.tools.tasks import _run_subagent
+
+    mock_response = MagicMock()
+    mock_response.content = "x" * 10000
+
+    with patch("agno.agent.Agent") as mock_agent_cls:
+        mock_agent = MagicMock()
+        mock_agent.run.return_value = mock_response
+        mock_agent_cls.return_value = mock_agent
+        result = _run_subagent("task", "instructions", "model")
+        assert len(result) < 10000
+        assert "truncated" in result
+
+
+# ── get_default_tools subagent passthrough test ──────────────────────────
+
+
+def test_get_default_tools_passes_subagents():
+    """get_default_tools should pass subagents to make_subagent_tool."""
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.tasks import SubagentDefinition
+    from agnoclaw.config import HarnessConfig
+
+    subagents = {
+        "test-agent": SubagentDefinition(description="test"),
+    }
+    cfg = HarnessConfig()
+
+    with patch("agnoclaw.tools.make_subagent_tool") as mock_make:
+        mock_make.return_value = MagicMock()
+        get_default_tools(cfg, subagents=subagents)
+        mock_make.assert_called_once()
+        call_kwargs = mock_make.call_args[1]
+        assert call_kwargs["subagents"] is subagents

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from .bash import make_bash_tool
 from .files import FilesToolkit
-from .tasks import ProgressToolkit, TodoToolkit, make_subagent_tool
+from .tasks import ProgressToolkit, SubagentDefinition, TodoToolkit, make_subagent_tool
 from .web import WebToolkit
 
 __all__ = [
@@ -27,13 +27,21 @@ __all__ = [
     "TodoToolkit",
     "ProgressToolkit",
     "make_subagent_tool",
+    "SubagentDefinition",
     "get_default_tools",
 ]
 
 
-def get_default_tools(config: Optional["HarnessConfig"] = None) -> list:
+def get_default_tools(
+    config: Optional["HarnessConfig"] = None,
+    subagents: Optional[dict[str, SubagentDefinition]] = None,
+) -> list:
     """
     Build the default tool suite based on configuration.
+
+    Args:
+        config: HarnessConfig for tool settings.
+        subagents: Named subagent definitions to register with the SubagentTool.
 
     Returns a list of tools and toolkits ready to pass to AgentHarness.
     """
@@ -63,7 +71,10 @@ def get_default_tools(config: Optional["HarnessConfig"] = None) -> list:
     # Multi-window project tracking (always enabled)
     tools.append(ProgressToolkit())
 
-    # Sub-agent spawning
-    tools.append(make_subagent_tool(default_model=cfg.default_model))
+    # Sub-agent spawning (with optional named agents)
+    tools.append(make_subagent_tool(
+        default_model=cfg.default_model,
+        subagents=subagents,
+    ))
 
     return tools

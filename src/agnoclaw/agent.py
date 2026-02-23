@@ -53,6 +53,7 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Iterator, Optional, Union
 
@@ -64,6 +65,8 @@ from .prompts.system import SystemPromptBuilder
 from .skills.registry import SkillRegistry
 from .tools import get_default_tools
 from .workspace import Workspace
+
+logger = logging.getLogger("agnoclaw.agent")
 
 # Provider name aliases → Agno's canonical provider names
 _PROVIDER_ALIASES: dict[str, str] = {
@@ -148,12 +151,18 @@ class AgentHarness:
         name: Agent name (cosmetic).
         agent_id: Stable agent ID (cosmetic, used in logs).
         debug: Enable debug mode (show tool calls, verbose output).
+        subagents: Named subagent definitions for the spawn_subagent tool.
+                   Dict mapping name → SubagentDefinition. Pre-registered agents
+                   appear in the tool description for the model to invoke by name.
         enable_compression: Enable tool result compression for long sessions.
         compress_token_limit: Token threshold that triggers compression.
         enable_session_summary: Enable automatic session summaries for continuity.
         num_history_runs: Number of prior runs to include in context (default: from config).
         num_history_messages: Max history messages (alternative to num_history_runs).
         max_tool_calls_from_history: Keep only N most recent tool calls from history.
+        max_context_tokens: Max context window tokens. When set, enables automatic
+                           context budget monitoring with warnings at 85% and
+                           auto-compaction at 95%.
         provider: Provider name — only needed when model is not in "provider:model_id"
                   format. Accepts "anthropic", "openai", "ollama", "groq", "google",
                   "aws"/"bedrock", "mistral", "xai"/"grok", "deepseek", "litellm".
@@ -173,6 +182,8 @@ class AgentHarness:
         name: str = "agnoclaw",
         agent_id: Optional[str] = None,
         debug: bool = False,
+        # Subagents
+        subagents: Optional[dict] = None,
         # Memory options
         enable_user_memory: bool = False,
         enable_learning: Optional[bool] = None,
@@ -185,6 +196,7 @@ class AgentHarness:
         num_history_runs: Optional[int] = None,
         num_history_messages: Optional[int] = None,
         max_tool_calls_from_history: Optional[int] = None,
+        max_context_tokens: Optional[int] = None,
         # Legacy compat — use model + provider instead
         model_id: Optional[str] = None,
         extra_tools: Optional[list] = None,
@@ -214,8 +226,15 @@ class AgentHarness:
         # System prompt builder
         self._prompt_builder = SystemPromptBuilder(self.workspace.path)
 
-        # Build tool list
-        _all_tools = get_default_tools(self.config)
+        # Context budget monitoring
+        self._max_context_tokens = max_context_tokens
+
+        # Memory optimization: run Curator periodically to deduplicate/prune
+        self._run_count = 0
+        self._optimize_every_n_runs = 10  # trigger Curator every N runs
+
+        # Build tool list (pass through named subagent definitions)
+        _all_tools = get_default_tools(self.config, subagents=subagents)
         if _tools:
             _all_tools.extend(_tools)
 
@@ -327,13 +346,15 @@ class AgentHarness:
         Returns:
             RunOutput (or Iterator[RunOutputEvent] if stream=True).
         """
+        self._check_context_budget()
+
         if skill:
             skill_content = self.skills.load_skill(skill)
             if skill_content:
                 system_prompt = self._prompt_builder.build(skill_content=skill_content)
                 self._agent.system_message = system_prompt
 
-        return self._agent.run(
+        result = self._agent.run(
             message,
             stream=stream,
             stream_events=stream_events,
@@ -341,6 +362,8 @@ class AgentHarness:
             user_id=user_id or self.user_id,
             **kwargs,
         )
+        self._maybe_optimize_memories()
+        return result
 
     async def arun(
         self,
@@ -354,13 +377,15 @@ class AgentHarness:
         **kwargs,
     ):
         """Async version of run()."""
+        self._check_context_budget()
+
         if skill:
             skill_content = self.skills.load_skill(skill)
             if skill_content:
                 system_prompt = self._prompt_builder.build(skill_content=skill_content)
                 self._agent.system_message = system_prompt
 
-        return await self._agent.arun(
+        result = await self._agent.arun(
             message,
             stream=stream,
             stream_events=stream_events,
@@ -368,6 +393,8 @@ class AgentHarness:
             user_id=user_id or self.user_id,
             **kwargs,
         )
+        self._maybe_optimize_memories()
+        return result
 
     def print_response(self, message: str, *, stream: bool = True, skill: Optional[str] = None, **kwargs) -> None:
         """Run the agent and pretty-print the response to the terminal."""
@@ -423,6 +450,74 @@ class AgentHarness:
         to preserve important context for future sessions.
         """
         self.workspace.write_session_summary(summary)
+
+    def _check_context_budget(self) -> None:
+        """
+        Check token usage against max_context_tokens budget.
+
+        Called before each run() when max_context_tokens is set.
+        Logs a warning at 85% usage. At 95%, logs critical and the caller
+        should consider calling compact_session().
+
+        This is a best-effort check — token counting requires a model with
+        count_tokens() support. Silently skips if unavailable.
+        """
+        if not self._max_context_tokens:
+            return
+
+        try:
+            model = self._agent.model
+            if model is None or not hasattr(model, "count_tokens"):
+                return
+
+            # Get session messages for token counting
+            messages = self._agent.get_chat_history(self.session_id or "")
+            if not messages:
+                return
+
+            tokens = model.count_tokens(messages)
+            budget = self._max_context_tokens
+            usage_pct = tokens / budget
+
+            if usage_pct >= 0.95:
+                logger.critical(
+                    "Context at %d/%d tokens (%.0f%%) — approaching limit. "
+                    "Call compact_session() to flush and compact.",
+                    tokens, budget, usage_pct * 100,
+                )
+            elif usage_pct >= 0.85:
+                logger.warning(
+                    "Context at %d/%d tokens (%.0f%%) — consider compacting soon.",
+                    tokens, budget, usage_pct * 100,
+                )
+        except Exception:
+            pass  # Token counting is best-effort; don't break runs
+
+    def _maybe_optimize_memories(self) -> None:
+        """
+        Periodically trigger LearningMachine's Curator to deduplicate
+        and prune stale memories. Called after each run().
+
+        Runs every _optimize_every_n_runs invocations. Silently skips
+        if learning is not enabled or if the optimization fails.
+        """
+        self._run_count += 1
+        if self._run_count % self._optimize_every_n_runs != 0:
+            return
+
+        learning = self._agent.learning
+        if learning is None:
+            return
+
+        try:
+            if hasattr(learning, "optimize_memories"):
+                learning.optimize_memories()
+                logger.debug(
+                    "LearningMachine memory optimization triggered (run %d).",
+                    self._run_count,
+                )
+        except Exception:
+            pass  # Memory optimization is best-effort
 
     async def compact_session(self) -> None:
         """

@@ -313,3 +313,193 @@ def test_agent_harness_session_summary_default_none():
     from agnoclaw.agent import AgentHarness
     sig = inspect.signature(AgentHarness.__init__)
     assert sig.parameters["enable_session_summary"].default is None
+
+
+# ── Context budget guard tests ─────────────────────────────────────────────
+
+
+def test_agent_harness_accepts_max_context_tokens():
+    """AgentHarness should accept max_context_tokens parameter."""
+    import inspect
+    from agnoclaw.agent import AgentHarness
+    sig = inspect.signature(AgentHarness.__init__)
+    assert "max_context_tokens" in sig.parameters
+
+
+def test_agent_harness_max_context_tokens_default_none():
+    """max_context_tokens should default to None (disabled)."""
+    import inspect
+    from agnoclaw.agent import AgentHarness
+    sig = inspect.signature(AgentHarness.__init__)
+    assert sig.parameters["max_context_tokens"].default is None
+
+
+def test_check_context_budget_noop_without_max():
+    """_check_context_budget should silently skip when max_context_tokens is None."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._max_context_tokens = None
+    AgentHarness._check_context_budget(harness)
+    # Should not raise or access model
+
+
+def test_check_context_budget_skips_without_count_tokens():
+    """_check_context_budget should skip if model lacks count_tokens()."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._max_context_tokens = 100000
+    mock_agent = MagicMock()
+    mock_agent.model = MagicMock(spec=[])  # no count_tokens
+    harness._agent = mock_agent
+    AgentHarness._check_context_budget(harness)
+    # Should not raise
+
+
+def test_check_context_budget_warns_at_85_pct():
+    """_check_context_budget should log warning at 85% usage."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._max_context_tokens = 100000
+    harness.session_id = "test-session"
+    mock_agent = MagicMock()
+    mock_agent.model.count_tokens.return_value = 87000  # 87%
+    mock_agent.get_chat_history.return_value = [{"role": "user", "content": "hi"}]
+    harness._agent = mock_agent
+
+    with patch("agnoclaw.agent.logger") as mock_logger:
+        AgentHarness._check_context_budget(harness)
+        mock_logger.warning.assert_called_once()
+        assert "87%" in mock_logger.warning.call_args[0][0] % mock_logger.warning.call_args[0][1:]
+
+
+def test_check_context_budget_critical_at_95_pct():
+    """_check_context_budget should log critical at 95% usage."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._max_context_tokens = 100000
+    harness.session_id = "test-session"
+    mock_agent = MagicMock()
+    mock_agent.model.count_tokens.return_value = 96000  # 96%
+    mock_agent.get_chat_history.return_value = [{"role": "user", "content": "hi"}]
+    harness._agent = mock_agent
+
+    with patch("agnoclaw.agent.logger") as mock_logger:
+        AgentHarness._check_context_budget(harness)
+        mock_logger.critical.assert_called_once()
+
+
+def test_check_context_budget_no_warning_under_85_pct():
+    """_check_context_budget should not log below 85% usage."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._max_context_tokens = 100000
+    harness.session_id = "test-session"
+    mock_agent = MagicMock()
+    mock_agent.model.count_tokens.return_value = 50000  # 50%
+    mock_agent.get_chat_history.return_value = [{"role": "user", "content": "hi"}]
+    harness._agent = mock_agent
+
+    with patch("agnoclaw.agent.logger") as mock_logger:
+        AgentHarness._check_context_budget(harness)
+        mock_logger.warning.assert_not_called()
+        mock_logger.critical.assert_not_called()
+
+
+def test_check_context_budget_empty_history():
+    """_check_context_budget should skip when history is empty."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._max_context_tokens = 100000
+    harness.session_id = "test-session"
+    mock_agent = MagicMock()
+    mock_agent.get_chat_history.return_value = []
+    harness._agent = mock_agent
+
+    with patch("agnoclaw.agent.logger") as mock_logger:
+        AgentHarness._check_context_budget(harness)
+        mock_logger.warning.assert_not_called()
+        mock_logger.critical.assert_not_called()
+
+
+# ── Subagent parameter tests ──────────────────────────────────────────────
+
+
+def test_agent_harness_accepts_subagents_param():
+    """AgentHarness should accept subagents parameter."""
+    import inspect
+    from agnoclaw.agent import AgentHarness
+    sig = inspect.signature(AgentHarness.__init__)
+    assert "subagents" in sig.parameters
+
+
+def test_agent_harness_subagents_default_none():
+    """subagents default should be None."""
+    import inspect
+    from agnoclaw.agent import AgentHarness
+    sig = inspect.signature(AgentHarness.__init__)
+    assert sig.parameters["subagents"].default is None
+
+
+# ── Memory optimization auto-trigger tests ────────────────────────────────
+
+
+def test_maybe_optimize_memories_skips_without_learning():
+    """_maybe_optimize_memories should skip when learning is None."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._run_count = 9
+    harness._optimize_every_n_runs = 10
+    mock_agent = MagicMock()
+    mock_agent.learning = None
+    harness._agent = mock_agent
+
+    AgentHarness._maybe_optimize_memories(harness)
+    # Should increment count but not call optimize
+    assert harness._run_count == 10
+
+
+def test_maybe_optimize_memories_triggers_at_interval():
+    """_maybe_optimize_memories should call optimize_memories every N runs."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._run_count = 9  # next increment makes it 10
+    harness._optimize_every_n_runs = 10
+    mock_learning = MagicMock()
+    mock_learning.optimize_memories = MagicMock()
+    mock_agent = MagicMock()
+    mock_agent.learning = mock_learning
+    harness._agent = mock_agent
+
+    AgentHarness._maybe_optimize_memories(harness)
+    mock_learning.optimize_memories.assert_called_once()
+
+
+def test_maybe_optimize_memories_does_not_trigger_off_interval():
+    """_maybe_optimize_memories should skip when not at interval."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._run_count = 7  # next increment makes it 8 (not a multiple of 10)
+    harness._optimize_every_n_runs = 10
+    mock_learning = MagicMock()
+    mock_agent = MagicMock()
+    mock_agent.learning = mock_learning
+    harness._agent = mock_agent
+
+    AgentHarness._maybe_optimize_memories(harness)
+    mock_learning.optimize_memories.assert_not_called()
+
+
+def test_maybe_optimize_memories_handles_exception():
+    """_maybe_optimize_memories should not raise on optimize failure."""
+    from agnoclaw.agent import AgentHarness
+    harness = MagicMock(spec=AgentHarness)
+    harness._run_count = 9
+    harness._optimize_every_n_runs = 10
+    mock_learning = MagicMock()
+    mock_learning.optimize_memories.side_effect = RuntimeError("db error")
+    mock_agent = MagicMock()
+    mock_agent.learning = mock_learning
+    harness._agent = mock_agent
+
+    # Should not raise
+    AgentHarness._maybe_optimize_memories(harness)

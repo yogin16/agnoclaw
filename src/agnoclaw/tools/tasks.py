@@ -16,16 +16,24 @@ SubagentTool — spawns an isolated sub-agent for a discrete subtask.
                Protects main context window from bloat (research, analysis,
                code generation). Inspired by Claude Code's Task tool and
                LangChain DeepAgents' SubAgentMiddleware.
+
+SubagentDefinition — pre-registered named subagent with fixed description,
+                     prompt, tools, and model. Mirrors Claude Agent SDK's
+                     AgentDefinition pattern for declarative subagent config.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 from agno.tools import tool
 from agno.tools.toolkit import Toolkit
+
+logger = logging.getLogger("agnoclaw.tools")
 
 
 class TodoToolkit(Toolkit):
@@ -331,85 +339,180 @@ class ProgressToolkit(Toolkit):
         return f"{icon} Feature '{feature_id}' → {status}"
 
 
-def make_subagent_tool(default_model: Optional[str] = None):
+@dataclass
+class SubagentDefinition:
+    """
+    Pre-registered named subagent definition.
+
+    Mirrors Claude Agent SDK's AgentDefinition pattern: declare subagents
+    upfront with fixed description, prompt, tools, and model. The model
+    sees named agents in the tool description and can invoke them by name.
+
+    Args:
+        description: What this subagent does — shown to the model for selection.
+        prompt: System instructions for the subagent.
+        tools: Tool names the subagent can use: "web", "files", "bash", or "all".
+        model: Model override (e.g. "anthropic:claude-haiku-4-5-20251001").
+               None inherits from the parent's default.
+    """
+
+    description: str
+    prompt: str = ""
+    tools: list[str] = field(default_factory=lambda: ["all"])
+    model: Optional[str] = None
+
+
+# Default agent type instructions (used for ad-hoc agent_type= invocations)
+_TYPE_INSTRUCTIONS = {
+    "research": "You are a research specialist. Search the web, read URLs, and synthesize findings into a clear summary.",
+    "code": "You are a code specialist. Write clean, efficient code following best practices.",
+    "data": "You are a data analysis specialist. Analyze data, identify patterns, and present insights clearly.",
+    "general": "You are a capable assistant. Complete the assigned task thoroughly and efficiently.",
+}
+
+
+def _build_subagent_tools(tool_names: Optional[list[str]]) -> list:
+    """Build tool instances for a subagent from tool name list."""
+    agent_tools = []
+    names = tool_names or ["all"]
+    if "all" in names or "web" in names:
+        from agnoclaw.tools.web import WebToolkit
+        agent_tools.append(WebToolkit())
+    if "all" in names or "files" in names:
+        from agnoclaw.tools.files import FilesToolkit
+        agent_tools.append(FilesToolkit())
+    if "all" in names or "bash" in names:
+        from agnoclaw.tools.bash import make_bash_tool
+        agent_tools.append(make_bash_tool())
+    return agent_tools
+
+
+def _run_subagent(
+    task: str,
+    instructions: str,
+    model_id: str,
+    tool_names: Optional[list[str]] = None,
+) -> str:
+    """Create and run an isolated subagent synchronously. Returns result string."""
+    from agno.agent import Agent
+
+    subagent = Agent(
+        model=model_id,
+        instructions=instructions,
+        tools=_build_subagent_tools(tool_names),
+        markdown=True,
+    )
+
+    response = subagent.run(task)
+    content = response.content if response else "[no response]"
+
+    # Truncate very long responses to protect parent context
+    if isinstance(content, str) and len(content) > 8000:
+        content = content[:8000] + f"\n... [truncated, {len(content)} chars total]"
+
+    return str(content)
+
+
+async def _arun_subagent(
+    task: str,
+    instructions: str,
+    model_id: str,
+    tool_names: Optional[list[str]] = None,
+) -> str:
+    """Create and run an isolated subagent asynchronously. Returns result string."""
+    from agno.agent import Agent
+
+    subagent = Agent(
+        model=model_id,
+        instructions=instructions,
+        tools=_build_subagent_tools(tool_names),
+        markdown=True,
+    )
+
+    response = await subagent.arun(task)
+    content = response.content if response else "[no response]"
+
+    if isinstance(content, str) and len(content) > 8000:
+        content = content[:8000] + f"\n... [truncated, {len(content)} chars total]"
+
+    return str(content)
+
+
+def make_subagent_tool(
+    default_model: Optional[str] = None,
+    subagents: Optional[dict[str, SubagentDefinition]] = None,
+):
     """
     Returns a SubagentTool function for spawning isolated sub-agents.
 
     The sub-agent runs with its own context — keeping the main agent's context clean.
     Results are summarized back to the main agent.
-    """
 
-    @tool(
-        name="spawn_subagent",
-        description=(
-            "Spawn an isolated sub-agent to handle a discrete subtask. "
-            "Use this to protect the main context from bloat (research, analysis, "
-            "code generation, web scraping). "
-            "The sub-agent gets its own context and tools. "
-            "Results are summarized back. "
-            "Do NOT use for simple one-step tasks — those belong in the main agent."
-        ),
+    Args:
+        default_model: Default model for ad-hoc subagents.
+        subagents: Named subagent definitions. When provided, the model can
+                   invoke them by name via the `agent_name` parameter.
+    """
+    _subagents = subagents or {}
+    _default_model = default_model or "anthropic:claude-haiku-4-5-20251001"
+
+    # Build description that includes named agents if any are registered
+    base_desc = (
+        "Spawn an isolated sub-agent to handle a discrete subtask. "
+        "Use this to protect the main context from bloat (research, analysis, "
+        "code generation, web scraping). "
+        "The sub-agent gets its own context and tools. "
+        "Results are summarized back. "
+        "Do NOT use for simple one-step tasks — those belong in the main agent."
     )
+    if _subagents:
+        agent_lines = []
+        for name, defn in _subagents.items():
+            agent_lines.append(f"  - '{name}': {defn.description}")
+        base_desc += "\n\nNamed agents available:\n" + "\n".join(agent_lines)
+
+    @tool(name="spawn_subagent", description=base_desc)
     def spawn_subagent(
         task: str,
+        agent_name: Optional[str] = None,
         agent_type: str = "general",
+        prompt: Optional[str] = None,
         tools: Optional[list[str]] = None,
         model: Optional[str] = None,
     ) -> str:
         """
-        Spawn a sub-agent to handle a specific task.
+        Spawn a sub-agent to handle a specific task in an isolated context.
 
         Args:
             task: The task description for the sub-agent. Be specific and complete.
-            agent_type: Agent specialization: 'general', 'research', 'code', 'data'.
-            tools: Tool names the sub-agent should have access to.
-            model: Optional model override for this sub-agent.
+            agent_name: Name of a pre-registered agent (use this when available).
+            agent_type: Ad-hoc agent type: 'general', 'research', 'code', 'data'.
+                        Ignored when agent_name is provided.
+            prompt: Custom system prompt for the sub-agent. Overrides agent_type.
+            tools: Tool names: 'web', 'files', 'bash', or 'all' (default).
+            model: Optional model override (e.g. 'anthropic:claude-haiku-4-5-20251001').
 
         Returns:
             The sub-agent's result/summary.
         """
         try:
-            from agno.agent import Agent
-            from agno.models.anthropic import Claude
+            # Resolve named agent definition
+            if agent_name and agent_name in _subagents:
+                defn = _subagents[agent_name]
+                instructions = defn.prompt or _TYPE_INSTRUCTIONS["general"]
+                model_id = defn.model or model or _default_model
+                tool_names = tools or defn.tools
+                logger.debug("Spawning named subagent '%s'", agent_name)
+            else:
+                # Ad-hoc: use prompt, agent_type, or default
+                if prompt:
+                    instructions = prompt
+                else:
+                    instructions = _TYPE_INSTRUCTIONS.get(agent_type, _TYPE_INSTRUCTIONS["general"])
+                model_id = model or _default_model
+                tool_names = tools
 
-            model_id = model or default_model or "claude-haiku-4-5-20251001"
-
-            # Specialize system prompt by agent type
-            type_instructions = {
-                "research": "You are a research specialist. Search the web, read URLs, and synthesize findings into a clear summary.",
-                "code": "You are a code specialist. Write clean, efficient code following best practices.",
-                "data": "You are a data analysis specialist. Analyze data, identify patterns, and present insights clearly.",
-                "general": "You are a capable assistant. Complete the assigned task thoroughly and efficiently.",
-            }
-            instructions = type_instructions.get(agent_type, type_instructions["general"])
-
-            # Build tool list
-            agent_tools = []
-            if not tools or "web" in (tools or []):
-                from agnoclaw.tools.web import WebToolkit
-                agent_tools.append(WebToolkit())
-            if not tools or "files" in (tools or []):
-                from agnoclaw.tools.files import FilesToolkit
-                agent_tools.append(FilesToolkit())
-            if not tools or "bash" in (tools or []):
-                from agnoclaw.tools.bash import make_bash_tool
-                agent_tools.append(make_bash_tool())
-
-            subagent = Agent(
-                model=Claude(id=model_id),
-                instructions=instructions,
-                tools=agent_tools,
-                markdown=True,
-            )
-
-            response = subagent.run(task)
-            content = response.content if response else "[no response]"
-
-            # Truncate very long responses
-            if isinstance(content, str) and len(content) > 8000:
-                content = content[:8000] + f"\n... [truncated, {len(content)} chars total]"
-
-            return str(content)
+            return _run_subagent(task, instructions, model_id, tool_names)
 
         except Exception as e:
             return f"[error] Subagent failed: {e}"

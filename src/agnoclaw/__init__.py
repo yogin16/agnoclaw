@@ -25,6 +25,7 @@ With skills:
 
 from .agent import AgentHarness, HarnessAgent  # HarnessAgent = backward compat alias
 from .config import HarnessConfig, get_config
+from .tools.tasks import SubagentDefinition
 from .workspace import Workspace
 
 __all__ = [
@@ -32,6 +33,7 @@ __all__ = [
     "HarnessAgent",  # backward compat
     "HarnessConfig",
     "get_config",
+    "SubagentDefinition",
     "Workspace",
 ]
 

@@ -383,3 +383,62 @@ def test_no_culture_manager_in_memory_module():
     assert not hasattr(mem, "build_culture_manager"), (
         "build_culture_manager should have been removed"
     )
+
+
+# ── enable_user_memory tests ──────────────────────────────────────────────
+
+
+def test_build_learning_machine_user_memory_enabled():
+    """enable_user_memory=True should set user_profile and user_memory to True."""
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig"), \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        build_learning_machine(enable_user_memory=True)
+        call_kwargs = mock_lm.call_args[1]
+        assert call_kwargs.get("user_profile") is True
+        assert call_kwargs.get("user_memory") is True
+
+
+def test_build_learning_machine_user_memory_disabled_by_default():
+    """enable_user_memory defaults to False — user stores should be False."""
+    from agnoclaw.memory import build_learning_machine
+
+    with patch("agno.learn.LearningMachine") as mock_lm, \
+         patch("agno.learn.LearningMode") as mock_mode, \
+         patch("agno.learn.config.EntityMemoryConfig"), \
+         patch("agno.learn.config.LearnedKnowledgeConfig"), \
+         patch("agno.learn.config.DecisionLogConfig"), \
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
+        mock_model.return_value = MagicMock()
+        mock_lm.return_value = MagicMock()
+        mock_mode.AGENTIC = "agentic"
+        mock_mode.ALWAYS = "always"
+        build_learning_machine()
+        call_kwargs = mock_lm.call_args[1]
+        assert call_kwargs.get("user_profile") is False
+        assert call_kwargs.get("user_memory") is False
+
+
+def test_build_memory_manager_deprecation_warning():
+    """build_memory_manager() should emit a DeprecationWarning."""
+    import warnings
+    from agnoclaw.memory import build_memory_manager
+
+    with patch("agno.memory.MemoryManager"), \
+         patch("agnoclaw.agent._resolve_model", return_value="anthropic:claude-sonnet-4-6") as mock_model:
+        mock_model.return_value = MagicMock()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            build_memory_manager()
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "deprecated" in str(w[0].message).lower()
