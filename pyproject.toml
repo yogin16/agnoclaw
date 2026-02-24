@@ -88,6 +88,9 @@ Issues = "https://github.com/agnoclaw/agnoclaw/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agnoclaw"]
 
+[tool.hatch.build.targets.wheel.shared-data]
+"skills" = "share/agnoclaw/skills"
+
 [tool.ruff]
 src = ["src"]
 line-length = 100

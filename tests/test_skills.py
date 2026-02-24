@@ -580,3 +580,13 @@ def test_clawhub_skill_trust_as_community(tmp_path):
     # Community trust: !`cmd` should NOT have been executed
     assert "!`pwd`" in content
     assert "test task" in content
+
+
+def test_wheel_shared_data_includes_bundled_skills():
+    """Wheel build config should include repo-level bundled skills."""
+    import tomllib
+
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    data = tomllib.loads(pyproject)
+    shared = data["tool"]["hatch"]["build"]["targets"]["wheel"]["shared-data"]
+    assert shared["skills"] == "share/agnoclaw/skills"

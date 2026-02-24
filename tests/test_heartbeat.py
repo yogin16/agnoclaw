@@ -322,3 +322,24 @@ def test_daemon_add_cron_job():
     daemon.add_cron_job(job)
     assert len(daemon._cron_jobs) == 1
     assert daemon._cron_jobs[0].name == "standup"
+
+
+@pytest.mark.asyncio
+async def test_run_isolated_uses_async_arun():
+    """Isolated cron execution should use arun() to avoid blocking the event loop."""
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+
+    parent_agent = MagicMock()
+    parent_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=parent_agent)
+
+    isolated = MagicMock()
+    isolated.arun = AsyncMock(return_value=MagicMock(content="ok"))
+    isolated.run = MagicMock()
+
+    job = CronJob(name="iso", schedule="1h", prompt="Ping")
+    with patch("agno.agent.Agent", return_value=isolated):
+        await daemon._run_isolated(job, "Ping now")
+
+    isolated.arun.assert_awaited_once_with("Ping now")
+    isolated.run.assert_not_called()

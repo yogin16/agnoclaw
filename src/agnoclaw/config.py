@@ -18,7 +18,7 @@ from __future__ import annotations
 import tomllib
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Any, Annotated, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -142,6 +142,21 @@ def _load_toml_config(path: Path) -> dict:
         return tomllib.load(f)
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge nested dictionaries; override wins on conflicts."""
+    merged = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 @lru_cache(maxsize=1)
 def get_config() -> HarnessConfig:
     """Load and cache the merged configuration."""
@@ -150,6 +165,6 @@ def get_config() -> HarnessConfig:
     project_toml = _load_toml_config(Path.cwd() / ".agnoclaw.toml")
 
     # Merge: user → project → env vars (env wins)
-    merged = {**user_toml, **project_toml}
+    merged = _deep_merge(user_toml, project_toml)
 
     return HarnessConfig(**merged)
