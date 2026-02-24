@@ -53,16 +53,47 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 from pathlib import Path
-from typing import Any, Iterator, Optional, Union
+from typing import Any, AsyncIterator, Iterator, Optional, Union
 from uuid import uuid4
 
 from agno.agent import Agent
+from agno.exceptions import AgentRunException
 from agno.run.agent import RunOutput, RunOutputEvent
+from agno.tools.function import Function
+from agno.tools.toolkit import Toolkit
 
 from .config import HarnessConfig, get_config
 from .prompts.system import SystemPromptBuilder
+from .runtime import (
+    AllowAllPolicyEngine,
+    EventSink,
+    EventSinkMode,
+    ExecutionContext,
+    HarnessError,
+    NullEventSink,
+    PolicyAction,
+    PolicyDecision,
+    PolicyEngine,
+    PostRunHook,
+    PreRunHook,
+    PromptEnvelope,
+    RunInput,
+    RunResultEnvelope,
+    SkillLoadRequest,
+    ToolCallRequest,
+    ToolCallResult,
+    PermissionApprover,
+    PermissionController,
+    PermissionMode,
+    normalize_permission_mode,
+    RuntimeGuardrails,
+    apply_redactions,
+    build_event,
+)
 from .skills.registry import SkillRegistry
 from .tools import get_default_tools
 from .workspace import Workspace
@@ -74,6 +105,51 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "bedrock": "aws-bedrock",
     "aws": "aws-bedrock",
     "grok": "xai",
+}
+
+# Canonical provider names supported by this harness.
+_KNOWN_PROVIDERS: set[str] = {
+    "aimlapi",
+    "anthropic",
+    "aws-bedrock",
+    "azure-ai-foundry",
+    "azure-openai",
+    "cerebras",
+    "cohere",
+    "cometapi",
+    "dashscope",
+    "deepinfra",
+    "deepseek",
+    "fireworks",
+    "google",
+    "groq",
+    "huggingface",
+    "ibm",
+    "internlm",
+    "langdb",
+    "litellm",
+    "llama-cpp",
+    "lmstudio",
+    "meta",
+    "mistral",
+    "moonshot",
+    "nebius",
+    "neosantara",
+    "nexus",
+    "nvidia",
+    "ollama",
+    "openai",
+    "openrouter",
+    "perplexity",
+    "portkey",
+    "requesty",
+    "sambanova",
+    "siliconflow",
+    "together",
+    "vercel",
+    "vertexai-claude",
+    "vllm",
+    "xai",
 }
 
 
@@ -91,11 +167,20 @@ def _resolve_model(model: Optional[str], provider: Optional[str], config: Harnes
     model_str = model or config.default_model
     prov = provider or config.default_provider
 
-    # Already in "provider:model_id" format?
+    # If the model string looks like "x:y", it may be either:
+    #   1) provider:model_id (e.g. openai:gpt-4o), or
+    #   2) a model_id that itself contains ":" (e.g. qwen3:0.6b for Ollama).
     if ":" in model_str:
-        parts = model_str.split(":", 1)
-        p = _PROVIDER_ALIASES.get(parts[0].lower(), parts[0].lower())
-        return f"{p}:{parts[1]}"
+        left, right = model_str.split(":", 1)
+        normalized_left = _PROVIDER_ALIASES.get(left.lower(), left.lower())
+
+        # Explicit provider prefix wins when recognized.
+        if normalized_left in _KNOWN_PROVIDERS:
+            return f"{normalized_left}:{right}"
+
+        # Unknown prefix: treat entire model_str as model_id and use provider arg/default.
+        p = _PROVIDER_ALIASES.get(prov.lower(), prov.lower())
+        return f"{p}:{model_str}"
 
     # Separate model_id + provider
     p = prov.lower()
@@ -167,6 +252,10 @@ class AgentHarness:
         provider: Provider name — only needed when model is not in "provider:model_id"
                   format. Accepts "anthropic", "openai", "ollama", "groq", "google",
                   "aws"/"bedrock", "mistral", "xai"/"grok", "deepseek", "litellm".
+        permission_mode: Runtime permission mode for tool calls:
+                         "bypass", "default", "accept_edits", "plan", "dont_ask".
+        permission_approver: Optional approval callback used in non-bypass modes.
+        permission_require_approver: If True, deny approval-required calls when no approver exists.
     """
 
     def __init__(
@@ -198,6 +287,26 @@ class AgentHarness:
         num_history_messages: Optional[int] = None,
         max_tool_calls_from_history: Optional[int] = None,
         max_context_tokens: Optional[int] = None,
+        # v0.2 runtime contracts
+        event_sink: Optional[EventSink] = None,
+        event_sink_mode: Optional[str] = None,
+        policy_engine: Optional[PolicyEngine] = None,
+        policy_fail_open: Optional[bool] = None,
+        permission_mode: Optional[str] = None,
+        permission_approver: Optional[PermissionApprover] = None,
+        permission_require_approver: Optional[bool] = None,
+        permission_preapproved_tools: Optional[list[str] | tuple[str, ...]] = None,
+        permission_preapproved_categories: Optional[list[str] | tuple[str, ...]] = None,
+        pre_run_hooks: Optional[list[PreRunHook]] = None,
+        post_run_hooks: Optional[list[PostRunHook]] = None,
+        tenant_id: Optional[str] = None,
+        org_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+        roles: Optional[list[str] | tuple[str, ...]] = None,
+        scopes: Optional[list[str] | tuple[str, ...]] = None,
+        request_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        context_metadata: Optional[dict[str, Any]] = None,
         # Legacy compat — use model + provider instead
         model_id: Optional[str] = None,
         extra_tools: Optional[list] = None,
@@ -207,6 +316,51 @@ class AgentHarness:
         self.name = name
         self.user_id = user_id
         self.session_id = session_id
+        self._roles = tuple(roles or ())
+        self._scopes = tuple(scopes or ())
+        self._tenant_id = tenant_id
+        self._org_id = org_id
+        self._team_id = team_id
+        self._request_id = request_id
+        self._trace_id = trace_id
+        self._context_metadata = dict(context_metadata or {})
+
+        # Runtime extension contracts
+        self._event_sink: EventSink = event_sink or NullEventSink()
+        mode_value = event_sink_mode or self.config.event_sink_mode
+        try:
+            self._event_sink_mode = EventSinkMode(mode_value)
+        except ValueError:
+            raise ValueError(
+                f"Invalid event_sink_mode={mode_value!r}. "
+                f"Use '{EventSinkMode.BEST_EFFORT.value}' or '{EventSinkMode.FAIL_CLOSED.value}'."
+            ) from None
+        self._policy_engine: PolicyEngine = policy_engine or AllowAllPolicyEngine()
+        self._policy_fail_open = (
+            policy_fail_open if policy_fail_open is not None else self.config.policy_fail_open
+        )
+        self._pre_run_hooks: list[PreRunHook] = list(pre_run_hooks or [])
+        self._post_run_hooks: list[PostRunHook] = list(post_run_hooks or [])
+        permission_mode_value = permission_mode or self.config.permission_mode
+        require_approver = (
+            permission_require_approver
+            if permission_require_approver is not None
+            else self.config.permission_require_approver
+        )
+        self._permission_controller = PermissionController(
+            mode=permission_mode_value,
+            approver=permission_approver,
+            require_approver=require_approver,
+            preapproved_tools=tuple(
+                permission_preapproved_tools
+                or self.config.permission_preapproved_tools
+            ),
+            preapproved_categories=tuple(
+                permission_preapproved_categories
+                or self.config.permission_preapproved_categories
+            ),
+        )
+        self._plan_mode_restore_permission_mode: PermissionMode | None = None
 
         # Legacy compat: model_id / extra_tools / extra_instructions
         _model = model or model_id
@@ -220,6 +374,19 @@ class AgentHarness:
         _ws_dir = workspace_dir or self.config.workspace_dir
         self.workspace = Workspace(_ws_dir)
         self.workspace.initialize()
+        self._guardrails = RuntimeGuardrails(
+            workspace_dir=self.workspace.path,
+            enabled=self.config.guardrails_enabled,
+            path_enabled=self.config.path_guardrails_enabled,
+            path_allowed_roots=self.config.path_allowed_roots,
+            path_blocked_roots=self.config.path_blocked_roots,
+            network_enabled=self.config.network_enabled,
+            network_enforce_https=self.config.network_enforce_https,
+            network_allowed_hosts=self.config.network_allowed_hosts,
+            network_blocked_hosts=self.config.network_blocked_hosts,
+            network_block_private_hosts=self.config.network_block_private_hosts,
+            network_block_in_bash=self.config.network_block_in_bash,
+        )
 
         # Skills registry
         self.skills = SkillRegistry(self.workspace.skills_dir())
@@ -238,6 +405,7 @@ class AgentHarness:
         _all_tools = get_default_tools(self.config, subagents=subagents)
         if _tools:
             _all_tools.extend(_tools)
+        self._attach_tool_runtime_hooks(_all_tools)
 
         # Resolve learning flags before building system prompt
         _enable_learning = enable_learning if enable_learning is not None else self.config.enable_learning
@@ -350,6 +518,787 @@ class AgentHarness:
             session_id=session_id,
         )
 
+    def set_event_sink(self, sink: EventSink, mode: Optional[str] = None) -> None:
+        """Swap event sink at runtime."""
+        self._event_sink = sink
+        if mode is not None:
+            self._event_sink_mode = EventSinkMode(mode)
+
+    def set_policy_engine(self, engine: PolicyEngine) -> None:
+        """Swap policy engine at runtime."""
+        self._policy_engine = engine
+
+    def set_permission_mode(self, mode: str) -> None:
+        """Set runtime permission mode for tool calls."""
+        self._permission_controller.set_mode(mode)
+
+    @property
+    def permission_mode(self) -> str:
+        """Current runtime permission mode."""
+        return self._permission_controller.current_mode().value
+
+    def add_pre_run_hook(self, hook: PreRunHook) -> None:
+        """Register a pre-run hook."""
+        self._pre_run_hooks.append(hook)
+
+    def add_post_run_hook(self, hook: PostRunHook) -> None:
+        """Register a post-run hook."""
+        self._post_run_hooks.append(hook)
+
+    def _attach_tool_runtime_hooks(self, tools: list[Any]) -> None:
+        for tool in tools:
+            if isinstance(tool, Function):
+                self._attach_function_runtime_hooks(tool)
+            elif isinstance(tool, Toolkit):
+                for function in tool.functions.values():
+                    self._attach_function_runtime_hooks(function)
+
+    def _attach_function_runtime_hooks(self, function: Function) -> None:
+        pre_wrapped = getattr(function.pre_hook, "_agnoclaw_runtime_pre", False)
+        post_wrapped = getattr(function.post_hook, "_agnoclaw_runtime_post", False)
+        if pre_wrapped and post_wrapped:
+            return
+
+        original_pre_hook = function.pre_hook
+        original_post_hook = function.post_hook
+
+        def runtime_pre_hook(agent=None, team=None, run_context=None, fc=None):
+            if original_pre_hook is not None:
+                try:
+                    self._invoke_original_tool_hook(
+                        original_pre_hook,
+                        agent=agent,
+                        team=team,
+                        run_context=run_context,
+                        fc=fc,
+                    )
+                except HarnessError as exc:
+                    self._raise_agent_run_exception(exc)
+            self._handle_tool_pre_hook(fc=fc, run_context=run_context)
+
+        def runtime_post_hook(agent=None, team=None, run_context=None, fc=None):
+            if original_post_hook is not None:
+                try:
+                    self._invoke_original_tool_hook(
+                        original_post_hook,
+                        agent=agent,
+                        team=team,
+                        run_context=run_context,
+                        fc=fc,
+                    )
+                except HarnessError as exc:
+                    self._raise_agent_run_exception(exc)
+            self._handle_tool_post_hook(fc=fc, run_context=run_context)
+
+        runtime_pre_hook._agnoclaw_runtime_pre = True  # type: ignore[attr-defined]
+        runtime_post_hook._agnoclaw_runtime_post = True  # type: ignore[attr-defined]
+        function.pre_hook = runtime_pre_hook
+        function.post_hook = runtime_post_hook
+
+    def _invoke_original_tool_hook(
+        self,
+        hook,
+        *,
+        agent=None,
+        team=None,
+        run_context=None,
+        fc=None,
+    ) -> None:
+        signature = inspect.signature(hook).parameters
+        kwargs: dict[str, Any] = {}
+        if "agent" in signature:
+            kwargs["agent"] = agent
+        if "team" in signature:
+            kwargs["team"] = team
+        if "run_context" in signature:
+            kwargs["run_context"] = run_context
+        if "fc" in signature:
+            kwargs["fc"] = fc
+        result = hook(**kwargs)
+        self._resolve_sync_value(
+            result,
+            operation=f"tool_hook:{getattr(hook, '__name__', hook.__class__.__name__)}",
+        )
+
+    @staticmethod
+    def _apply_redactions_to_object(value: Any, redactions) -> Any:
+        if not redactions:
+            return value
+        if isinstance(value, str):
+            return apply_redactions(value, redactions)
+        if isinstance(value, list):
+            return [AgentHarness._apply_redactions_to_object(item, redactions) for item in value]
+        if isinstance(value, tuple):
+            return tuple(AgentHarness._apply_redactions_to_object(item, redactions) for item in value)
+        if isinstance(value, dict):
+            return {
+                key: AgentHarness._apply_redactions_to_object(item, redactions)
+                for key, item in value.items()
+            }
+        return value
+
+    @staticmethod
+    def _context_to_metadata(context: ExecutionContext) -> dict[str, Any]:
+        return {
+            "tenant_id": context.tenant_id,
+            "org_id": context.org_id,
+            "team_id": context.team_id,
+            "workspace_id": context.workspace_id,
+            "session_id": context.session_id,
+            "user_id": context.user_id,
+            "request_id": context.request_id,
+            "trace_id": context.trace_id,
+            "roles": list(context.roles),
+            "scopes": list(context.scopes),
+            "metadata": dict(context.metadata),
+        }
+
+    def _build_agent_run_metadata(
+        self,
+        *,
+        context: ExecutionContext,
+        run_input: RunInput,
+    ) -> dict[str, Any]:
+        payload = dict(run_input.metadata)
+        payload["_agnoclaw_context"] = self._context_to_metadata(context)
+        return payload
+
+    def _context_from_run_context(self, run_context) -> ExecutionContext:
+        payload = {}
+        if run_context is not None and isinstance(getattr(run_context, "metadata", None), dict):
+            payload = dict(getattr(run_context, "metadata") or {})
+
+        raw_context = payload.get("_agnoclaw_context")
+        if isinstance(raw_context, dict):
+            return ExecutionContext.create(
+                user_id=raw_context.get("user_id"),
+                session_id=raw_context.get("session_id"),
+                workspace_id=raw_context.get("workspace_id") or str(self.workspace.path),
+                tenant_id=raw_context.get("tenant_id"),
+                org_id=raw_context.get("org_id"),
+                team_id=raw_context.get("team_id"),
+                roles=raw_context.get("roles") or (),
+                scopes=raw_context.get("scopes") or (),
+                request_id=raw_context.get("request_id"),
+                trace_id=raw_context.get("trace_id"),
+                metadata=raw_context.get("metadata") or {},
+            )
+
+        return ExecutionContext.create(
+            user_id=getattr(run_context, "user_id", None),
+            session_id=getattr(run_context, "session_id", None),
+            workspace_id=str(self.workspace.path),
+            metadata=payload,
+        )
+
+    def _run_id_from_tool_hook(self, *, run_context, fc) -> str:
+        if run_context is not None:
+            run_id = getattr(run_context, "run_id", None)
+            if isinstance(run_id, str) and run_id:
+                return run_id
+        if fc is not None:
+            call_id = getattr(fc, "call_id", None)
+            if isinstance(call_id, str) and call_id:
+                return f"run_from_{call_id}"
+        return f"run_{uuid4().hex}"
+
+    @staticmethod
+    def _tool_call_id(fc) -> str | None:
+        call_id = getattr(fc, "call_id", None)
+        if isinstance(call_id, str) and call_id:
+            return call_id
+        return None
+
+    def _raise_agent_run_exception(self, error: HarnessError) -> None:
+        raise AgentRunException(error, user_message=error.message)
+
+    @staticmethod
+    def _extract_harness_error(exc: Exception) -> HarnessError | None:
+        if isinstance(exc, HarnessError):
+            return exc
+        if isinstance(exc, AgentRunException) and exc.args:
+            inner = exc.args[0]
+            if isinstance(inner, HarnessError):
+                return inner
+        return None
+
+    def _handle_tool_pre_hook(self, *, fc, run_context) -> None:
+        if fc is None or getattr(fc, "function", None) is None:
+            return
+
+        try:
+            run_id = self._run_id_from_tool_hook(run_context=run_context, fc=fc)
+            context = self._context_from_run_context(run_context)
+            tool_name = getattr(fc.function, "name", "unknown_tool")
+            arguments = dict(getattr(fc, "arguments", None) or {})
+            request = ToolCallRequest(
+                run_id=run_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                metadata={"tool_call_id": self._tool_call_id(fc)},
+            )
+
+            self._emit_event_sync(
+                event_type="tool.call.started",
+                run_id=run_id,
+                context=context,
+                payload={
+                    "tool_name": tool_name,
+                    "tool_call_id": self._tool_call_id(fc),
+                    "argument_keys": sorted(arguments.keys()),
+                },
+            )
+
+            violations = self._guardrails.check(request)
+            if violations:
+                for violation in violations:
+                    self._emit_event_sync(
+                        event_type="guardrail.violation",
+                        run_id=run_id,
+                        context=context,
+                        payload={
+                            "tool_name": tool_name,
+                            "code": violation.code,
+                            "message": violation.message,
+                            "details": violation.details,
+                        },
+                    )
+                raise HarnessError(
+                    code="GUARDRAIL_DENIED",
+                    category="guardrail",
+                    message=f"Guardrail denied tool call: {tool_name}",
+                    retryable=False,
+                    details={
+                        "tool_name": tool_name,
+                        "violations": [
+                            {
+                                "code": violation.code,
+                                "message": violation.message,
+                                "details": violation.details,
+                            }
+                            for violation in violations
+                        ],
+                    },
+                )
+
+            permission_decision = self._permission_controller.check_tool_call(
+                request,
+                context,
+                resolve_sync_value=self._resolve_sync_value,
+            )
+            self._enforce_policy_decision(
+                decision=permission_decision,
+                checkpoint="permission.before_tool_call",
+                run_id=run_id,
+                context=context,
+            )
+
+            decision = self._run_policy_sync(
+                method_name="before_tool_call",
+                payload=request,
+                run_input=None,
+                context=context,
+            )
+            self._enforce_policy_decision(
+                decision=decision,
+                checkpoint="before_tool_call",
+                run_id=run_id,
+                context=context,
+            )
+
+            if decision.action == PolicyAction.ALLOW_WITH_REDACTION and getattr(fc, "arguments", None):
+                fc.arguments = self._apply_redactions_to_object(dict(fc.arguments), decision.redactions)
+        except HarnessError as exc:
+            self._raise_agent_run_exception(exc)
+
+    def _handle_tool_post_hook(self, *, fc, run_context) -> None:
+        if fc is None or getattr(fc, "function", None) is None:
+            return
+
+        try:
+            run_id = self._run_id_from_tool_hook(run_context=run_context, fc=fc)
+            context = self._context_from_run_context(run_context)
+            tool_name = getattr(fc.function, "name", "unknown_tool")
+            result = ToolCallResult(
+                run_id=run_id,
+                tool_name=tool_name,
+                arguments=dict(getattr(fc, "arguments", None) or {}),
+                output=getattr(fc, "result", None),
+                error=getattr(fc, "error", None),
+                metadata={"tool_call_id": self._tool_call_id(fc)},
+            )
+
+            decision = self._run_policy_sync(
+                method_name="after_tool_call",
+                payload=result,
+                run_input=None,
+                context=context,
+            )
+            self._enforce_policy_decision(
+                decision=decision,
+                checkpoint="after_tool_call",
+                run_id=run_id,
+                context=context,
+            )
+
+            if decision.action == PolicyAction.ALLOW_WITH_REDACTION and hasattr(fc, "result"):
+                fc.result = self._apply_redactions_to_object(fc.result, decision.redactions)
+
+            event_type = "tool.call.failed" if getattr(fc, "error", None) else "tool.call.completed"
+            payload = {
+                "tool_name": tool_name,
+                "tool_call_id": self._tool_call_id(fc),
+                "error": getattr(fc, "error", None),
+                "result_chars": (
+                    len(str(getattr(fc, "result", "")))
+                    if getattr(fc, "result", None) is not None
+                    else 0
+                ),
+            }
+            self._emit_event_sync(
+                event_type=event_type,
+                run_id=run_id,
+                context=context,
+                payload=payload,
+            )
+        except HarnessError as exc:
+            self._raise_agent_run_exception(exc)
+
+    def _active_session_id(self, override: Optional[str]) -> Optional[str]:
+        if override is not None:
+            return override
+        return self.session_id or getattr(self._agent, "session_id", None)
+
+    def _build_execution_context(
+        self,
+        *,
+        user_id: Optional[str],
+        session_id: Optional[str],
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> ExecutionContext:
+        merged_metadata = dict(self._context_metadata)
+        merged_metadata.setdefault("permission_mode", self.permission_mode)
+        if metadata:
+            merged_metadata.update(metadata)
+        return ExecutionContext.create(
+            user_id=user_id,
+            session_id=session_id,
+            workspace_id=str(self.workspace.path),
+            tenant_id=self._tenant_id,
+            org_id=self._org_id,
+            team_id=self._team_id,
+            roles=self._roles,
+            scopes=self._scopes,
+            request_id=self._request_id,
+            trace_id=self._trace_id,
+            metadata=merged_metadata,
+        )
+
+    def _emit_event_sync(
+        self,
+        *,
+        event_type: str,
+        run_id: str,
+        context: ExecutionContext,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> None:
+        event = build_event(
+            event_type=event_type,
+            run_id=run_id,
+            context=context,
+            payload=payload,
+        )
+        try:
+            maybe_awaitable = self._event_sink.emit(event)
+            if inspect.isawaitable(maybe_awaitable):
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    asyncio.run(maybe_awaitable)
+                else:
+                    if self._event_sink_mode == EventSinkMode.FAIL_CLOSED:
+                        raise HarnessError(
+                            code="EVENT_SINK_ASYNC_IN_SYNC",
+                            category="event",
+                            message=(
+                                "Event sink returned an awaitable during sync run while fail-closed mode is active."
+                            ),
+                            retryable=False,
+                            details={"event_type": event_type},
+                        )
+                    task = loop.create_task(maybe_awaitable)
+                    task.add_done_callback(self._build_event_task_callback(event_type))
+        except Exception as exc:
+            if self._event_sink_mode == EventSinkMode.FAIL_CLOSED:
+                raise HarnessError(
+                    code="EVENT_SINK_FAILED",
+                    category="event",
+                    message=f"Failed to emit event '{event_type}': {exc}",
+                    retryable=True,
+                    details={"event_type": event_type},
+                ) from exc
+            logger.warning("Event sink failure for %s: %s", event_type, exc)
+
+    def _build_event_task_callback(self, event_type: str):
+        def _callback(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except Exception as exc:  # pragma: no cover - loop callback path
+                logger.warning("Async event sink failure for %s: %s", event_type, exc)
+
+        return _callback
+
+    async def _emit_event_async(
+        self,
+        *,
+        event_type: str,
+        run_id: str,
+        context: ExecutionContext,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> None:
+        event = build_event(
+            event_type=event_type,
+            run_id=run_id,
+            context=context,
+            payload=payload,
+        )
+        try:
+            maybe_awaitable = self._event_sink.emit(event)
+            if inspect.isawaitable(maybe_awaitable):
+                await maybe_awaitable
+        except Exception as exc:
+            if self._event_sink_mode == EventSinkMode.FAIL_CLOSED:
+                raise HarnessError(
+                    code="EVENT_SINK_FAILED",
+                    category="event",
+                    message=f"Failed to emit event '{event_type}': {exc}",
+                    retryable=True,
+                    details={"event_type": event_type},
+                ) from exc
+            logger.warning("Event sink failure for %s: %s", event_type, exc)
+
+    def _resolve_sync_value(self, value: Any, *, operation: str) -> Any:
+        if not inspect.isawaitable(value):
+            return value
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(value)
+        raise HarnessError(
+            code="ASYNC_VALUE_IN_SYNC_RUN",
+            category="validation",
+            message=f"{operation} returned awaitable in sync run. Use arun() or sync implementations.",
+            retryable=False,
+        )
+
+    async def _resolve_async_value(self, value: Any) -> Any:
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    def _enforce_policy_decision(
+        self,
+        *,
+        decision: PolicyDecision,
+        checkpoint: str,
+        run_id: str,
+        context: ExecutionContext,
+    ) -> None:
+        self._emit_event_sync(
+            event_type="policy.decision",
+            run_id=run_id,
+            context=context,
+            payload={
+                "checkpoint": checkpoint,
+                "action": decision.action.value,
+                "reason_code": decision.reason_code,
+                "message": decision.message,
+            },
+        )
+        if decision.action == PolicyAction.DENY:
+            raise HarnessError(
+                code="POLICY_DENIED",
+                category="policy",
+                message=decision.message or f"Policy denied at {checkpoint}",
+                retryable=False,
+                details={
+                    "checkpoint": checkpoint,
+                    "reason_code": decision.reason_code,
+                },
+            )
+
+    async def _enforce_policy_decision_async(
+        self,
+        *,
+        decision: PolicyDecision,
+        checkpoint: str,
+        run_id: str,
+        context: ExecutionContext,
+    ) -> None:
+        await self._emit_event_async(
+            event_type="policy.decision",
+            run_id=run_id,
+            context=context,
+            payload={
+                "checkpoint": checkpoint,
+                "action": decision.action.value,
+                "reason_code": decision.reason_code,
+                "message": decision.message,
+            },
+        )
+        if decision.action == PolicyAction.DENY:
+            raise HarnessError(
+                code="POLICY_DENIED",
+                category="policy",
+                message=decision.message or f"Policy denied at {checkpoint}",
+                retryable=False,
+                details={
+                    "checkpoint": checkpoint,
+                    "reason_code": decision.reason_code,
+                },
+            )
+
+    def _run_policy_sync(
+        self,
+        *,
+        method_name: str,
+        payload: Any,
+        run_input: RunInput | None,
+        context: ExecutionContext,
+    ) -> PolicyDecision:
+        method = getattr(self._policy_engine, method_name, None)
+        if method is None:
+            return PolicyDecision.allow()
+        try:
+            decision = self._resolve_sync_value(
+                method(payload, context),
+                operation=f"policy.{method_name}",
+            )
+        except Exception as exc:
+            if self._policy_fail_open:
+                logger.warning("Policy engine failed at %s; fail-open enabled: %s", method_name, exc)
+                return PolicyDecision.allow()
+            raise HarnessError(
+                code="POLICY_EVALUATION_FAILED",
+                category="policy",
+                message=f"Policy evaluation failed at {method_name}: {exc}",
+                retryable=False,
+            ) from exc
+        if not isinstance(decision, PolicyDecision):
+            raise HarnessError(
+                code="POLICY_INVALID_DECISION",
+                category="policy",
+                message=f"Policy method {method_name} returned invalid type: {type(decision).__name__}",
+                retryable=False,
+            )
+        if (
+            run_input is not None
+            and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
+            and decision.constraints
+        ):
+            run_input.metadata.setdefault("policy_constraints", {}).update(decision.constraints)
+        return decision
+
+    async def _run_policy_async(
+        self,
+        *,
+        method_name: str,
+        payload: Any,
+        run_input: RunInput | None,
+        context: ExecutionContext,
+    ) -> PolicyDecision:
+        method = getattr(self._policy_engine, method_name, None)
+        if method is None:
+            return PolicyDecision.allow()
+        try:
+            decision = await self._resolve_async_value(method(payload, context))
+        except Exception as exc:
+            if self._policy_fail_open:
+                logger.warning("Policy engine failed at %s; fail-open enabled: %s", method_name, exc)
+                return PolicyDecision.allow()
+            raise HarnessError(
+                code="POLICY_EVALUATION_FAILED",
+                category="policy",
+                message=f"Policy evaluation failed at {method_name}: {exc}",
+                retryable=False,
+            ) from exc
+        if not isinstance(decision, PolicyDecision):
+            raise HarnessError(
+                code="POLICY_INVALID_DECISION",
+                category="policy",
+                message=f"Policy method {method_name} returned invalid type: {type(decision).__name__}",
+                retryable=False,
+            )
+        if (
+            run_input is not None
+            and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
+            and decision.constraints
+        ):
+            run_input.metadata.setdefault("policy_constraints", {}).update(decision.constraints)
+        return decision
+
+    def _run_pre_hooks_sync(
+        self,
+        *,
+        run_input: RunInput,
+        context: ExecutionContext,
+    ) -> RunInput:
+        current = run_input
+        for hook in self._pre_run_hooks:
+            hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+            try:
+                maybe_result = self._resolve_sync_value(
+                    hook(current, context),
+                    operation=f"pre_hook:{hook_name}",
+                )
+            except Exception as exc:
+                raise HarnessError(
+                    code="HOOK_PRE_FAILED",
+                    category="hook",
+                    message=f"Pre-run hook failed: {hook_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if maybe_result is None:
+                continue
+            if not isinstance(maybe_result, RunInput):
+                raise HarnessError(
+                    code="HOOK_PRE_INVALID_RETURN",
+                    category="hook",
+                    message=f"Pre-run hook {hook_name} must return RunInput or None",
+                    retryable=False,
+                )
+            current = maybe_result
+        return current
+
+    async def _run_pre_hooks_async(
+        self,
+        *,
+        run_input: RunInput,
+        context: ExecutionContext,
+    ) -> RunInput:
+        current = run_input
+        for hook in self._pre_run_hooks:
+            hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+            try:
+                maybe_result = await self._resolve_async_value(hook(current, context))
+            except Exception as exc:
+                raise HarnessError(
+                    code="HOOK_PRE_FAILED",
+                    category="hook",
+                    message=f"Pre-run hook failed: {hook_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if maybe_result is None:
+                continue
+            if not isinstance(maybe_result, RunInput):
+                raise HarnessError(
+                    code="HOOK_PRE_INVALID_RETURN",
+                    category="hook",
+                    message=f"Pre-run hook {hook_name} must return RunInput or None",
+                    retryable=False,
+                )
+            current = maybe_result
+        return current
+
+    def _run_post_hooks_sync(
+        self,
+        *,
+        run_input: RunInput,
+        result: RunResultEnvelope,
+        context: ExecutionContext,
+    ) -> RunResultEnvelope:
+        current = result
+        for hook in self._post_run_hooks:
+            hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+            try:
+                maybe_result = self._resolve_sync_value(
+                    hook(run_input, current, context),
+                    operation=f"post_hook:{hook_name}",
+                )
+            except Exception as exc:
+                raise HarnessError(
+                    code="HOOK_POST_FAILED",
+                    category="hook",
+                    message=f"Post-run hook failed: {hook_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if maybe_result is None:
+                continue
+            if not isinstance(maybe_result, RunResultEnvelope):
+                raise HarnessError(
+                    code="HOOK_POST_INVALID_RETURN",
+                    category="hook",
+                    message=f"Post-run hook {hook_name} must return RunResultEnvelope or None",
+                    retryable=False,
+                )
+            current = maybe_result
+        return current
+
+    async def _run_post_hooks_async(
+        self,
+        *,
+        run_input: RunInput,
+        result: RunResultEnvelope,
+        context: ExecutionContext,
+    ) -> RunResultEnvelope:
+        current = result
+        for hook in self._post_run_hooks:
+            hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+            try:
+                maybe_result = await self._resolve_async_value(hook(run_input, current, context))
+            except Exception as exc:
+                raise HarnessError(
+                    code="HOOK_POST_FAILED",
+                    category="hook",
+                    message=f"Post-run hook failed: {hook_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if maybe_result is None:
+                continue
+            if not isinstance(maybe_result, RunResultEnvelope):
+                raise HarnessError(
+                    code="HOOK_POST_INVALID_RETURN",
+                    category="hook",
+                    message=f"Post-run hook {hook_name} must return RunResultEnvelope or None",
+                    retryable=False,
+                )
+            current = maybe_result
+        return current
+
+    @staticmethod
+    def _extract_event_content(event: Any) -> str:
+        if event is None:
+            return ""
+        if isinstance(event, str):
+            return event
+        content = getattr(event, "content", None)
+        if content is not None:
+            return str(content)
+        if isinstance(event, dict) and "content" in event:
+            return str(event["content"])
+        return ""
+
+    @staticmethod
+    def _map_agno_event_type(event: Any) -> str | None:
+        raw_event = getattr(event, "event", None)
+        if raw_event is None and isinstance(event, dict):
+            raw_event = event.get("event")
+        if raw_event is None:
+            return None
+        mapping = {
+            "ToolCallStarted": "tool.call.started",
+            "ToolCallCompleted": "tool.call.completed",
+            "ToolCallError": "tool.call.failed",
+            "ReasoningStarted": "reasoning.started",
+            "ReasoningStep": "reasoning.step",
+            "ReasoningCompleted": "reasoning.completed",
+            "MemoryUpdateStarted": "memory.write.started",
+            "MemoryUpdateCompleted": "memory.write.completed",
+            "SessionSummaryStarted": "session.summary.started",
+            "SessionSummaryCompleted": "session.summary.completed",
+        }
+        return mapping.get(str(raw_event))
+
     def run(
         self,
         message: str,
@@ -359,49 +1308,262 @@ class AgentHarness:
         skill: Optional[str] = None,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        context: Optional[ExecutionContext] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> Union[RunOutput, Iterator[RunOutputEvent]]:
-        """
-        Run the agent on a message.
-
-        Args:
-            message: The user message or task description.
-            stream: If True, return a streaming iterator.
-            stream_events: If True (and stream=True), yield full RunOutputEvent objects.
-            skill: Skill name to activate for this run (loads SKILL.md content).
-            session_id: Override session ID for this run.
-            user_id: Override user ID for this run.
-            **kwargs: Additional kwargs passed to Agno Agent.run().
-
-        Returns:
-            RunOutput (or Iterator[RunOutputEvent] if stream=True).
-        """
+        """Run the agent on a message."""
         self._check_context_budget()
 
-        skill_content = None
-        if skill:
-            skill_content = self.skills.load_skill(skill)
-            if skill_content:
-                self._set_system_prompt(
-                    skill_content=skill_content,
-                    session_id=session_id,
-                )
+        run_id = f"run_{uuid4().hex}"
+        effective_session = session_id or (context.session_id if context else None) or self._active_session_id(None)
+        effective_user = user_id or (context.user_id if context else None) or self.user_id
+        ctx = context.with_metadata(metadata) if context else self._build_execution_context(
+            user_id=effective_user,
+            session_id=effective_session,
+            metadata=metadata,
+        )
+        run_input = RunInput(
+            run_id=run_id,
+            message=message,
+            skill=skill,
+            stream=stream,
+            stream_events=stream_events,
+            metadata=dict(metadata or {}),
+        )
+        base_prompt = self._agent.system_message
+
+        self._emit_event_sync(
+            event_type="run.started",
+            run_id=run_id,
+            context=ctx,
+            payload={
+                "stream": stream,
+                "stream_events": stream_events,
+                "skill": skill,
+            },
+        )
 
         try:
+            run_input = self._run_pre_hooks_sync(run_input=run_input, context=ctx)
+
+            before_run_decision = self._run_policy_sync(
+                method_name="before_run",
+                payload=run_input,
+                run_input=run_input,
+                context=ctx,
+            )
+            self._enforce_policy_decision(
+                decision=before_run_decision,
+                checkpoint="before_run",
+                run_id=run_id,
+                context=ctx,
+            )
+            if before_run_decision.action == PolicyAction.ALLOW_WITH_REDACTION:
+                run_input.message = apply_redactions(run_input.message, before_run_decision.redactions)
+
+            skill_content: Optional[str] = None
+            if run_input.skill:
+                self._emit_event_sync(
+                    event_type="skill.load.started",
+                    run_id=run_id,
+                    context=ctx,
+                    payload={"name": run_input.skill},
+                )
+                skill_decision = self._run_policy_sync(
+                    method_name="before_skill_load",
+                    payload=SkillLoadRequest(name=run_input.skill),
+                    run_input=run_input,
+                    context=ctx,
+                )
+                self._enforce_policy_decision(
+                    decision=skill_decision,
+                    checkpoint="before_skill_load",
+                    run_id=run_id,
+                    context=ctx,
+                )
+                skill_content = self.skills.load_skill(run_input.skill)
+                self._emit_event_sync(
+                    event_type="skill.load.completed",
+                    run_id=run_id,
+                    context=ctx,
+                    payload={"name": run_input.skill, "loaded": bool(skill_content)},
+                )
+                if skill_content:
+                    self._set_system_prompt(skill_content=skill_content, session_id=effective_session)
+
+            prompt = PromptEnvelope(
+                system_prompt=self._agent.system_message,
+                user_message=run_input.message,
+                skill=run_input.skill,
+            )
+            prompt_decision = self._run_policy_sync(
+                method_name="before_prompt_send",
+                payload=prompt,
+                run_input=run_input,
+                context=ctx,
+            )
+            self._enforce_policy_decision(
+                decision=prompt_decision,
+                checkpoint="before_prompt_send",
+                run_id=run_id,
+                context=ctx,
+            )
+            if prompt_decision.action == PolicyAction.ALLOW_WITH_REDACTION:
+                prompt.user_message = apply_redactions(prompt.user_message, prompt_decision.redactions)
+                prompt.system_prompt = apply_redactions(prompt.system_prompt, prompt_decision.redactions)
+                self._agent.system_message = prompt.system_prompt
+
+            self._emit_event_sync(
+                event_type="prompt.built",
+                run_id=run_id,
+                context=ctx,
+                payload={
+                    "system_chars": len(prompt.system_prompt),
+                    "user_chars": len(prompt.user_message),
+                    "skill": run_input.skill,
+                },
+            )
+            self._emit_event_sync(
+                event_type="model.request.started",
+                run_id=run_id,
+                context=ctx,
+                payload={"stream": stream, "stream_events": stream_events},
+            )
+
+            call_kwargs = dict(kwargs)
+            extra_metadata = call_kwargs.pop("metadata", None)
+            call_kwargs.pop("run_id", None)
+            agent_metadata = self._build_agent_run_metadata(
+                context=ctx,
+                run_input=run_input,
+            )
+            if isinstance(extra_metadata, dict):
+                agent_metadata.update(extra_metadata)
+
             result = self._agent.run(
-                message,
+                prompt.user_message,
                 stream=stream,
                 stream_events=stream_events,
-                session_id=session_id or self.session_id,
-                user_id=user_id or self.user_id,
-                **kwargs,
+                session_id=effective_session,
+                user_id=effective_user,
+                run_id=run_id,
+                metadata=agent_metadata,
+                **call_kwargs,
             )
-        finally:
-            if skill_content:
-                self._set_system_prompt(session_id=self.session_id)
 
-        self._maybe_optimize_memories()
-        return result
+            if self._agent.system_message != base_prompt:
+                self._agent.system_message = base_prompt
+
+            if stream:
+
+                def _wrapped_stream() -> Iterator[RunOutputEvent]:
+                    collected: list[str] = []
+                    try:
+                        for event in result:
+                            mapped_event = self._map_agno_event_type(event)
+                            if mapped_event:
+                                self._emit_event_sync(
+                                    event_type=mapped_event,
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={"source_event": getattr(event, "event", None)},
+                                )
+                            text = self._extract_event_content(event)
+                            if text:
+                                collected.append(text)
+                                self._emit_event_sync(
+                                    event_type="run.content",
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={"chars": len(text)},
+                                )
+                            yield event
+                        post_result = RunResultEnvelope(
+                            run_id=run_id,
+                            content="".join(collected),
+                            raw_output=None,
+                            metadata=dict(run_input.metadata),
+                        )
+                        post_result = self._run_post_hooks_sync(
+                            run_input=run_input,
+                            result=post_result,
+                            context=ctx,
+                        )
+                        output_text = str(post_result.content) if post_result.content is not None else ""
+                        self._emit_event_sync(
+                            event_type="model.request.completed",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={"output_chars": len(output_text)},
+                        )
+                        self._emit_event_sync(
+                            event_type="run.completed",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={"output_chars": len(output_text)},
+                        )
+                        self._maybe_optimize_memories()
+                    except Exception as exc:
+                        harness_error = self._extract_harness_error(exc)
+                        error_code = harness_error.code if harness_error is not None else None
+                        self._emit_event_sync(
+                            event_type="run.failed",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={"error": str(exc), "code": error_code},
+                        )
+                        if harness_error is not None:
+                            raise harness_error
+                        raise
+
+                return _wrapped_stream()
+
+            post_result = RunResultEnvelope(
+                run_id=run_id,
+                content=getattr(result, "content", result),
+                raw_output=result,
+                metadata=dict(run_input.metadata),
+            )
+            post_result = self._run_post_hooks_sync(
+                run_input=run_input,
+                result=post_result,
+                context=ctx,
+            )
+            output_text = str(post_result.content) if post_result.content is not None else ""
+            self._emit_event_sync(
+                event_type="model.request.completed",
+                run_id=run_id,
+                context=ctx,
+                payload={"output_chars": len(output_text)},
+            )
+            self._emit_event_sync(
+                event_type="run.completed",
+                run_id=run_id,
+                context=ctx,
+                payload={"output_chars": len(output_text)},
+            )
+            self._maybe_optimize_memories()
+            return post_result.raw_output if post_result.raw_output is not None else result
+        except Exception as exc:
+            if self._agent.system_message != base_prompt:
+                self._agent.system_message = base_prompt
+            harness_error = self._extract_harness_error(exc)
+            error_code = harness_error.code if harness_error is not None else None
+            self._emit_event_sync(
+                event_type="run.failed",
+                run_id=run_id,
+                context=ctx,
+                payload={"error": str(exc), "code": error_code},
+            )
+            if harness_error is not None:
+                raise harness_error
+            raise HarnessError(
+                code="MODEL_RUN_FAILED",
+                category="model",
+                message=str(exc),
+                retryable=True,
+            ) from exc
 
     async def arun(
         self,
@@ -412,35 +1574,262 @@ class AgentHarness:
         skill: Optional[str] = None,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        context: Optional[ExecutionContext] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ):
         """Async version of run()."""
         self._check_context_budget()
 
-        skill_content = None
-        if skill:
-            skill_content = self.skills.load_skill(skill)
-            if skill_content:
-                self._set_system_prompt(
-                    skill_content=skill_content,
-                    session_id=session_id,
-                )
+        run_id = f"run_{uuid4().hex}"
+        effective_session = session_id or (context.session_id if context else None) or self._active_session_id(None)
+        effective_user = user_id or (context.user_id if context else None) or self.user_id
+        ctx = context.with_metadata(metadata) if context else self._build_execution_context(
+            user_id=effective_user,
+            session_id=effective_session,
+            metadata=metadata,
+        )
+        run_input = RunInput(
+            run_id=run_id,
+            message=message,
+            skill=skill,
+            stream=stream,
+            stream_events=stream_events,
+            metadata=dict(metadata or {}),
+        )
+        base_prompt = self._agent.system_message
+
+        await self._emit_event_async(
+            event_type="run.started",
+            run_id=run_id,
+            context=ctx,
+            payload={
+                "stream": stream,
+                "stream_events": stream_events,
+                "skill": skill,
+            },
+        )
 
         try:
+            run_input = await self._run_pre_hooks_async(run_input=run_input, context=ctx)
+
+            before_run_decision = await self._run_policy_async(
+                method_name="before_run",
+                payload=run_input,
+                run_input=run_input,
+                context=ctx,
+            )
+            await self._enforce_policy_decision_async(
+                decision=before_run_decision,
+                checkpoint="before_run",
+                run_id=run_id,
+                context=ctx,
+            )
+            if before_run_decision.action == PolicyAction.ALLOW_WITH_REDACTION:
+                run_input.message = apply_redactions(run_input.message, before_run_decision.redactions)
+
+            skill_content: Optional[str] = None
+            if run_input.skill:
+                await self._emit_event_async(
+                    event_type="skill.load.started",
+                    run_id=run_id,
+                    context=ctx,
+                    payload={"name": run_input.skill},
+                )
+                skill_decision = await self._run_policy_async(
+                    method_name="before_skill_load",
+                    payload=SkillLoadRequest(name=run_input.skill),
+                    run_input=run_input,
+                    context=ctx,
+                )
+                await self._enforce_policy_decision_async(
+                    decision=skill_decision,
+                    checkpoint="before_skill_load",
+                    run_id=run_id,
+                    context=ctx,
+                )
+                skill_content = self.skills.load_skill(run_input.skill)
+                await self._emit_event_async(
+                    event_type="skill.load.completed",
+                    run_id=run_id,
+                    context=ctx,
+                    payload={"name": run_input.skill, "loaded": bool(skill_content)},
+                )
+                if skill_content:
+                    self._set_system_prompt(skill_content=skill_content, session_id=effective_session)
+
+            prompt = PromptEnvelope(
+                system_prompt=self._agent.system_message,
+                user_message=run_input.message,
+                skill=run_input.skill,
+            )
+            prompt_decision = await self._run_policy_async(
+                method_name="before_prompt_send",
+                payload=prompt,
+                run_input=run_input,
+                context=ctx,
+            )
+            await self._enforce_policy_decision_async(
+                decision=prompt_decision,
+                checkpoint="before_prompt_send",
+                run_id=run_id,
+                context=ctx,
+            )
+            if prompt_decision.action == PolicyAction.ALLOW_WITH_REDACTION:
+                prompt.user_message = apply_redactions(prompt.user_message, prompt_decision.redactions)
+                prompt.system_prompt = apply_redactions(prompt.system_prompt, prompt_decision.redactions)
+                self._agent.system_message = prompt.system_prompt
+
+            await self._emit_event_async(
+                event_type="prompt.built",
+                run_id=run_id,
+                context=ctx,
+                payload={
+                    "system_chars": len(prompt.system_prompt),
+                    "user_chars": len(prompt.user_message),
+                    "skill": run_input.skill,
+                },
+            )
+            await self._emit_event_async(
+                event_type="model.request.started",
+                run_id=run_id,
+                context=ctx,
+                payload={"stream": stream, "stream_events": stream_events},
+            )
+
+            call_kwargs = dict(kwargs)
+            extra_metadata = call_kwargs.pop("metadata", None)
+            call_kwargs.pop("run_id", None)
+            agent_metadata = self._build_agent_run_metadata(
+                context=ctx,
+                run_input=run_input,
+            )
+            if isinstance(extra_metadata, dict):
+                agent_metadata.update(extra_metadata)
+
             result = await self._agent.arun(
-                message,
+                prompt.user_message,
                 stream=stream,
                 stream_events=stream_events,
-                session_id=session_id or self.session_id,
-                user_id=user_id or self.user_id,
-                **kwargs,
+                session_id=effective_session,
+                user_id=effective_user,
+                run_id=run_id,
+                metadata=agent_metadata,
+                **call_kwargs,
             )
-        finally:
-            if skill_content:
-                self._set_system_prompt(session_id=self.session_id)
 
-        self._maybe_optimize_memories()
-        return result
+            if self._agent.system_message != base_prompt:
+                self._agent.system_message = base_prompt
+
+            if stream and hasattr(result, "__aiter__"):
+
+                async def _wrapped_stream() -> AsyncIterator[RunOutputEvent]:
+                    collected: list[str] = []
+                    try:
+                        async for event in result:
+                            mapped_event = self._map_agno_event_type(event)
+                            if mapped_event:
+                                await self._emit_event_async(
+                                    event_type=mapped_event,
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={"source_event": getattr(event, "event", None)},
+                                )
+                            text = self._extract_event_content(event)
+                            if text:
+                                collected.append(text)
+                                await self._emit_event_async(
+                                    event_type="run.content",
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={"chars": len(text)},
+                                )
+                            yield event
+                        post_result = RunResultEnvelope(
+                            run_id=run_id,
+                            content="".join(collected),
+                            raw_output=None,
+                            metadata=dict(run_input.metadata),
+                        )
+                        post_result = await self._run_post_hooks_async(
+                            run_input=run_input,
+                            result=post_result,
+                            context=ctx,
+                        )
+                        output_text = str(post_result.content) if post_result.content is not None else ""
+                        await self._emit_event_async(
+                            event_type="model.request.completed",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={"output_chars": len(output_text)},
+                        )
+                        await self._emit_event_async(
+                            event_type="run.completed",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={"output_chars": len(output_text)},
+                        )
+                        self._maybe_optimize_memories()
+                    except Exception as exc:
+                        harness_error = self._extract_harness_error(exc)
+                        error_code = harness_error.code if harness_error is not None else None
+                        await self._emit_event_async(
+                            event_type="run.failed",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={"error": str(exc), "code": error_code},
+                        )
+                        if harness_error is not None:
+                            raise harness_error
+                        raise
+
+                return _wrapped_stream()
+
+            post_result = RunResultEnvelope(
+                run_id=run_id,
+                content=getattr(result, "content", result),
+                raw_output=result,
+                metadata=dict(run_input.metadata),
+            )
+            post_result = await self._run_post_hooks_async(
+                run_input=run_input,
+                result=post_result,
+                context=ctx,
+            )
+            output_text = str(post_result.content) if post_result.content is not None else ""
+            await self._emit_event_async(
+                event_type="model.request.completed",
+                run_id=run_id,
+                context=ctx,
+                payload={"output_chars": len(output_text)},
+            )
+            await self._emit_event_async(
+                event_type="run.completed",
+                run_id=run_id,
+                context=ctx,
+                payload={"output_chars": len(output_text)},
+            )
+            self._maybe_optimize_memories()
+            return post_result.raw_output if post_result.raw_output is not None else result
+        except Exception as exc:
+            if self._agent.system_message != base_prompt:
+                self._agent.system_message = base_prompt
+            harness_error = self._extract_harness_error(exc)
+            error_code = harness_error.code if harness_error is not None else None
+            await self._emit_event_async(
+                event_type="run.failed",
+                run_id=run_id,
+                context=ctx,
+                payload={"error": str(exc), "code": error_code},
+            )
+            if harness_error is not None:
+                raise harness_error
+            raise HarnessError(
+                code="MODEL_RUN_FAILED",
+                category="model",
+                message=str(exc),
+                retryable=True,
+            ) from exc
 
     def print_response(self, message: str, *, stream: bool = True, skill: Optional[str] = None, **kwargs) -> None:
         """Run the agent and pretty-print the response to the terminal."""
@@ -474,15 +1863,28 @@ class AgentHarness:
         Use exit_plan_mode() to return to normal operation.
         """
         self._plan_mode = True
+        current = self._permission_controller.current_mode()
+        if current != PermissionMode.PLAN:
+            self._plan_mode_restore_permission_mode = current
+            self._permission_controller.set_mode(PermissionMode.PLAN)
         self._set_system_prompt(session_id=self.session_id)
 
     def exit_plan_mode(self) -> None:
         """Deactivate plan mode: restores normal system prompt."""
         self._plan_mode = False
+        restore = self._plan_mode_restore_permission_mode
+        if restore is not None:
+            self._permission_controller.set_mode(restore)
+        else:
+            self._permission_controller.set_mode(
+                normalize_permission_mode(self.config.permission_mode)
+            )
+        self._plan_mode_restore_permission_mode = None
         self._set_system_prompt(session_id=self.session_id)
 
     def add_tool(self, tool) -> None:
         """Add a tool or toolkit to the agent."""
+        self._attach_tool_runtime_hooks([tool])
         self._agent.add_tool(tool)
 
     def get_chat_history(self) -> list:

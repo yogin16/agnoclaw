@@ -1,0 +1,440 @@
+"""Contract-style tests for v0.2 harness runtime behavior."""
+
+from __future__ import annotations
+
+from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from agno.exceptions import AgentRunException
+
+from agnoclaw.agent import AgentHarness
+from agnoclaw.config import HarnessConfig
+from agnoclaw.runtime import (
+    ExecutionContext,
+    HarnessError,
+    InMemoryEventSink,
+    PolicyDecision,
+    PolicyAction,
+    RedactionRule,
+    RunResultEnvelope,
+)
+
+
+def _make_harness(
+    tmp_path,
+    *,
+    event_sink=None,
+    policy_engine=None,
+    pre_run_hooks=None,
+    post_run_hooks=None,
+    **harness_kwargs,
+):
+    mock_agent = MagicMock()
+
+    def _agent_ctor(*args, **kwargs):
+        mock_agent.system_message = kwargs.get("system_message")
+        mock_agent.session_id = kwargs.get("session_id")
+        return mock_agent
+
+    with patch("agnoclaw.agent.Agent", side_effect=_agent_ctor):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                workspace_dir=tmp_path,
+                config=HarnessConfig(),
+                event_sink=event_sink,
+                policy_engine=policy_engine,
+                pre_run_hooks=pre_run_hooks,
+                post_run_hooks=post_run_hooks,
+                **harness_kwargs,
+            )
+    return harness, mock_agent
+
+
+def test_execution_context_is_immutable():
+    ctx = ExecutionContext.create(
+        user_id="u-1",
+        session_id="s-1",
+        workspace_id="ws-1",
+        roles=["developer"],
+    )
+    with pytest.raises(FrozenInstanceError):
+        ctx.user_id = "u-2"
+
+
+def test_run_emits_lifecycle_events(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    harness.run("hello")
+
+    event_types = [e.event_type for e in sink.events]
+    assert event_types[0] == "run.started"
+    assert "prompt.built" in event_types
+    assert "model.request.started" in event_types
+    assert "model.request.completed" in event_types
+    assert "run.completed" in event_types
+    assert event_types.count("policy.decision") >= 2
+    first_event = sink.events[0]
+    payload = first_event.to_dict()
+    assert first_event.event_version == "0.2"
+    assert payload["context"]["workspace_id"] == str(harness.workspace.path)
+
+
+def test_policy_deny_blocks_run(tmp_path):
+    class DenyPolicy:
+        def before_run(self, run_input, context):
+            del run_input, context
+            return PolicyDecision.deny(reason_code="BLOCKED", message="run denied")
+
+        def before_prompt_send(self, prompt, context):
+            del prompt, context
+            return PolicyDecision.allow()
+
+        def before_skill_load(self, request, context):
+            del request, context
+            return PolicyDecision.allow()
+
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink, policy_engine=DenyPolicy())
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    with pytest.raises(HarnessError, match="run denied") as exc:
+        harness.run("hello")
+
+    assert exc.value.code == "POLICY_DENIED"
+    mock_agent.run.assert_not_called()
+    assert "run.failed" in [e.event_type for e in sink.events]
+
+
+def test_pre_and_post_hooks_are_ordered(tmp_path):
+    order: list[str] = []
+
+    def pre_hook(run_input, context):
+        del context
+        order.append("pre")
+        run_input.message = f"{run_input.message} transformed"
+        return run_input
+
+    def post_hook(run_input, result, context):
+        del run_input, context
+        order.append("post")
+        result.metadata["seen"] = True
+        return result
+
+    harness, mock_agent = _make_harness(
+        tmp_path,
+        pre_run_hooks=[pre_hook],
+        post_run_hooks=[post_hook],
+    )
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    harness.run("hello")
+
+    call_args = mock_agent.run.call_args
+    assert call_args.args[0] == "hello transformed"
+    assert order == ["pre", "post"]
+
+
+def test_stream_run_emits_content_events(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    mock_agent.run.return_value = iter(
+        [
+            SimpleNamespace(event="ToolCallStarted", content=""),
+            SimpleNamespace(event="RunContent", content="A"),
+            SimpleNamespace(event="ToolCallCompleted", content=""),
+            SimpleNamespace(event="RunContent", content="B"),
+        ]
+    )
+
+    list(harness.run("hello", stream=True, stream_events=True))
+
+    event_types = [e.event_type for e in sink.events]
+    assert event_types.count("run.content") == 2
+    assert "tool.call.started" in event_types
+    assert "tool.call.completed" in event_types
+    assert "run.completed" in event_types
+
+
+def test_context_override_propagates_to_model_call(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path)
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    context = ExecutionContext.create(
+        user_id="ctx-user",
+        session_id="ctx-session",
+        workspace_id="ws-id",
+    )
+    harness.run("hello", context=context)
+
+    call_kwargs = mock_agent.run.call_args.kwargs
+    assert call_kwargs["user_id"] == "ctx-user"
+    assert call_kwargs["session_id"] == "ctx-session"
+    assert isinstance(call_kwargs["run_id"], str)
+    assert call_kwargs["run_id"].startswith("run_")
+    assert "_agnoclaw_context" in call_kwargs["metadata"]
+
+
+def test_fail_closed_event_sink_raises(tmp_path):
+    class FailingSink:
+        def emit(self, event):
+            del event
+            raise RuntimeError("sink down")
+
+    harness, mock_agent = _make_harness(
+        tmp_path,
+        event_sink=FailingSink(),
+        event_sink_mode="fail_closed",
+    )
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    with pytest.raises(HarnessError) as exc:
+        harness.run("hello")
+    assert exc.value.code == "EVENT_SINK_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_async_hooks_and_events(tmp_path):
+    sink = InMemoryEventSink()
+    order: list[str] = []
+
+    async def pre_hook(run_input, context):
+        del context
+        order.append("pre")
+        run_input.message = f"{run_input.message} async"
+        return run_input
+
+    async def post_hook(run_input, result, context):
+        del run_input, context
+        order.append("post")
+        return RunResultEnvelope(
+            run_id=result.run_id,
+            content=result.content,
+            raw_output=result.raw_output,
+            metadata=result.metadata,
+        )
+
+    harness, mock_agent = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        pre_run_hooks=[pre_hook],
+        post_run_hooks=[post_hook],
+    )
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="ok"))
+
+    await harness.arun("hello")
+
+    call_args = mock_agent.arun.call_args
+    assert call_args.args[0] == "hello async"
+    assert order == ["pre", "post"]
+    assert "run.completed" in [e.event_type for e in sink.events]
+
+
+def _tool_run_context(harness: AgentHarness):
+    ctx = ExecutionContext.create(
+        user_id="tool-user",
+        session_id="tool-session",
+        workspace_id=str(harness.workspace.path),
+    )
+    return SimpleNamespace(
+        run_id="run_tool_123",
+        session_id="tool-session",
+        user_id="tool-user",
+        metadata={"_agnoclaw_context": harness._context_to_metadata(ctx)},
+    )
+
+
+def test_before_tool_policy_denies_call(tmp_path):
+    class ToolDenyPolicy:
+        def before_run(self, run_input, context):
+            del run_input, context
+            return PolicyDecision.allow()
+
+        def before_prompt_send(self, prompt, context):
+            del prompt, context
+            return PolicyDecision.allow()
+
+        def before_skill_load(self, request, context):
+            del request, context
+            return PolicyDecision.allow()
+
+        def before_tool_call(self, request, context):
+            del request, context
+            return PolicyDecision.deny(reason_code="TOOL_BLOCK", message="tool denied")
+
+        def after_tool_call(self, result, context):
+            del result, context
+            return PolicyDecision.allow()
+
+    harness, _ = _make_harness(tmp_path, policy_engine=ToolDenyPolicy())
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="web_fetch"),
+        arguments={"url": "https://example.com"},
+        result=None,
+        error=None,
+        call_id="tc-1",
+    )
+
+    with pytest.raises(AgentRunException) as exc:
+        harness._handle_tool_pre_hook(fc=fc, run_context=_tool_run_context(harness))
+
+    inner = exc.value.args[0]
+    assert isinstance(inner, HarnessError)
+    assert inner.code == "POLICY_DENIED"
+
+
+def test_tool_policy_redacts_input_and_output(tmp_path):
+    class RedactPolicy:
+        def before_run(self, run_input, context):
+            del run_input, context
+            return PolicyDecision.allow()
+
+        def before_prompt_send(self, prompt, context):
+            del prompt, context
+            return PolicyDecision.allow()
+
+        def before_skill_load(self, request, context):
+            del request, context
+            return PolicyDecision.allow()
+
+        def before_tool_call(self, request, context):
+            del request, context
+            return PolicyDecision(
+                action=PolicyAction.ALLOW_WITH_REDACTION,
+                reason_code="REDACT_PRE",
+                redactions=(RedactionRule(target="secret"),),
+            )
+
+        def after_tool_call(self, result, context):
+            del result, context
+            return PolicyDecision(
+                action=PolicyAction.ALLOW_WITH_REDACTION,
+                reason_code="REDACT_POST",
+                redactions=(RedactionRule(target="secret"),),
+            )
+
+    harness, _ = _make_harness(tmp_path, policy_engine=RedactPolicy())
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="web_fetch"),
+        arguments={"url": "https://example.com?q=secret"},
+        result="secret output",
+        error=None,
+        call_id="tc-2",
+    )
+    run_context = _tool_run_context(harness)
+
+    harness._handle_tool_pre_hook(fc=fc, run_context=run_context)
+    assert "[REDACTED]" in fc.arguments["url"]
+
+    harness._handle_tool_post_hook(fc=fc, run_context=run_context)
+    assert fc.result == "[REDACTED] output"
+
+
+def test_guardrails_block_path_outside_workspace(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="read_file"),
+        arguments={"path": "/etc/passwd"},
+        result=None,
+        error=None,
+        call_id="tc-3",
+    )
+
+    with pytest.raises(AgentRunException) as exc:
+        harness._handle_tool_pre_hook(fc=fc, run_context=_tool_run_context(harness))
+
+    inner = exc.value.args[0]
+    assert isinstance(inner, HarnessError)
+    assert inner.code == "GUARDRAIL_DENIED"
+
+
+def test_guardrails_block_private_network_host(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="web_fetch"),
+        arguments={"url": "https://localhost/internal"},
+        result=None,
+        error=None,
+        call_id="tc-4",
+    )
+
+    with pytest.raises(AgentRunException) as exc:
+        harness._handle_tool_pre_hook(fc=fc, run_context=_tool_run_context(harness))
+
+    inner = exc.value.args[0]
+    assert isinstance(inner, HarnessError)
+    assert inner.code == "GUARDRAIL_DENIED"
+
+
+def test_permission_plan_mode_blocks_mutating_tools(tmp_path):
+    harness, _ = _make_harness(tmp_path, permission_mode="plan")
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="write_file"),
+        arguments={"path": "note.txt", "content": "x"},
+        result=None,
+        error=None,
+        call_id="tc-plan-1",
+    )
+
+    with pytest.raises(AgentRunException) as exc:
+        harness._handle_tool_pre_hook(fc=fc, run_context=_tool_run_context(harness))
+
+    inner = exc.value.args[0]
+    assert isinstance(inner, HarnessError)
+    assert inner.code == "POLICY_DENIED"
+    assert "Plan mode is read-only" in inner.message
+
+
+def test_permission_dont_ask_denies_without_preapproval(tmp_path):
+    harness, _ = _make_harness(tmp_path, permission_mode="dont_ask")
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="bash"),
+        arguments={"command": "echo hi"},
+        result=None,
+        error=None,
+        call_id="tc-pa-1",
+    )
+
+    with pytest.raises(AgentRunException) as exc:
+        harness._handle_tool_pre_hook(fc=fc, run_context=_tool_run_context(harness))
+
+    inner = exc.value.args[0]
+    assert isinstance(inner, HarnessError)
+    assert inner.code == "POLICY_DENIED"
+    assert "dont_ask" in inner.message
+
+
+def test_permission_preapproved_tool_allows_in_dont_ask_mode(tmp_path):
+    harness, _ = _make_harness(tmp_path, permission_mode="dont_ask")
+    run_context = _tool_run_context(harness)
+    run_context.metadata["_agnoclaw_context"]["metadata"]["permission_preapproved_tools"] = ["bash"]
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="bash"),
+        arguments={"command": "echo hi"},
+        result=None,
+        error=None,
+        call_id="tc-pa-2",
+    )
+
+    harness._handle_tool_pre_hook(fc=fc, run_context=run_context)
+
+
+def test_guardrails_apply_to_bash_start_network_calls(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="bash_start"),
+        arguments={"command": "curl https://localhost/internal"},
+        result=None,
+        error=None,
+        call_id="tc-net-1",
+    )
+
+    with pytest.raises(AgentRunException) as exc:
+        harness._handle_tool_pre_hook(fc=fc, run_context=_tool_run_context(harness))
+
+    inner = exc.value.args[0]
+    assert isinstance(inner, HarnessError)
+    assert inner.code == "GUARDRAIL_DENIED"

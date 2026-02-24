@@ -88,6 +88,7 @@ def test_bash_timeout_default():
     from agnoclaw.config import HarnessConfig
     cfg = HarnessConfig()
     assert cfg.bash_timeout_seconds == 120
+    assert cfg.enable_background_bash_tools is False
 
 
 def test_heartbeat_active_hours():
@@ -127,6 +128,27 @@ def test_session_summary_disabled_by_default():
     assert cfg.enable_session_summary is False
 
 
+def test_event_sink_mode_default_best_effort():
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert cfg.event_sink_mode == "best_effort"
+
+
+def test_policy_fail_open_default_false():
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert cfg.policy_fail_open is False
+
+
+def test_permission_mode_default_bypass():
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert cfg.permission_mode == "bypass"
+    assert cfg.permission_require_approver is False
+    assert cfg.permission_preapproved_tools == []
+    assert cfg.permission_preapproved_categories == []
+
+
 def test_env_override_enable_compression(monkeypatch):
     from agnoclaw.config import HarnessConfig
     monkeypatch.setenv("AGNOCLAW_ENABLE_COMPRESSION", "true")
@@ -146,6 +168,57 @@ def test_env_override_enable_session_summary(monkeypatch):
     monkeypatch.setenv("AGNOCLAW_ENABLE_SESSION_SUMMARY", "true")
     cfg = HarnessConfig()
     assert cfg.enable_session_summary is True
+
+
+def test_env_override_enable_background_bash_tools(monkeypatch):
+    from agnoclaw.config import HarnessConfig
+    monkeypatch.setenv("AGNOCLAW_ENABLE_BACKGROUND_BASH_TOOLS", "true")
+    cfg = HarnessConfig()
+    assert cfg.enable_background_bash_tools is True
+
+
+def test_env_override_event_sink_mode(monkeypatch):
+    from agnoclaw.config import HarnessConfig
+    monkeypatch.setenv("AGNOCLAW_EVENT_SINK_MODE", "fail_closed")
+    cfg = HarnessConfig()
+    assert cfg.event_sink_mode == "fail_closed"
+
+
+def test_env_override_policy_fail_open(monkeypatch):
+    from agnoclaw.config import HarnessConfig
+    monkeypatch.setenv("AGNOCLAW_POLICY_FAIL_OPEN", "true")
+    cfg = HarnessConfig()
+    assert cfg.policy_fail_open is True
+
+
+def test_env_override_permission_mode(monkeypatch):
+    from agnoclaw.config import HarnessConfig
+    monkeypatch.setenv("AGNOCLAW_PERMISSION_MODE", "plan")
+    monkeypatch.setenv("AGNOCLAW_PERMISSION_REQUIRE_APPROVER", "true")
+    cfg = HarnessConfig()
+    assert cfg.permission_mode == "plan"
+    assert cfg.permission_require_approver is True
+
+
+def test_guardrails_defaults():
+    from agnoclaw.config import HarnessConfig
+    cfg = HarnessConfig()
+    assert cfg.guardrails_enabled is True
+    assert cfg.path_guardrails_enabled is True
+    assert cfg.network_enabled is True
+    assert cfg.network_enforce_https is True
+    assert cfg.network_block_private_hosts is True
+    assert cfg.path_allowed_roots == []
+    assert cfg.network_allowed_hosts == []
+
+
+def test_env_override_guardrails(monkeypatch):
+    from agnoclaw.config import HarnessConfig
+    monkeypatch.setenv("AGNOCLAW_GUARDRAILS_ENABLED", "false")
+    monkeypatch.setenv("AGNOCLAW_NETWORK_ENABLED", "false")
+    cfg = HarnessConfig()
+    assert cfg.guardrails_enabled is False
+    assert cfg.network_enabled is False
 
 
 def test_deep_merge_preserves_user_nested_values():

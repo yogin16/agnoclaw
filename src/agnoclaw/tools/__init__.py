@@ -15,13 +15,14 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from agnoclaw.config import HarnessConfig
 
-from .bash import make_bash_tool
+from .bash import BashToolkit, make_bash_tool
 from .files import FilesToolkit
 from .tasks import ProgressToolkit, SubagentDefinition, TodoToolkit, make_subagent_tool
 from .web import WebToolkit
 
 __all__ = [
     "make_bash_tool",
+    "BashToolkit",
     "FilesToolkit",
     "WebToolkit",
     "TodoToolkit",
@@ -55,7 +56,10 @@ def get_default_tools(
 
     # Shell execution
     if cfg.enable_bash:
-        tools.append(make_bash_tool(timeout=cfg.bash_timeout_seconds))
+        if cfg.enable_background_bash_tools:
+            tools.append(BashToolkit(timeout=cfg.bash_timeout_seconds, workspace_dir=cfg.workspace_dir))
+        else:
+            tools.append(make_bash_tool(timeout=cfg.bash_timeout_seconds, workspace_dir=cfg.workspace_dir))
 
     # Web tools
     tools.append(

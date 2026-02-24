@@ -123,6 +123,26 @@ def test_resolve_model_combined_string_with_alias():
     assert result == "aws-bedrock:my-model"
 
 
+def test_resolve_model_ollama_model_id_contains_colon_with_provider():
+    """Model IDs with ':' should remain model IDs when provider is explicit."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+
+    cfg = HarnessConfig(default_provider="anthropic")
+    result = _resolve_model("qwen3:0.6b", "ollama", cfg)
+    assert result == "ollama:qwen3:0.6b"
+
+
+def test_resolve_model_ollama_model_id_contains_colon_with_default_provider():
+    """Unknown prefix in model string should use configured default provider."""
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import HarnessConfig
+
+    cfg = HarnessConfig(default_provider="ollama")
+    result = _resolve_model("qwen3:0.6b", None, cfg)
+    assert result == "ollama:qwen3:0.6b"
+
+
 # ── _make_db tests ───────────────────────────────────────────────────────────
 
 
@@ -210,6 +230,24 @@ def test_agent_harness_has_plan_mode_methods():
     from agnoclaw.agent import AgentHarness
     assert hasattr(AgentHarness, "enter_plan_mode")
     assert hasattr(AgentHarness, "exit_plan_mode")
+
+
+def test_plan_mode_toggles_permission_mode(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    with patch("agnoclaw.agent.Agent", return_value=MagicMock()):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                workspace_dir=tmp_path,
+                config=HarnessConfig(permission_mode="default"),
+            )
+
+    assert harness.permission_mode == "default"
+    harness.enter_plan_mode()
+    assert harness.permission_mode == "plan"
+    harness.exit_plan_mode()
+    assert harness.permission_mode == "default"
 
 
 def test_agent_harness_has_save_session_summary():

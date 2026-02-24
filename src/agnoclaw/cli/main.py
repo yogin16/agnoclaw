@@ -35,6 +35,7 @@ def _build_agent(
     session: Optional[str],
     workspace: Optional[str],
     debug: bool,
+    permission_mode: Optional[str],
 ):
     """Shared factory for building an AgentHarness from CLI options."""
     from agnoclaw import AgentHarness
@@ -45,6 +46,7 @@ def _build_agent(
         session_id=session,
         workspace_dir=workspace,
         debug=debug,
+        permission_mode=permission_mode,
     )
 
 
@@ -65,6 +67,12 @@ SESSION_OPT = click.option("--session", "-s", default=None, help="Session ID for
 WORKSPACE_OPT = click.option("--workspace", "-w", default=None, help="Workspace directory path")
 DEBUG_OPT = click.option("--debug", is_flag=True, default=False, help="Enable debug mode (show tool calls)")
 SKILL_OPT = click.option("--skill", default=None, help="Activate a skill for this run (skill name)")
+PERMISSION_MODE_OPT = click.option(
+    "--permission-mode",
+    default=None,
+    type=click.Choice(["bypass", "default", "accept_edits", "plan", "dont_ask"], case_sensitive=False),
+    help="Runtime permission mode for tool calls.",
+)
 
 
 # ── agnoclaw init ─────────────────────────────────────────────────────────────
@@ -156,9 +164,10 @@ def init(workspace):
 @SESSION_OPT
 @WORKSPACE_OPT
 @DEBUG_OPT
-def chat(model, provider, session, workspace, debug):
+@PERMISSION_MODE_OPT
+def chat(model, provider, session, workspace, debug, permission_mode):
     """Start an interactive chat session."""
-    agent = _build_agent(model, provider, session, workspace, debug)
+    agent = _build_agent(model, provider, session, workspace, debug, permission_mode)
     queued_skill: Optional[str] = None
 
     console.print(Panel(
@@ -283,9 +292,10 @@ def _handle_slash_command(
 @WORKSPACE_OPT
 @DEBUG_OPT
 @SKILL_OPT
-def run(task, model, provider, session, workspace, debug, skill):
+@PERMISSION_MODE_OPT
+def run(task, model, provider, session, workspace, debug, skill, permission_mode):
     """Run a single task and exit (non-interactive)."""
-    agent = _build_agent(model, provider, session, workspace, debug)
+    agent = _build_agent(model, provider, session, workspace, debug, permission_mode)
     agent.print_response(task, stream=True, skill=skill)
 
 
@@ -392,13 +402,19 @@ def heartbeat():
 @MODEL_OPT
 @PROVIDER_OPT
 @WORKSPACE_OPT
+@PERMISSION_MODE_OPT
 @click.option("--interval", "-i", default=None, type=int, help="Check interval in minutes (overrides config)")
-def heartbeat_start(model, provider, workspace, interval):
+def heartbeat_start(model, provider, workspace, permission_mode, interval):
     """Start the heartbeat daemon (runs until Ctrl+C)."""
     from agnoclaw import AgentHarness
     from agnoclaw.heartbeat import HeartbeatDaemon
 
-    agent = AgentHarness(model=model, provider=provider, workspace_dir=workspace)
+    agent = AgentHarness(
+        model=model,
+        provider=provider,
+        workspace_dir=workspace,
+        permission_mode=permission_mode,
+    )
 
     if agent.workspace.is_empty_heartbeat():
         console.print(
@@ -440,12 +456,18 @@ def heartbeat_start(model, provider, workspace, interval):
 @MODEL_OPT
 @PROVIDER_OPT
 @WORKSPACE_OPT
-def heartbeat_trigger(model, provider, workspace):
+@PERMISSION_MODE_OPT
+def heartbeat_trigger(model, provider, workspace, permission_mode):
     """Run one heartbeat check immediately."""
     from agnoclaw import AgentHarness
     from agnoclaw.heartbeat import HeartbeatDaemon
 
-    agent = AgentHarness(model=model, provider=provider, workspace_dir=workspace)
+    agent = AgentHarness(
+        model=model,
+        provider=provider,
+        workspace_dir=workspace,
+        permission_mode=permission_mode,
+    )
 
     def on_alert(msg):
         console.print(Panel(msg, title="[yellow]Heartbeat Alert[/yellow]", border_style="yellow"))

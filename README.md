@@ -132,7 +132,7 @@ agnoclaw ships a Claude Code-compatible tool set. Key tools:
 | `TodoWrite/Read` | `create_todo()` / `list_todos()` | Task management |
 | `Task` | `spawn_subagent()` | Subagent spawning |
 
-For a full comparison with Claude Code v2.1.50 (missing tools, gaps, roadmap), see [`docs/claude-code-gaps.md`](docs/claude-code-gaps.md).
+For the unified Claude Code + OpenClaw gap status (implemented/remaining roadmap), see [`docs/harness-gap-analysis.md`](docs/harness-gap-analysis.md).
 
 ---
 
@@ -691,7 +691,7 @@ agnoclaw/
 │   ├── memory-manage/
 │   └── self-improving-agent/  # Capture corrections/errors → .learnings/
 ├── docs/
-│   └── claude-code-gaps.md    # Tool-by-tool CC v2.1.50 vs agnoclaw comparison
+│   └── harness-gap-analysis.md # Unified Claude Code + OpenClaw harness gap status
 └── examples/              # 20 runnable examples
     ├── ollama_local.py    # Local inference (no API key)
     ├── openclaw_style.py  # Full OpenClaw-style setup

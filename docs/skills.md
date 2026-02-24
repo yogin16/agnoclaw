@@ -256,4 +256,4 @@ agnoclaw skill install path/to/my-skill/
 
 ---
 
-*See [claude-code-gaps.md](claude-code-gaps.md) for a comparison with Claude Code's skill system.*
+*See [harness-gap-analysis.md](harness-gap-analysis.md) for the unified Claude Code + OpenClaw gap status.*
