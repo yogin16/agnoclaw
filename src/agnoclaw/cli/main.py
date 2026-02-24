@@ -350,7 +350,7 @@ def skill_install(path_or_url, workspace):
     ws.initialize()
 
     if path_or_url.startswith("http"):
-        console.print(f"[yellow]Remote skill install not yet implemented.[/yellow]")
+        console.print("[yellow]Remote skill install not yet implemented.[/yellow]")
         console.print(f"Clone the skill directory to {ws.skills_dir()} manually.")
     else:
         src = Path(path_or_url).expanduser()
@@ -494,7 +494,6 @@ def heartbeat_install_service(model, provider, workspace, interval, uninstall):
     """
     import platform
     import shutil
-    import subprocess
 
     os_name = platform.system().lower()
     agnoclaw_bin = shutil.which("agnoclaw")
@@ -573,8 +572,8 @@ def _manage_launchd_service(
 
     if result.returncode == 0:
         console.print(f"[green]Installed and started: {plist_path}[/green]")
-        console.print(f"[dim]Logs: ~/.agnoclaw/logs/heartbeat.log[/dim]")
-        console.print(f"[dim]To uninstall: agnoclaw heartbeat install-service --uninstall[/dim]")
+        console.print("[dim]Logs: ~/.agnoclaw/logs/heartbeat.log[/dim]")
+        console.print("[dim]To uninstall: agnoclaw heartbeat install-service --uninstall[/dim]")
     else:
         console.print(f"[red]launchctl load failed: {result.stderr}[/red]")
         console.print(f"[dim]Plist written to: {plist_path}[/dim]")
@@ -643,7 +642,7 @@ WantedBy=default.target
     if result.returncode == 0:
         console.print(f"[green]Installed and started: {service_path}[/green]")
         console.print(f"[dim]Status: systemctl --user status {service_name}[/dim]")
-        console.print(f"[dim]To uninstall: agnoclaw heartbeat install-service --uninstall[/dim]")
+        console.print("[dim]To uninstall: agnoclaw heartbeat install-service --uninstall[/dim]")
     else:
         console.print(f"[red]systemctl enable failed: {result.stderr}[/red]")
         console.print(f"[dim]Service file written to: {service_path}[/dim]")

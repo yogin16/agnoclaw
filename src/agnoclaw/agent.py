@@ -666,7 +666,7 @@ class AgentHarness:
     def _context_from_run_context(self, run_context) -> ExecutionContext:
         payload = {}
         if run_context is not None and isinstance(getattr(run_context, "metadata", None), dict):
-            payload = dict(getattr(run_context, "metadata") or {})
+            payload = dict(run_context.metadata or {})
 
         raw_context = payload.get("_agnoclaw_context")
         if isinstance(raw_context, dict):
@@ -1514,7 +1514,7 @@ class AgentHarness:
                             payload={"error": str(exc), "code": error_code},
                         )
                         if harness_error is not None:
-                            raise harness_error
+                            raise harness_error from exc
                         raise
 
                 return _wrapped_stream()
@@ -1557,7 +1557,7 @@ class AgentHarness:
                 payload={"error": str(exc), "code": error_code},
             )
             if harness_error is not None:
-                raise harness_error
+                raise harness_error from exc
             raise HarnessError(
                 code="MODEL_RUN_FAILED",
                 category="model",
@@ -1780,7 +1780,7 @@ class AgentHarness:
                             payload={"error": str(exc), "code": error_code},
                         )
                         if harness_error is not None:
-                            raise harness_error
+                            raise harness_error from exc
                         raise
 
                 return _wrapped_stream()
@@ -1823,7 +1823,7 @@ class AgentHarness:
                 payload={"error": str(exc), "code": error_code},
             )
             if harness_error is not None:
-                raise harness_error
+                raise harness_error from exc
             raise HarnessError(
                 code="MODEL_RUN_FAILED",
                 category="model",

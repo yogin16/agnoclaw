@@ -1,7 +1,6 @@
 """Tests for the workspace system."""
 
 import pytest
-from pathlib import Path
 
 from agnoclaw.workspace import Workspace
 

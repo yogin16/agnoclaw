@@ -16,7 +16,6 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from agno.tools import tool
 from agno.tools.toolkit import Toolkit
 
 
@@ -151,7 +150,7 @@ class FilesToolkit(Toolkit):
         if not file_path.exists():
             return f"[error] File not found: {path}. Read the file first."
         if not edits:
-            return f"[error] No edits provided."
+            return "[error] No edits provided."
 
         try:
             content = file_path.read_text(encoding="utf-8")
