@@ -193,6 +193,30 @@ def test_build_skips_empty_workspace_files(tmp_path):
     assert "Agent Guidelines (AGENTS.md)" not in prompt
 
 
+def test_build_caps_memory_startup_lines(tmp_path):
+    from agnoclaw.workspace import MEMORY_STARTUP_LINES
+
+    lines = [f"memory line {i}" for i in range(MEMORY_STARTUP_LINES + 25)]
+    (tmp_path / "MEMORY.md").write_text("\n".join(lines), encoding="utf-8")
+    b = SystemPromptBuilder(tmp_path)
+    prompt = b.build(include_datetime=False)
+
+    assert f"memory line {MEMORY_STARTUP_LINES - 1}" in prompt
+    assert f"memory line {MEMORY_STARTUP_LINES}" not in prompt
+
+
+def test_build_caps_workspace_file_chars(tmp_path):
+    from agnoclaw.workspace import BOOTSTRAP_MAX_CHARS
+
+    content = "B" * (BOOTSTRAP_MAX_CHARS + 500)
+    (tmp_path / "AGENTS.md").write_text(content, encoding="utf-8")
+    b = SystemPromptBuilder(tmp_path)
+    prompt = b.build(include_datetime=False)
+
+    assert "B" * BOOTSTRAP_MAX_CHARS in prompt
+    assert "B" * (BOOTSTRAP_MAX_CHARS + 1) not in prompt
+
+
 def test_add_section(builder):
     builder.add_section("# Enterprise Policy\n\nUse only approved tools.")
     prompt = builder.build()

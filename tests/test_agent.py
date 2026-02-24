@@ -503,3 +503,74 @@ def test_maybe_optimize_memories_handles_exception():
 
     # Should not raise
     AgentHarness._maybe_optimize_memories(harness)
+
+
+def test_run_skill_injection_restores_base_prompt(tmp_path):
+    """Skill prompts should be one-shot and preserve base prompt sections."""
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    captured_prompts = []
+    mock_agent = MagicMock()
+
+    def _agent_ctor(*args, **kwargs):
+        mock_agent.system_message = kwargs.get("system_message")
+        mock_agent.session_id = kwargs.get("session_id")
+        return mock_agent
+
+    def _run(*args, **kwargs):
+        captured_prompts.append(mock_agent.system_message)
+        return MagicMock(content="ok")
+
+    mock_agent.run.side_effect = _run
+
+    with patch("agnoclaw.agent.Agent", side_effect=_agent_ctor):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                workspace_dir=tmp_path,
+                config=HarnessConfig(),
+                instructions="Project rule: always run tests",
+                enable_learning=True,
+            )
+
+    harness.skills.load_skill = MagicMock(return_value="# Skill\n\nFollow this skill.")
+    base_prompt = harness.underlying_agent.system_message
+
+    harness.run("first", skill="code-review")
+    assert len(captured_prompts) == 1
+    assert "# Active Skill" in captured_prompts[0]
+    assert "Project rule: always run tests" in captured_prompts[0]
+    assert "# Institutional Learning" in captured_prompts[0]
+    assert harness.underlying_agent.system_message == base_prompt
+
+    captured_prompts.clear()
+    harness.run("second")
+    assert len(captured_prompts) == 1
+    assert "# Active Skill" not in captured_prompts[0]
+
+
+def test_clear_session_context_rotates_session_id(tmp_path):
+    """clear_session_context should switch to a fresh session ID."""
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    mock_agent = MagicMock()
+
+    def _agent_ctor(*args, **kwargs):
+        mock_agent.system_message = kwargs.get("system_message")
+        mock_agent.session_id = kwargs.get("session_id")
+        return mock_agent
+
+    with patch("agnoclaw.agent.Agent", side_effect=_agent_ctor):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                workspace_dir=tmp_path,
+                config=HarnessConfig(),
+                session_id="session-old",
+            )
+
+    new_session = harness.clear_session_context("session-new")
+    assert new_session == "session-new"
+    assert harness.session_id == "session-new"
+    assert harness.underlying_agent.session_id == "session-new"
+    assert "Session ID: session-new" in harness.underlying_agent.system_message

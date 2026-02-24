@@ -277,7 +277,7 @@ class HeartbeatDaemon:
                 "You do not have access to conversation history."
             ),
         )
-        return isolated_agent.run(prompt)
+        return await isolated_agent.arun(prompt)
 
     # ── Schedule parsing ───────────────────────────────────────────────────────
 

@@ -56,6 +56,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any, Iterator, Optional, Union
+from uuid import uuid4
 
 from agno.agent import Agent
 from agno.run.agent import RunOutput, RunOutputEvent
@@ -242,12 +243,13 @@ class AgentHarness:
         _enable_learning = enable_learning if enable_learning is not None else self.config.enable_learning
         _learning_mode = learning_mode or self.config.learning_mode
 
-        # Assemble system prompt (initial — skills injected dynamically)
-        system_prompt = self._prompt_builder.build(
-            extra_context=_instructions,
-            include_learning=_enable_learning,
-            session_id=session_id,
-        )
+        # Persist prompt options so per-run skill injection can be one-shot
+        self._extra_instructions = _instructions
+        self._include_learning = _enable_learning
+        self._plan_mode = False
+
+        # Assemble system prompt (skills are injected per-run, then reset)
+        system_prompt = self._build_system_prompt(session_id=session_id)
 
         # Storage backend
         db = _make_db(self.config)
@@ -320,6 +322,34 @@ class AgentHarness:
             add_session_summary_to_context=_enable_session_summary,
         )
 
+    def _build_system_prompt(
+        self,
+        *,
+        skill_content: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> str:
+        """Build the canonical system prompt for this harness instance."""
+        include_learning = self._include_learning and not self._plan_mode
+        return self._prompt_builder.build(
+            skill_content=skill_content,
+            extra_context=self._extra_instructions,
+            include_learning=include_learning,
+            include_plan_mode=self._plan_mode,
+            session_id=session_id if session_id is not None else self.session_id,
+        )
+
+    def _set_system_prompt(
+        self,
+        *,
+        skill_content: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Update the underlying agent's system prompt."""
+        self._agent.system_message = self._build_system_prompt(
+            skill_content=skill_content,
+            session_id=session_id,
+        )
+
     def run(
         self,
         message: str,
@@ -348,20 +378,28 @@ class AgentHarness:
         """
         self._check_context_budget()
 
+        skill_content = None
         if skill:
             skill_content = self.skills.load_skill(skill)
             if skill_content:
-                system_prompt = self._prompt_builder.build(skill_content=skill_content)
-                self._agent.system_message = system_prompt
+                self._set_system_prompt(
+                    skill_content=skill_content,
+                    session_id=session_id,
+                )
 
-        result = self._agent.run(
-            message,
-            stream=stream,
-            stream_events=stream_events,
-            session_id=session_id or self.session_id,
-            user_id=user_id or self.user_id,
-            **kwargs,
-        )
+        try:
+            result = self._agent.run(
+                message,
+                stream=stream,
+                stream_events=stream_events,
+                session_id=session_id or self.session_id,
+                user_id=user_id or self.user_id,
+                **kwargs,
+            )
+        finally:
+            if skill_content:
+                self._set_system_prompt(session_id=self.session_id)
+
         self._maybe_optimize_memories()
         return result
 
@@ -379,37 +417,50 @@ class AgentHarness:
         """Async version of run()."""
         self._check_context_budget()
 
+        skill_content = None
         if skill:
             skill_content = self.skills.load_skill(skill)
             if skill_content:
-                system_prompt = self._prompt_builder.build(skill_content=skill_content)
-                self._agent.system_message = system_prompt
+                self._set_system_prompt(
+                    skill_content=skill_content,
+                    session_id=session_id,
+                )
 
-        result = await self._agent.arun(
-            message,
-            stream=stream,
-            stream_events=stream_events,
-            session_id=session_id or self.session_id,
-            user_id=user_id or self.user_id,
-            **kwargs,
-        )
+        try:
+            result = await self._agent.arun(
+                message,
+                stream=stream,
+                stream_events=stream_events,
+                session_id=session_id or self.session_id,
+                user_id=user_id or self.user_id,
+                **kwargs,
+            )
+        finally:
+            if skill_content:
+                self._set_system_prompt(session_id=self.session_id)
+
         self._maybe_optimize_memories()
         return result
 
     def print_response(self, message: str, *, stream: bool = True, skill: Optional[str] = None, **kwargs) -> None:
         """Run the agent and pretty-print the response to the terminal."""
+        skill_content = None
         if skill:
             skill_content = self.skills.load_skill(skill)
             if skill_content:
-                system_prompt = self._prompt_builder.build(skill_content=skill_content)
-                self._agent.system_message = system_prompt
-        self._agent.print_response(
-            message,
-            stream=stream,
-            session_id=self.session_id,
-            user_id=self.user_id,
-            **kwargs,
-        )
+                self._set_system_prompt(skill_content=skill_content)
+
+        try:
+            self._agent.print_response(
+                message,
+                stream=stream,
+                session_id=self.session_id,
+                user_id=self.user_id,
+                **kwargs,
+            )
+        finally:
+            if skill_content:
+                self._set_system_prompt(session_id=self.session_id)
 
     def enter_plan_mode(self) -> None:
         """
@@ -422,17 +473,13 @@ class AgentHarness:
 
         Use exit_plan_mode() to return to normal operation.
         """
-        system_prompt = self._prompt_builder.build(
-            include_learning=False,
-            include_plan_mode=True,
-            session_id=self.session_id,
-        )
-        self._agent.system_message = system_prompt
+        self._plan_mode = True
+        self._set_system_prompt(session_id=self.session_id)
 
     def exit_plan_mode(self) -> None:
         """Deactivate plan mode: restores normal system prompt."""
-        system_prompt = self._prompt_builder.build(session_id=self.session_id)
-        self._agent.system_message = system_prompt
+        self._plan_mode = False
+        self._set_system_prompt(session_id=self.session_id)
 
     def add_tool(self, tool) -> None:
         """Add a tool or toolkit to the agent."""
@@ -440,7 +487,21 @@ class AgentHarness:
 
     def get_chat_history(self) -> list:
         """Return the chat history for the current session."""
-        return self._agent.get_chat_history(self.session_id or "")
+        active_session = self.session_id or getattr(self._agent, "session_id", "")
+        return self._agent.get_chat_history(active_session or "")
+
+    def clear_session_context(self, new_session_id: Optional[str] = None) -> str:
+        """
+        Switch to a fresh session ID so subsequent turns start with empty history.
+
+        Prior sessions remain stored in the database for audit/replay.
+        """
+        session = new_session_id or f"session-{uuid4().hex[:12]}"
+        self.session_id = session
+        if hasattr(self._agent, "session_id"):
+            self._agent.session_id = session
+        self._set_system_prompt(session_id=session)
+        return session
 
     def save_session_summary(self, summary: str) -> None:
         """
@@ -471,7 +532,8 @@ class AgentHarness:
                 return
 
             # Get session messages for token counting
-            messages = self._agent.get_chat_history(self.session_id or "")
+            active_session = self.session_id or getattr(self._agent, "session_id", "")
+            messages = self._agent.get_chat_history(active_session or "")
             if not messages:
                 return
 

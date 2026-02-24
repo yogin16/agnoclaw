@@ -146,3 +146,34 @@ def test_env_override_enable_session_summary(monkeypatch):
     monkeypatch.setenv("AGNOCLAW_ENABLE_SESSION_SUMMARY", "true")
     cfg = HarnessConfig()
     assert cfg.enable_session_summary is True
+
+
+def test_deep_merge_preserves_user_nested_values():
+    from agnoclaw.config import _deep_merge
+
+    user = {
+        "heartbeat": {
+            "enabled": True,
+            "interval_minutes": 30,
+            "active_hours_start": "08:00",
+        },
+        "storage": {
+            "backend": "sqlite",
+            "sqlite_path": "~/user.db",
+        },
+    }
+    project = {
+        "heartbeat": {
+            "interval_minutes": 10,
+        },
+        "storage": {
+            "backend": "postgres",
+        },
+    }
+
+    merged = _deep_merge(user, project)
+    assert merged["heartbeat"]["enabled"] is True
+    assert merged["heartbeat"]["interval_minutes"] == 10
+    assert merged["heartbeat"]["active_hours_start"] == "08:00"
+    assert merged["storage"]["backend"] == "postgres"
+    assert merged["storage"]["sqlite_path"] == "~/user.db"

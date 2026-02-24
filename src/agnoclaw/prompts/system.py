@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from ..workspace import BOOTSTRAP_MAX_CHARS, BOOTSTRAP_TOTAL_MAX_CHARS, MEMORY_STARTUP_LINES
 from .sections import (
     DOING_TASKS,
     GIT_PROTOCOL,
@@ -138,12 +139,34 @@ class SystemPromptBuilder:
         ]
 
         loaded: list[str] = []
+        total_chars = 0
         for filename, label in files:
             path = self.workspace_dir / filename
             if path.exists():
                 content = path.read_text(encoding="utf-8").strip()
+
+                # Keep MEMORY.md as an index: only first N lines are injected.
+                if filename == "MEMORY.md":
+                    lines = content.splitlines()
+                    if len(lines) > MEMORY_STARTUP_LINES:
+                        content = "\n".join(lines[:MEMORY_STARTUP_LINES])
+
+                # Hard per-file cap to avoid context blowups.
+                if len(content) > BOOTSTRAP_MAX_CHARS:
+                    content = content[:BOOTSTRAP_MAX_CHARS]
+
+                # Enforce global workspace bootstrap budget.
+                if total_chars + len(content) > BOOTSTRAP_TOTAL_MAX_CHARS:
+                    remaining = BOOTSTRAP_TOTAL_MAX_CHARS - total_chars
+                    if remaining <= 0:
+                        break
+                    content = content[:remaining]
+
                 if content:
                     loaded.append(f"## {label}\n\n{content}")
+                    total_chars += len(content)
+                    if total_chars >= BOOTSTRAP_TOTAL_MAX_CHARS:
+                        break
 
         if not loaded:
             return None

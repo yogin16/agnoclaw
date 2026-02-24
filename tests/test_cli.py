@@ -3,8 +3,9 @@
 import pytest
 from click.testing import CliRunner
 from pathlib import Path
+from unittest.mock import MagicMock
 
-from agnoclaw.cli.main import cli
+from agnoclaw.cli.main import _handle_slash_command, cli
 
 
 @pytest.fixture
@@ -221,3 +222,24 @@ def test_init_help(runner):
     result = runner.invoke(cli, ["init", "--help"])
     assert result.exit_code == 0
     assert "onboarding" in result.output.lower() or "wizard" in result.output.lower() or "personalize" in result.output.lower()
+
+
+def test_handle_slash_skill_queues_skill():
+    """The /skill command should queue a one-shot skill for the next message."""
+    agent = MagicMock()
+    agent.skills.list_skills.return_value = [{"name": "code-review"}]
+
+    handled, queued = _handle_slash_command("/skill code-review", agent, None)
+    assert handled is True
+    assert queued == "code-review"
+
+
+def test_handle_slash_clear_rotates_session():
+    """The /clear command should call clear_session_context when available."""
+    agent = MagicMock()
+    agent.clear_session_context.return_value = "session-new"
+
+    handled, queued = _handle_slash_command("/clear", agent, None)
+    assert handled is True
+    assert queued is None
+    agent.clear_session_context.assert_called_once()

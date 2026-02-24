@@ -159,6 +159,7 @@ def init(workspace):
 def chat(model, provider, session, workspace, debug):
     """Start an interactive chat session."""
     agent = _build_agent(model, provider, session, workspace, debug)
+    queued_skill: Optional[str] = None
 
     console.print(Panel(
         f"[bold cyan]agnoclaw[/bold cyan] — interactive session\n"
@@ -181,7 +182,8 @@ def chat(model, provider, session, workspace, debug):
 
         # Handle slash commands
         if user_input.strip().startswith("/"):
-            if _handle_slash_command(user_input.strip(), agent):
+            handled, queued_skill = _handle_slash_command(user_input.strip(), agent, queued_skill)
+            if handled:
                 continue
             if user_input.strip() in ("/quit", "/exit", "/q"):
                 console.print("[dim]Goodbye.[/dim]")
@@ -193,6 +195,10 @@ def chat(model, provider, session, workspace, debug):
             parts = user_input.split("--skill", 1)
             user_input = parts[0].strip()
             active_skill = parts[1].strip().split()[0] if parts[1].strip() else None
+        elif queued_skill:
+            # One-shot /skill activation applies to the next user message only.
+            active_skill = queued_skill
+            queued_skill = None
 
         try:
             console.print("\n[bold green][agent][/bold green]")
@@ -206,8 +212,12 @@ def chat(model, provider, session, workspace, debug):
                 traceback.print_exc()
 
 
-def _handle_slash_command(command: str, agent) -> bool:
-    """Handle /slash commands in chat mode. Returns True if handled."""
+def _handle_slash_command(
+    command: str,
+    agent,
+    queued_skill: Optional[str] = None,
+) -> tuple[bool, Optional[str]]:
+    """Handle /slash commands in chat mode. Returns (handled, queued_skill)."""
     parts = command.split(None, 1)
     cmd = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
@@ -216,41 +226,51 @@ def _handle_slash_command(command: str, agent) -> bool:
         if not args:
             console.print("[yellow]Usage: /skill <name>[/yellow]")
         else:
-            content = agent.skills.load_skill(args.strip())
-            if content:
-                console.print(f"[green]Activated skill: {args.strip()}[/green]")
-                # Will be used on next message via the agent.skills call
+            skill_name = args.strip().split()[0]
+            names = {s["name"] for s in agent.skills.list_skills()}
+            if skill_name in names:
+                queued_skill = skill_name
+                console.print(f"[green]Queued skill for next message: {skill_name}[/green]")
             else:
-                console.print(f"[red]Skill not found: {args.strip()}[/red]")
-        return True
+                console.print(f"[red]Skill not found: {skill_name}[/red]")
+        return True, queued_skill
 
     if cmd in ("/skills", "/skill list"):
         _print_skill_list(agent.skills.list_skills())
-        return True
+        return True, queued_skill
 
     if cmd == "/clear":
-        console.print("[dim]Session context cleared (note: stored history remains)[/dim]")
-        return True
+        new_session = None
+        if hasattr(agent, "clear_session_context"):
+            new_session = agent.clear_session_context()
+        if new_session:
+            console.print(
+                f"[dim]Session context cleared. New session: {new_session} "
+                "(stored history remains).[/dim]"
+            )
+        else:
+            console.print("[dim]Session context cleared (stored history remains).[/dim]")
+        return True, queued_skill
 
     if cmd == "/workspace":
         console.print(f"[cyan]Workspace: {agent.workspace.path}[/cyan]")
         files = agent.workspace.context_files()
         for name, content in files.items():
             console.print(f"  [dim]{name.upper()}.md[/dim]: {len(content)} chars")
-        return True
+        return True, queued_skill
 
     if cmd in ("/help", "/?"):
         console.print(
             "[bold]Chat commands:[/bold]\n"
-            "  /skill <name>  — activate a skill for the next message\n"
+            "  /skill <name>  — queue a skill for the next message\n"
             "  /skills        — list available skills\n"
             "  /workspace     — show workspace info\n"
             "  /clear         — clear session context\n"
             "  /quit          — exit\n"
         )
-        return True
+        return True, queued_skill
 
-    return False
+    return False, queued_skill
 
 
 # ── agnoclaw run ──────────────────────────────────────────────────────────────
@@ -461,14 +481,21 @@ def heartbeat_install_service(model, provider, workspace, interval, uninstall):
         return
 
     if os_name == "darwin":
-        _manage_launchd_service(agnoclaw_bin, workspace, interval, uninstall)
+        _manage_launchd_service(agnoclaw_bin, workspace, interval, uninstall, model, provider)
     elif os_name == "linux":
-        _manage_systemd_service(agnoclaw_bin, workspace, interval, uninstall)
+        _manage_systemd_service(agnoclaw_bin, workspace, interval, uninstall, model, provider)
     else:
         console.print(f"[yellow]Service install not supported on {platform.system()}. Run 'agnoclaw heartbeat start' manually in a persistent session (tmux/screen).[/yellow]")
 
 
-def _manage_launchd_service(agnoclaw_bin: str, workspace, interval: int, uninstall: bool) -> None:
+def _manage_launchd_service(
+    agnoclaw_bin: str,
+    workspace,
+    interval: int,
+    uninstall: bool,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> None:
     """Install/uninstall launchd LaunchAgent on macOS."""
     import subprocess
     from pathlib import Path
@@ -491,6 +518,10 @@ def _manage_launchd_service(agnoclaw_bin: str, workspace, interval: int, uninsta
     cmd_args = [agnoclaw_bin, "heartbeat", "start", "--interval", str(interval)]
     if workspace:
         cmd_args += ["--workspace", workspace]
+    if model:
+        cmd_args += ["--model", model]
+    if provider:
+        cmd_args += ["--provider", provider]
 
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -527,8 +558,16 @@ def _manage_launchd_service(agnoclaw_bin: str, workspace, interval: int, uninsta
         console.print(f"[dim]Plist written to: {plist_path}[/dim]")
 
 
-def _manage_systemd_service(agnoclaw_bin: str, workspace, interval: int, uninstall: bool) -> None:
+def _manage_systemd_service(
+    agnoclaw_bin: str,
+    workspace,
+    interval: int,
+    uninstall: bool,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> None:
     """Install/uninstall systemd user service on Linux."""
+    import shlex
     import subprocess
     from pathlib import Path
 
@@ -551,6 +590,10 @@ def _manage_systemd_service(agnoclaw_bin: str, workspace, interval: int, uninsta
     cmd_args = [agnoclaw_bin, "heartbeat", "start", "--interval", str(interval)]
     if workspace:
         cmd_args += ["--workspace", workspace]
+    if model:
+        cmd_args += ["--model", model]
+    if provider:
+        cmd_args += ["--provider", provider]
 
     service_content = f"""[Unit]
 Description=agnoclaw Heartbeat Daemon
@@ -558,7 +601,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={" ".join(cmd_args)}
+ExecStart={" ".join(shlex.quote(a) for a in cmd_args)}
 Restart=on-failure
 RestartSec=30
 StandardOutput=append:{Path.home()}/.agnoclaw/logs/heartbeat.log
