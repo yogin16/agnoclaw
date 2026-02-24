@@ -1,18 +1,15 @@
 """Tests for the system prompt assembler and sections."""
 
 import pytest
-from pathlib import Path
 
 from agnoclaw.prompts.system import SystemPromptBuilder
 from agnoclaw.prompts.sections import (
     IDENTITY,
     TONE_AND_STYLE,
     DOING_TASKS,
-    TOOL_GUIDELINES,
     SECURITY,
     GIT_PROTOCOL,
     MEMORY_INSTRUCTIONS,
-    SKILL_INSTRUCTIONS,
     LEARNING_INSTRUCTIONS,
     PLAN_MODE,
 )

@@ -1,6 +1,5 @@
 """Tests for the tool suite (bash, files, web, tasks)."""
 
-import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -59,7 +58,7 @@ def test_files_toolkit_edit_file(tmp_path):
     file_path = str(tmp_path / "edit_me.txt")
     Path(file_path).write_text("Hello world\nLine two\n", encoding="utf-8")
 
-    result = toolkit.edit_file(file_path, "Hello world", "Goodbye world")
+    toolkit.edit_file(file_path, "Hello world", "Goodbye world")
     content = Path(file_path).read_text(encoding="utf-8")
     assert "Goodbye world" in content
     assert "Hello world" not in content

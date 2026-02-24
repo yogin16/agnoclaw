@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
-from datetime import datetime, time
+from datetime import time
 
 
 # ── HeartbeatDaemon tests ────────────────────────────────────────────────
@@ -195,7 +195,6 @@ async def test_heartbeat_run_heartbeat_skips_outside_active_hours():
 
 def test_heartbeat_start_stop():
     from agnoclaw.heartbeat.daemon import HeartbeatDaemon
-    from agnoclaw.config import HarnessConfig
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()

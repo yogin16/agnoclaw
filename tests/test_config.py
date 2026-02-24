@@ -1,7 +1,5 @@
 """Tests for the configuration system."""
 
-import os
-import pytest
 
 
 def test_default_config():
@@ -51,7 +49,7 @@ def test_learning_mode_default():
 
 
 def test_storage_sqlite_default():
-    from agnoclaw.config import HarnessConfig, StorageConfig
+    from agnoclaw.config import HarnessConfig
     cfg = HarnessConfig()
     assert cfg.storage.backend == "sqlite"
     assert "sessions.db" in cfg.storage.sqlite_path

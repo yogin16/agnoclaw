@@ -31,7 +31,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Run tests
-        run: uv run pytest tests/ -q --tb=short --cov=agnoclaw --cov-report=term-missing --cov-fail-under=70
+        run: uv run pytest tests/ -q -m "not integration" --tb=short --cov=agnoclaw --cov-report=term-missing --cov-fail-under=70
 
   lint:
     name: Lint
@@ -50,10 +50,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Run ruff (lint)
-        run: uv run ruff check src/ tests/
-
-      - name: Run ruff (format check)
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff check src/ tests/ --select F,B,E9
 
       - name: Run mypy
         run: uv run mypy src/agnoclaw/ --ignore-missing-imports

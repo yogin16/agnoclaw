@@ -2,10 +2,9 @@
 
 from pathlib import Path
 from unittest.mock import patch
-import tempfile
 import pytest
 
-from agnoclaw.skills.loader import load_skill_from_path, SkillInstaller
+from agnoclaw.skills.loader import load_skill_from_path
 from agnoclaw.skills.registry import SkillRegistry, _validate_package_name
 
 
