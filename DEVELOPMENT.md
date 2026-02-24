@@ -20,7 +20,7 @@ agnoclaw/
 ├── skills/                # Bundled skills (shipped with package)
 │   └── self-improving-agent/  # .learnings/ capture + workspace promotion
 ├── docs/                  # Extended documentation
-│   └── claude-code-gaps.md    # CC v2.1.50 vs agnoclaw tool comparison
+│   └── harness-gap-analysis.md # Unified Claude Code + OpenClaw harness gap status
 └── pyproject.toml
 ```
 
@@ -122,11 +122,11 @@ def multi_edit_file(self, path: str, edits: list) -> str:
     # Phase 2: apply in sequence only after all pass
 ```
 
-## Claude Code parity
+## Gap tracking
 
-`docs/claude-code-gaps.md` tracks the full tool-by-tool gap analysis between
-agnoclaw and Claude Code v2.1.50. Check it before adding new tools to avoid
-reimplementing something that's already tracked or has a different CC signature.
+`docs/harness-gap-analysis.md` tracks the unified Claude Code + OpenClaw
+harness parity status and roadmap. Check it before adding new tools or runtime
+contracts to avoid drift from documented priorities.
 
 ## Adding a new workspace file type
 

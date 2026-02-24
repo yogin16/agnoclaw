@@ -61,14 +61,15 @@ def test_live_agent_session_persistence(tmp_workspace_path):
         provider=provider, model_id=model,
         workspace_dir=tmp_workspace_path, session_id=session,
     )
-    agent1.run("My favourite number is 42. Remember this.")
+    marker = "ORION-42"
+    agent1.run(f"The project codename is {marker}. Remember this exact code.")
 
     agent2 = HarnessAgent(
         provider=provider, model_id=model,
         workspace_dir=tmp_workspace_path, session_id=session,
     )
-    response = agent2.run("What is my favourite number?")
-    assert "42" in str(response.content)
+    response = agent2.run("What project codename did I tell you? Reply with only the code.")
+    assert marker in str(response.content)
 
 
 # ── Skills ────────────────────────────────────────────────────────────────────

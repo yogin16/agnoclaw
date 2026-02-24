@@ -247,6 +247,43 @@ def test_bash_tool_exit_code_on_failure():
     assert "42" in result or "exit code" in result.lower()
 
 
+def test_bash_toolkit_registers_background_functions():
+    from agnoclaw.tools.bash import BashToolkit
+
+    toolkit = BashToolkit(timeout=10)
+    names = set(toolkit.functions.keys())
+    assert {"bash", "bash_start", "bash_output", "bash_kill"}.issubset(names)
+
+
+def test_bash_toolkit_background_lifecycle():
+    import sys
+    import time
+    from agnoclaw.tools.bash import BashToolkit
+
+    toolkit = BashToolkit(timeout=10)
+    bash_start = toolkit.functions["bash_start"].entrypoint
+    bash_output = toolkit.functions["bash_output"].entrypoint
+    bash_kill = toolkit.functions["bash_kill"].entrypoint
+    cmd = (
+        f'"{sys.executable}" -c "import time; print(\'ready\', flush=True); '
+        "time.sleep(5); print('done', flush=True)\""
+    )
+    start = bash_start(command=cmd)
+    assert "Started background task task_" in start
+    task_id = start.split("Started background task ", 1)[1].splitlines()[0].strip()
+
+    time.sleep(0.2)
+    out_running = bash_output(task_id=task_id)
+    assert "status=running" in out_running or "status=exited" in out_running
+    assert "ready" in out_running or "[no output yet]" in out_running
+
+    killed = bash_kill(task_id=task_id)
+    assert "Killed task" in killed or "already exited" in killed
+
+    out_after = bash_output(task_id=task_id)
+    assert "status=exited" in out_after
+
+
 # ── WebToolkit tests ─────────────────────────────────────────────────────
 
 
@@ -446,13 +483,23 @@ def test_get_default_tools_includes_todos():
 
 def test_get_default_tools_respects_disable_bash():
     from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.bash import BashToolkit
     from agnoclaw.config import HarnessConfig
 
     cfg = HarnessConfig(enable_bash=False)
     tools = get_default_tools(cfg)
-    # Should not include a callable named "bash"
-    bash_tools = [t for t in tools if callable(t) and getattr(t, "name", "") == "bash"]
+    bash_tools = [t for t in tools if isinstance(t, BashToolkit)]
     assert len(bash_tools) == 0
+
+
+def test_get_default_tools_background_bash_opt_in():
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.bash import BashToolkit
+    from agnoclaw.config import HarnessConfig
+
+    cfg = HarnessConfig(enable_bash=True, enable_background_bash_tools=True)
+    tools = get_default_tools(cfg)
+    assert any(isinstance(t, BashToolkit) for t in tools)
 
 
 def test_get_default_tools_count_without_bash():

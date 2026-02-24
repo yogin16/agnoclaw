@@ -186,7 +186,7 @@ def demo_file_tools(tmp: Path):
 def demo_gap_analysis():
     """
     Side-by-side comparison of agnoclaw tools vs Claude Code v2.1.50.
-    See docs/claude-code-gaps.md for full analysis.
+    See docs/harness-gap-analysis.md for unified status.
     """
     print("=== Claude Code Tool Gaps (CC v2.1.50 vs agnoclaw) ===")
     print()
@@ -244,7 +244,7 @@ def demo_gap_analysis():
     for name, note in extras:
         print(f"    [+]  {name:<30} {note}")
     print()
-    print("  Full analysis: docs/claude-code-gaps.md")
+    print("  Full analysis: docs/harness-gap-analysis.md")
     print()
 
 
@@ -318,7 +318,7 @@ def main():
 
     print("Done.")
     print()
-    print("See docs/claude-code-gaps.md for the complete gap analysis.")
+    print("See docs/harness-gap-analysis.md for the complete gap analysis.")
 
 
 if __name__ == "__main__":

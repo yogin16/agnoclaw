@@ -86,6 +86,8 @@ class HarnessConfig(BaseSettings):
     enable_web_fetch: bool = True
     bash_timeout_seconds: int = 120
     """Timeout for bash tool executions."""
+    enable_background_bash_tools: bool = False
+    """Enable bash_start/bash_output/bash_kill in default tool suite."""
 
     # Skills
     skills_dirs: list[str] = Field(default_factory=list)
@@ -133,6 +135,55 @@ class HarnessConfig(BaseSettings):
     # Debug
     debug: bool = False
     show_tool_calls: bool = False
+
+    # v0.2 runtime contracts
+    event_sink_mode: str = "best_effort"
+    """Event sink behavior: 'best_effort' (default) or 'fail_closed'."""
+
+    policy_fail_open: bool = False
+    """If True, policy engine evaluation errors default to ALLOW with warning."""
+
+    guardrails_enabled: bool = True
+    """Master toggle for runtime guardrails."""
+
+    path_guardrails_enabled: bool = True
+    """Enforce path boundary checks on tool path arguments."""
+
+    path_allowed_roots: list[str] = Field(default_factory=list)
+    """Allowlisted root paths for tool path arguments. Empty defaults to workspace root."""
+
+    path_blocked_roots: list[str] = Field(default_factory=list)
+    """Explicitly blocked root paths for tool path arguments."""
+
+    network_enabled: bool = True
+    """Allow networked tool access."""
+
+    network_enforce_https: bool = True
+    """Require https:// URLs for URL-based tools."""
+
+    network_allowed_hosts: list[str] = Field(default_factory=list)
+    """Optional host allowlist for networked tools. Empty allows any host."""
+
+    network_blocked_hosts: list[str] = Field(default_factory=list)
+    """Explicit host denylist for networked tools."""
+
+    network_block_private_hosts: bool = True
+    """Block localhost/private/link-local hosts in networked tools."""
+
+    network_block_in_bash: bool = True
+    """Apply heuristic network-command blocking to bash tool calls."""
+
+    permission_mode: str = "bypass"
+    """Runtime permission mode: bypass | default | accept_edits | plan | dont_ask."""
+
+    permission_require_approver: bool = False
+    """If True, permission-gated tool calls deny when no approver is configured."""
+
+    permission_preapproved_tools: list[str] = Field(default_factory=list)
+    """Tool names pre-approved for permission checks."""
+
+    permission_preapproved_categories: list[str] = Field(default_factory=list)
+    """Permission categories pre-approved for permission checks."""
 
 
 def _load_toml_config(path: Path) -> dict:

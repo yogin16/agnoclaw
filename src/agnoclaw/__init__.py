@@ -25,13 +25,41 @@ With skills:
 
 from .agent import AgentHarness, HarnessAgent  # HarnessAgent = backward compat alias
 from .config import HarnessConfig, get_config
+from .runtime import (
+    AllowAllPolicyEngine,
+    AgentOSClaimKeys,
+    AgentOSContextAdapter,
+    EventSinkMode,
+    ExecutionContext,
+    GuardrailViolation,
+    HarnessError,
+    InMemoryEventSink,
+    PermissionController,
+    PermissionMode,
+    PolicyAction,
+    PolicyDecision,
+    RuntimeGuardrails,
+)
 from .tools.tasks import SubagentDefinition
 from .workspace import Workspace
 
 __all__ = [
+    "AllowAllPolicyEngine",
+    "AgentOSClaimKeys",
+    "AgentOSContextAdapter",
     "AgentHarness",
+    "EventSinkMode",
+    "ExecutionContext",
+    "GuardrailViolation",
     "HarnessAgent",  # backward compat
     "HarnessConfig",
+    "HarnessError",
+    "InMemoryEventSink",
+    "PermissionController",
+    "PermissionMode",
+    "PolicyAction",
+    "PolicyDecision",
+    "RuntimeGuardrails",
     "get_config",
     "SubagentDefinition",
     "Workspace",
