@@ -657,9 +657,11 @@ def test_progress_toolkit_update_without_features_file(tmp_path):
 
 
 def test_progress_toolkit_default_project_dir():
+    from pathlib import Path
     from agnoclaw.tools.tasks import ProgressToolkit
     tk = ProgressToolkit()
-    assert tk._project_dir == "."
+    # Default resolves to absolute CWD path (not relative ".")
+    assert tk._project_dir == str(Path(".").expanduser().resolve())
 
 
 def test_get_default_tools_includes_progress():

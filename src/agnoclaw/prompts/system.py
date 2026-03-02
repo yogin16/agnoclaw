@@ -4,15 +4,22 @@ System prompt assembler.
 Builds the final system prompt by layering sections in order:
   1. Identity (with workspace path injected)
   2. Tone & Style
-  3. Doing Tasks
-  4. Tool Guidelines
-  5. Security
-  6. Git Protocol
-  7. Memory Instructions
-  8. Skill Instructions
-  9. Workspace context files (AGENTS.md, SOUL.md, USER.md, MEMORY.md)
- 10. Active skill content (selective — one at a time)
- 11. Runtime reminders (date, session info)
+  3. Communication Discipline (narration suppression)
+  4. Doing Tasks
+  5. Executing with Care (reversibility-based action policy)
+  6. Blocked Approaches (anti-pattern directives)
+  7. Tool Guidelines
+  8. Security
+  9. Git Protocol
+ 10. Memory Instructions
+ 11. Skill Instructions
+ 12. Plan Mode (optional)
+ 13. Heartbeat Context (optional)
+ 14. Learning Instructions (optional)
+ 15. Custom sections
+ 16. Workspace context files (AGENTS.md, SOUL.md, USER.md, MEMORY.md)
+ 17. Active skill content (selective — one at a time)
+ 18. Runtime reminders (date, session info)
 
 This layered approach lets any section be overridden per-workspace or per-skill.
 """
@@ -25,11 +32,15 @@ from typing import Optional
 
 from ..workspace import BOOTSTRAP_MAX_CHARS, BOOTSTRAP_TOTAL_MAX_CHARS, MEMORY_STARTUP_LINES
 from .sections import (
+    BLOCKED_APPROACHES,
     DOING_TASKS,
+    EXECUTING_WITH_CARE,
     GIT_PROTOCOL,
+    HEARTBEAT_CONTEXT,
     IDENTITY,
     LEARNING_INSTRUCTIONS,
     MEMORY_INSTRUCTIONS,
+    NARRATION,
     PLAN_MODE,
     SECURITY,
     SKILL_INSTRUCTIONS,
@@ -58,6 +69,7 @@ class SystemPromptBuilder:
         extra_context: Optional[str] = None,
         include_learning: bool = False,
         include_plan_mode: bool = False,
+        include_heartbeat: bool = False,
         session_id: Optional[str] = None,
     ) -> str:
         """
@@ -69,25 +81,33 @@ class SystemPromptBuilder:
             extra_context: Additional instructions (enterprise config, project CLAUDE.md).
             include_learning: Include the Learning section (only when LearningMachine is active).
             include_plan_mode: Include plan mode instructions.
+            include_heartbeat: Include heartbeat context instructions.
             session_id: Active session ID (injected into runtime context).
         """
         parts: list[str] = []
 
-        # 1-8: Core sections
+        # Core behavioral sections
         parts.append(IDENTITY.format(workspace_dir=self.workspace_dir))
         parts.append(TONE_AND_STYLE)
+        parts.append(NARRATION)
         parts.append(DOING_TASKS)
+        parts.append(EXECUTING_WITH_CARE)
+        parts.append(BLOCKED_APPROACHES)
         parts.append(TOOL_GUIDELINES)
         parts.append(SECURITY)
         parts.append(GIT_PROTOCOL)
         parts.append(MEMORY_INSTRUCTIONS)
         parts.append(SKILL_INSTRUCTIONS)
 
-        # 9: Plan mode (optional — enabled when entering plan mode)
+        # Plan mode (optional — enabled when entering plan mode)
         if include_plan_mode:
             parts.append(PLAN_MODE)
 
-        # 10: Learning instructions (only injected when LearningMachine is active)
+        # Heartbeat context (prevents stale task carryover)
+        if include_heartbeat:
+            parts.append(HEARTBEAT_CONTEXT)
+
+        # Learning instructions (only injected when LearningMachine is active)
         if include_learning:
             parts.append(LEARNING_INSTRUCTIONS)
 

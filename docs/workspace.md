@@ -146,7 +146,7 @@ All files are optional — missing files are silently skipped.
 | `skills/` | Yes | Yes | Workspace skill overrides |
 
 **agnoclaw additions vs OpenClaw:**
-- 3-tier memory: workspace files + MemoryManager (SQLite) + LearningMachine (institutional)
+- 3-tier memory: workspace files + LearningMachine user stores (SQLite) + LearningMachine institutional stores
 - `ProgressToolkit`: multi-context-window feature tracking (`progress.md` + `features.md`)
 - `.learnings/` directory via `self-improving-agent` skill
 

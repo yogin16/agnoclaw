@@ -182,9 +182,9 @@ class ProgressToolkit(Toolkit):
                      Defaults to the current working directory.
     """
 
-    def __init__(self, project_dir: str = "."):
+    def __init__(self, project_dir: str | Path = "."):
         super().__init__(name="progress")
-        self._project_dir = project_dir
+        self._project_dir = str(Path(project_dir).expanduser().resolve())
         self.register(self.write_progress)
         self.register(self.read_progress)
         self.register(self.write_features)

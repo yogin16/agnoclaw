@@ -124,11 +124,23 @@ class SkillRegistry:
         if self._bundled_dir:
             self._dirs.append(self._bundled_dir)
 
-    def add_directory(self, path: str | Path) -> None:
-        """Add an additional skills directory (appended at lowest priority)."""
+    def add_directory(self, path: str | Path, *, trust: str = "community") -> None:
+        """
+        Add an additional skills directory (appended at lowest priority).
+
+        Args:
+            path: Directory containing skill subdirectories.
+            trust: Trust level for skills from this directory.
+                   "local" allows inline !`cmd` execution.
+                   "community" (default) blocks inline execution.
+        """
         p = Path(path).expanduser().resolve()
         if p.exists() and p not in self._dirs:
             self._dirs.append(p)
+            if trust == "local":
+                self._local_dirs.append(p)
+            # Invalidate cache so new skills are discovered
+            self._cache.clear()
 
     def discover_all(self) -> list[Skill]:
         """
@@ -220,7 +232,7 @@ class SkillRegistry:
             "choose the most specific. If none clearly apply, proceed normally.\n"
         )
         for skill in skills:
-            inv = "(user-only)" if not skill.meta.user_invocable else ""
+            inv = "(model-only)" if not skill.meta.user_invocable else ""
             lines.append(f"- **{skill.name}** {inv}: {skill.description}")
 
         return "\n".join(lines)
@@ -401,12 +413,15 @@ class SkillRegistry:
         pkg = installer.package
 
         if itype in ("uv", "pip"):
-            # Check if importable (covers most Python package checks)
-            import_name = pkg.replace("-", "_").split("[")[0].split("==")[0]
+            # Use importlib.metadata for accurate installed-package detection.
+            # This handles cases where import name != package name
+            # (e.g. Pillow→PIL, beautifulsoup4→bs4, python-dateutil→dateutil).
+            dist_name = pkg.split("[")[0].split("==")[0].split(">=")[0].split("<=")[0]
             try:
-                __import__(import_name)
+                from importlib.metadata import distribution
+                distribution(dist_name)
                 return False  # already installed
-            except ImportError:
+            except Exception:
                 return True
 
         elif itype == "brew":

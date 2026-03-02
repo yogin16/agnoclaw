@@ -184,7 +184,8 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
 
     try:
         post = frontmatter.load(str(skill_md_path))
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to parse SKILL.md at %s: %s", skill_md_path, e)
         return None
 
     metadata = post.metadata

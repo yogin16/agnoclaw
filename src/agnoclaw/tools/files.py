@@ -12,11 +12,16 @@ Rules (aligned with Claude Code):
 from __future__ import annotations
 
 import fnmatch
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 
 from agno.tools.toolkit import Toolkit
+
+logger = logging.getLogger("agnoclaw.tools.files")
+
+_MAX_READ_SIZE = 50 * 1024 * 1024  # 50MB guard for read_file
 
 
 class FilesToolkit(Toolkit):
@@ -52,6 +57,12 @@ class FilesToolkit(Toolkit):
             return f"[error] Not a file: {path}"
 
         try:
+            file_size = file_path.stat().st_size
+            if file_size > _MAX_READ_SIZE:
+                return (
+                    f"[error] File too large ({file_size // (1024 * 1024)}MB). "
+                    f"Max readable size is {_MAX_READ_SIZE // (1024 * 1024)}MB."
+                )
             lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
             start = max(0, offset - 1) if offset > 0 else 0
             end = start + limit
@@ -82,7 +93,7 @@ class FilesToolkit(Toolkit):
         try:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
-            lines = content.count("\n") + 1
+            lines = content.count("\n") + (0 if content.endswith("\n") else 1)
             return f"Written {lines} lines to {path}"
         except Exception as e:
             return f"[error] Could not write {path}: {e}"
@@ -201,8 +212,13 @@ class FilesToolkit(Toolkit):
 
         try:
             matches = list(search_dir.glob(pattern))
-            # Sort by modification time (newest first)
-            matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            # Sort by modification time (newest first), skip broken symlinks
+            def _safe_mtime(p: Path) -> float:
+                try:
+                    return p.stat().st_mtime
+                except OSError:
+                    return 0.0
+            matches.sort(key=_safe_mtime, reverse=True)
             if not matches:
                 return f"[no matches] Pattern '{pattern}' found no files in {search_dir}"
             return "\n".join(str(m) for m in matches)

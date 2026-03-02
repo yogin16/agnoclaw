@@ -132,8 +132,7 @@ async def demo_live_daemon(tmp_workspace: Path):
     )
 
     agent = AgentHarness(
-        provider=PROVIDER,
-        model_id=MODEL,
+        f"{PROVIDER}:{MODEL}",
         workspace_dir=tmp_workspace,
         session_id="cron-demo",
     )
