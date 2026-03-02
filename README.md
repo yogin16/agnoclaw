@@ -449,62 +449,27 @@ Priority order (highest → lowest):
 
 ### Example `.agnoclaw.toml`
 
+See [`.agnoclaw.toml.example`](.agnoclaw.toml.example) for the full annotated template with all options documented.
+
+Quick start — copy and customize:
+
+```bash
+cp .agnoclaw.toml.example .agnoclaw.toml
+# or for user-level config:
+cp .agnoclaw.toml.example ~/.agnoclaw/config.toml
+```
+
+Minimal config (most fields have sensible defaults):
+
 ```toml
-# ── Model ──────────────────────────────────────────────────────────────
 default_model = "claude-sonnet-4-6"
 default_provider = "anthropic"
 
-# ── Workspace ──────────────────────────────────────────────────────────
-workspace_dir = "~/.agnoclaw/workspace"
-
-# ── Session ────────────────────────────────────────────────────────────
-session_history_runs = 10
-
-# ── Tools ──────────────────────────────────────────────────────────────
-enable_bash = true
-enable_web_search = true
-enable_web_fetch = true
-enable_background_bash_tools = false
-bash_timeout_seconds = 120
-
-# ── Skills ─────────────────────────────────────────────────────────────
-skills_dirs = []                    # additional skill directories
-
-# ── Learning (v0.2) ───────────────────────────────────────────────────
-enable_learning = false             # institutional cross-session learning
-learning_mode = "agentic"           # always | agentic | propose | hitl
-
-# ── Context management (v0.2) ─────────────────────────────────────────
-enable_compression = false          # tool result compression
-compress_token_limit = 4000         # token threshold for compression
-enable_session_summary = false      # cross-session continuity summaries
-
-# ── Runtime governance (v0.2) ─────────────────────────────────────────
-permission_mode = "bypass"          # bypass | default | accept_edits | plan | dont_ask
-event_sink_mode = "best_effort"     # best_effort | fail_closed
-policy_fail_open = false            # allow on policy engine error?
-guardrails_enabled = true           # master toggle for runtime guardrails
-
-# ── TUI (v0.3) ────────────────────────────────────────────────────────
-theme = "textual-dark"              # textual-dark | textual-light
-
-# ── Debug ──────────────────────────────────────────────────────────────
-debug = false
-
 [storage]
-backend = "sqlite"                  # sqlite | postgres
-sqlite_path = "~/.agnoclaw/sessions.db"
-# postgres_url = "postgresql://user:pass@localhost/agnoclaw"
-# session_table = "agnoclaw_sessions"
-# memory_table = "agnoclaw_memories"
+backend = "sqlite"
 
 [heartbeat]
 enabled = false
-interval_minutes = 30
-active_hours_start = "08:00"
-active_hours_end = "22:00"
-model = "claude-haiku-4-5-20251001"
-ok_threshold_chars = 300
 ```
 
 ### Key env vars
