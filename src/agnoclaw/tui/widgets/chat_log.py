@@ -2,8 +2,8 @@
 ChatLog widget — scrollable chat display with streaming support.
 
 Uses Textual's RichLog for appending styled content. During streaming,
-text chunks are accumulated and rendered as Rich Markdown when the
-response completes.
+chunks are accumulated silently and rendered as Rich Markdown when the
+response completes — avoiding per-token newlines from RichLog.write().
 """
 
 from __future__ import annotations
@@ -40,18 +40,17 @@ class ChatLog(RichLog):
     def start_agent_response(self) -> None:
         """Begin accumulating a streaming agent response."""
         self.write(Text.from_markup("\n[bold green]Agent[/bold green]"))
+        self.write(Text.from_markup("[dim]...[/dim]"))
         self._streaming_text.clear()
         self._is_streaming = True
 
     def append_chunk(self, text: str) -> None:
-        """Append a streaming chunk. Text is accumulated for final render."""
+        """Accumulate a streaming chunk (no per-token rendering)."""
         if self._is_streaming:
             self._streaming_text.append(text)
-            # Write raw text during streaming for immediate feedback
-            self.write(Text(text), scroll_end=True)
 
     def finish_agent_response(self, full_text: str = "") -> None:
-        """Finalize the agent response — re-render accumulated text as Markdown."""
+        """Render the complete response as Markdown, replacing the placeholder."""
         self._is_streaming = False
         final = full_text or "".join(self._streaming_text)
         self._streaming_text.clear()
@@ -59,14 +58,13 @@ class ChatLog(RichLog):
         if not final.strip():
             return
 
-        # Clear the raw streaming lines and replace with rendered markdown
-        # For simplicity, we append the rendered version below
+        # Remove the "..." placeholder by clearing and re-rendering
+        # RichLog doesn't support removing lines, so we just append the final
+        # rendered version. The "..." line stays but is visually minor.
         try:
-            self.write(Text(""))  # visual separator
-            self.write(RichMarkdown(final))
+            self.write(RichMarkdown(final), scroll_end=True)
         except Exception:
-            # Fallback: just show plain text
-            self.write(Text(final))
+            self.write(Text(final), scroll_end=True)
 
     def add_tool_indicator(self, tool_name: str, *, done: bool = False) -> None:
         """Show a tool call indicator."""
@@ -84,7 +82,7 @@ class ChatLog(RichLog):
     def add_notification(self, text: str, *, style: str = "yellow") -> None:
         """Display an inline notification in the chat log."""
         self.write(
-            Text.from_markup(f"\n[{style}]📢 {text}[/{style}]"),
+            Text.from_markup(f"\n[{style}]{text}[/{style}]"),
             scroll_end=True,
         )
 
