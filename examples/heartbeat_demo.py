@@ -57,7 +57,7 @@ If nothing needs attention, reply HEARTBEAT_OK.
     cfg.heartbeat.interval_minutes = 1
     cfg.heartbeat.enabled = True
 
-    daemon = HeartbeatDaemon(agent, on_alert=on_alert, workspace=ws)
+    daemon = HeartbeatDaemon(agent, on_alert=on_alert, workspace=ws, config=cfg)
 
     # Trigger one immediate check
     print("Triggering immediate heartbeat check...")

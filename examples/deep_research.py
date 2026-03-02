@@ -42,7 +42,6 @@ async def research_with_events():
     print("-" * 50)
 
     agent = AgentHarness(session_id="deep-research-async")
-    skill_content = agent.skills.load_skill("deep-research")
 
     async for event in agent.arun(
         "Research the competitive landscape of open-source LLM frameworks",
@@ -54,10 +53,16 @@ async def research_with_events():
             case RunEvent.run_content:
                 print(event.content, end="", flush=True)
             case RunEvent.tool_call_started:
-                print(f"\n[tool: {event.tool.tool_name}]", flush=True)
+                tool_name = getattr(event, "tool_name", None) or getattr(
+                    getattr(event, "tool", None), "tool_name", "unknown"
+                )
+                print(f"\n[tool: {tool_name}]", flush=True)
             case RunEvent.run_completed:
-                metrics = event.run_output.metrics
-                print(f"\n\n[tokens: {metrics}]")
+                metrics = getattr(
+                    getattr(event, "run_output", None), "metrics", None
+                )
+                if metrics:
+                    print(f"\n\n[tokens: {metrics}]")
 
 
 asyncio.run(research_with_events())
