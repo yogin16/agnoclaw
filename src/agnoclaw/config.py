@@ -10,7 +10,7 @@ Settings are loaded in priority order (highest → lowest):
 Usage:
     from agnoclaw.config import get_config
     cfg = get_config()
-    cfg.default_model  # "claude-sonnet-4-5-20250929"
+    cfg.default_model  # "claude-sonnet-4-6"
 """
 
 from __future__ import annotations
