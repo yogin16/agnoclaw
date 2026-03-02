@@ -10,7 +10,8 @@ and LangChain DeepAgents' middleware insights — and runs them on Agno's produc
 
 - **Runtime**: Python 3.12, UV package manager
 - **Framework**: Agno v2.5.x (`pip install agno`)
-- **CLI**: Click + Rich + prompt-toolkit
+- **CLI**: Click + Rich + prompt-toolkit (optional extra: `agnoclaw[cli]`)
+- **TUI**: Textual >= 0.85 (optional extra: `agnoclaw[tui]`)
 - **Storage**: SQLite (dev), PostgreSQL (prod) — via Agno's `SqliteDb` / `PostgresDb`
 - **Scheduling**: asyncio (heartbeat daemon + cron jobs)
 - **Frontmatter**: python-frontmatter (SKILL.md parsing)
@@ -23,6 +24,7 @@ src/agnoclaw/
 ├── workspace.py      # Workspace: ~/.agnoclaw/workspace/
 ├── memory.py         # Memory hierarchy loader (AGENTS.md, SOUL.md, USER.md, MEMORY.md)
 ├── config.py         # Settings via pydantic-settings + TOML
+├── teams.py          # Pre-built team factories (research, code, data)
 ├── prompts/
 │   ├── system.py     # System prompt assembler (layered composition)
 │   └── sections.py   # Sections: identity, tone, narration, tasks, care, blocked, tools, security, git, memory, skills, plan, heartbeat, learning
@@ -36,8 +38,23 @@ src/agnoclaw/
 │   └── registry.py   # Skill discovery and selective injection
 ├── heartbeat/
 │   └── daemon.py     # asyncio-based HeartbeatDaemon + CronJob scheduler
-└── cli/
-    └── main.py       # Click CLI entry point
+├── runtime/          # v0.2 runtime contracts (hooks, policy, events, guardrails)
+│   ├── hooks.py      # PreRunHook, PostRunHook
+│   ├── policy.py     # PolicyEngine, PolicyDecision
+│   ├── events.py     # EventSink (observability)
+│   ├── guardrails.py # Input/output guardrails
+│   ├── permissions.py # Permission modes (bypass, accept_edits, plan)
+│   ├── context.py    # RunContext
+│   └── errors.py     # Runtime error types
+├── cli/
+│   ├── main.py       # Click CLI entry point (chat, run, tui, skill, heartbeat)
+│   └── async_repl.py # Async REPL with prompt-toolkit + heartbeat notifications
+└── tui/              # v0.3 Textual TUI (optional: agnoclaw[tui])
+    ├── app.py        # AgnoClawApp — main Textual application
+    ├── driver.py     # AgentDriver — async bridge: streaming + heartbeat
+    ├── events.py     # Custom Textual Messages (StreamChunk, HeartbeatAlert, etc.)
+    ├── screens.py    # SkillPickerScreen, HelpScreen modals
+    └── widgets/      # ChatLog, InputBar, NotificationPanel, StatusBar, HeaderBar, LogViewer
 ```
 
 ## Key Design Decisions
@@ -58,7 +75,9 @@ src/agnoclaw/
 ## Common Commands
 
 ```bash
-uv run agnoclaw chat                    # interactive chat session
+uv run agnoclaw chat                    # async REPL with heartbeat notifications
+uv run agnoclaw chat --sync             # legacy blocking REPL
+uv run agnoclaw tui                     # full Textual TUI (requires agnoclaw[tui])
 uv run agnoclaw run "task description" # one-shot task
 uv run agnoclaw skill list             # list available skills
 uv run agnoclaw heartbeat start        # start heartbeat daemon
@@ -67,7 +86,7 @@ uv run agnoclaw heartbeat start        # start heartbeat daemon
 ## Import Patterns
 
 ```python
-# Core
+# Core (zero CLI/TUI deps)
 from agnoclaw import AgentHarness
 from agnoclaw.config import HarnessConfig
 
@@ -82,4 +101,25 @@ from agnoclaw.workspace import Workspace
 
 # Heartbeat
 from agnoclaw.heartbeat import HeartbeatDaemon, CronJob
+
+# Runtime contracts (v0.2)
+from agnoclaw.runtime import EventSink, PolicyEngine, PolicyDecision
+
+# TUI (requires agnoclaw[tui])
+from agnoclaw.tui import AgnoClawApp
+
+# Async REPL (requires agnoclaw[cli])
+from agnoclaw.cli.async_repl import AsyncREPL
 ```
+
+## Packaging Extras
+
+Core `agnoclaw` has zero CLI/TUI deps. Install extras for interfaces:
+
+- `agnoclaw[cli]` — Click + Rich + prompt-toolkit (async REPL)
+- `agnoclaw[tui]` — Textual TUI (includes cli deps)
+- `agnoclaw[full]` — TUI + croniter (personal-assistant setup)
+- `agnoclaw[local]` — Ollama support
+- `agnoclaw[postgres]` — PostgreSQL storage
+- `agnoclaw[all-models]` — All model providers
+- `agnoclaw[dev]` — Development tools (pytest, ruff, etc.)

@@ -21,6 +21,8 @@ Distills the best ideas from Claude Code's system prompt architecture, OpenClaw'
 | **Atomic multi-edit** | Yes (MultiEdit) | No | Yes (`multi_edit_file`) |
 | **Service install** | No | Yes (launchd/systemd) | Yes (`install-service`) |
 | **Python-native** | No (TypeScript) | No | Yes |
+| **Textual TUI** | No | No | Yes (streaming, notifications, skill picker) |
+| **Async REPL** | No | No | Yes (heartbeat alerts while typing) |
 | **Production patterns** | N/A | N/A | HITL, streaming, tracing, eval |
 
 **TL;DR:** Claude Code is a consumer product. OpenClaw is a standalone app. agnoclaw is a library — embed it in anything, hack it for everything.
@@ -32,11 +34,20 @@ Distills the best ideas from Claude Code's system prompt architecture, OpenClaw'
 ## Installation
 
 ```bash
-# With uv (recommended)
-uv add agnoclaw
-
-# With pip
+# Core library only (for embedding — zero CLI/TUI deps)
 pip install agnoclaw
+
+# With CLI (async REPL, heartbeat notifications)
+pip install "agnoclaw[cli]"
+
+# With full Textual TUI
+pip install "agnoclaw[tui]"
+
+# Personal-assistant setup (TUI + cron)
+pip install "agnoclaw[full]"
+
+# With local Ollama support (no API key needed)
+pip install "agnoclaw[local]"
 
 # With Postgres support
 pip install "agnoclaw[postgres]"
@@ -44,8 +55,9 @@ pip install "agnoclaw[postgres]"
 # With all model providers
 pip install "agnoclaw[all-models]"
 
-# With local Ollama support (no API key needed)
-pip install "agnoclaw[local]"
+# With uv (recommended)
+uv add agnoclaw
+uv add "agnoclaw[tui]"   # for TUI
 ```
 
 ---
@@ -181,8 +193,14 @@ For the unified Claude Code + OpenClaw gap status (implemented/remaining roadmap
 # First-run onboarding wizard (persona, user identity, default model)
 agnoclaw init
 
-# Interactive chat
+# Interactive chat (async REPL with heartbeat notifications)
 agnoclaw chat
+
+# Legacy blocking REPL
+agnoclaw chat --sync
+
+# Full Textual TUI (requires agnoclaw[tui])
+agnoclaw tui
 
 # One-shot task
 agnoclaw run "Find and fix the bug in src/auth.py"
@@ -719,8 +737,21 @@ agnoclaw/
 │   │   └── registry.py    # Discovery + selective injection + gate checks
 │   ├── heartbeat/
 │   │   └── daemon.py      # HeartbeatDaemon + CronJob (interval + cron expressions)
-│   └── cli/
-│       └── main.py        # Click CLI (init, chat, run, skill, heartbeat, workspace)
+│   ├── runtime/           # v0.2 runtime contracts
+│   │   ├── hooks.py       # PreRunHook, PostRunHook
+│   │   ├── policy.py      # PolicyEngine, PolicyDecision
+│   │   ├── events.py      # EventSink (observability)
+│   │   ├── guardrails.py  # Input/output guardrails
+│   │   └── permissions.py # Permission modes (bypass, accept_edits, plan)
+│   ├── cli/
+│   │   ├── main.py        # Click CLI (init, chat, run, tui, skill, heartbeat, workspace)
+│   │   └── async_repl.py  # Async REPL with heartbeat notifications
+│   └── tui/               # v0.3 Textual TUI (requires agnoclaw[tui])
+│       ├── app.py         # AgnoClawApp — main Textual application
+│       ├── driver.py      # AgentDriver — async streaming + heartbeat bridge
+│       ├── events.py      # Custom Textual Messages
+│       ├── screens.py     # Modal screens (skill picker, help)
+│       └── widgets/       # ChatLog, InputBar, NotificationPanel, StatusBar, HeaderBar
 ├── skills/                # Built-in skills
 │   ├── deep-research/
 │   ├── code-review/
@@ -887,13 +918,28 @@ agent = AgentHarness(
 result = await agent.arun(user_message, user_id=user_id, session_id=session_id)
 ```
 
-### 3. CLI-only (no messaging layer)
+### 3. TUI mode (personal assistant)
+
+The Textual TUI provides a full-featured terminal interface with streaming,
+heartbeat notifications, skill picker, and a debug log viewer:
+
+```bash
+pip install "agnoclaw[tui]"
+agnoclaw tui
+```
+
+Features: live token streaming with Markdown rendering, notification panel
+(heartbeat/cron alerts), slash commands (`/skill`, `/clear`, `/help`),
+Ctrl+N toggle notifications, Ctrl+S skill picker, Ctrl+L debug log.
+
+### 4. CLI-only (no messaging layer)
 
 The CLI works standalone — it IS the messaging layer. Use this for
 development, debugging, and personal productivity:
 
 ```bash
-agnoclaw chat                                    # interactive
+agnoclaw chat                                    # async REPL (default)
+agnoclaw chat --sync                             # legacy blocking REPL
 agnoclaw run "Fix the bug in src/auth.py"        # one-shot
 agnoclaw run "Review src/" --skill code-review   # with skill
 ```
