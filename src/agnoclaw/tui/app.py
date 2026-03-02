@@ -82,7 +82,7 @@ class AgnoClawApp(App):
         super().__init__(**kwargs)
         self._agent = agent
         self._debug = debug
-        self._driver = AgentDriver(self, agent)
+        self._agent_driver = AgentDriver(self, agent)
         self._queued_skill: str | None = None
         self._notifications_visible = True
 
@@ -119,7 +119,7 @@ class AgnoClawApp(App):
             except Exception:
                 pass  # Fall back to default theme
 
-        self._driver.start_heartbeat()
+        self._agent_driver.start_heartbeat()
         self.query_one("#input-bar", InputBar).focus()
 
     # ── User input handling ───────────────────────────────────────────────────
@@ -149,7 +149,7 @@ class AgnoClawApp(App):
 
         # Run agent in background worker
         self.run_worker(
-            self._driver.send_message(text, skill=skill),
+            self._agent_driver.send_message(text, skill=skill),
             name="agent-response",
             exclusive=True,
         )
@@ -228,7 +228,7 @@ class AgnoClawApp(App):
         chat.finish_agent_response(event.full_text)
         input_bar.set_disabled(False)
         status.set_streaming(False)
-        status.update_tool_count(self._driver.tool_count)
+        status.update_tool_count(self._agent_driver.tool_count)
 
     def on_stream_error(self, event: StreamError) -> None:
         chat = self.query_one("#chat-log", ChatLog)
@@ -308,6 +308,7 @@ class AgnoClawApp(App):
         log = self.query_one("#log-viewer", LogViewer)
         log.toggle_visible()
 
-    def on_unmount(self) -> None:
-        """Clean up on exit."""
-        self._driver.stop_heartbeat()
+    def action_quit(self) -> None:
+        """Clean up and exit."""
+        self._agent_driver.stop_heartbeat()
+        self.exit()
