@@ -1726,7 +1726,7 @@ class AgentHarness:
             if isinstance(extra_metadata, dict):
                 agent_metadata.update(extra_metadata)
 
-            result = await self._agent.arun(
+            agno_call = self._agent.arun(
                 prompt.user_message,
                 stream=stream,
                 stream_events=stream_events,
@@ -1736,6 +1736,13 @@ class AgentHarness:
                 metadata=agent_metadata,
                 **call_kwargs,
             )
+
+            # Agno's arun(stream=True) may return an async generator directly
+            # (not a coroutine), so we can't blindly await it.
+            if hasattr(agno_call, "__anext__") or hasattr(agno_call, "__aiter__"):
+                result = agno_call
+            else:
+                result = await agno_call
 
             if self._agent.system_message != base_prompt:
                 self._agent.system_message = base_prompt
