@@ -14,8 +14,15 @@ agnoclaw/
 │   ├── tools/             # Default tools (bash, files, web, tasks, subagent)
 │   ├── skills/            # Skill registry, parser, loader (SKILL.md format)
 │   ├── heartbeat/         # HeartbeatDaemon + CronJob (interval + cron expressions)
-│   └── cli/               # Click CLI (chat, run, skill, heartbeat, workspace, init)
-├── tests/                 # Test suite (223 tests, 6 skipped)
+│   ├── runtime/           # v0.2 runtime contracts (hooks, policy, events, guardrails)
+│   ├── cli/               # Click CLI + AsyncREPL (chat, run, tui, skill, heartbeat)
+│   └── tui/               # v0.3 Textual TUI (optional: agnoclaw[tui])
+│       ├── app.py         # AgnoClawApp — main Textual application
+│       ├── driver.py      # AgentDriver — async streaming + heartbeat bridge
+│       ├── events.py      # Custom Textual Messages
+│       ├── screens.py     # Modal screens (skill picker, help)
+│       └── widgets/       # ChatLog, InputBar, NotificationPanel, StatusBar, etc.
+├── tests/                 # Test suite (334+ tests)
 ├── examples/              # 20 runnable examples (most work with Ollama, no API key)
 ├── skills/                # Bundled skills (shipped with package)
 │   └── self-improving-agent/  # .learnings/ capture + workspace promotion
@@ -69,6 +76,49 @@ Never store agent state in Python process memory (no singleton patterns).
    LaunchAgent (macOS) or systemd user service (Linux) for always-on operation.
 
 The CLI's `heartbeat start` runs the daemon until Ctrl+C.
+
+### Async REPL (v0.3)
+`AsyncREPL` in `cli/async_repl.py` replaces the blocking Click REPL as the
+default for `agnoclaw chat`. Uses `prompt_toolkit.PromptSession.prompt_async()`
++ `patch_stdout()` so HeartbeatDaemon notifications print above the prompt
+without interrupting input. Heartbeat and cron jobs run in-process on the same
+asyncio loop. Use `--sync` flag for the legacy blocking REPL.
+
+### TUI Architecture (v0.3)
+`AgnoClawApp` in `tui/app.py` is a Textual application. Single-process:
+Textual's asyncio event loop hosts the TUI, HeartbeatDaemon, and agent calls.
+
+**Layout:**
+```
+┌─────────────────────────────────────────────────┐
+│ agnoclaw · model · session:abc                  │  HeaderBar
+├──────────────────────────────────┬──────────────┤
+│  ChatLog (streaming + markdown)  │ NOTIFICATIONS│
+├──────────────────────────────────┴──────────────┤
+│ > prompt input                                  │  InputBar
+├─────────────────────────────────────────────────┤
+│ ● heartbeat: 28m │ tools: 6 │ ready             │  StatusBar
+└─────────────────────────────────────────────────┘
+```
+
+**Key components:**
+- `AgentDriver` (`driver.py`) — bridges AgentHarness and Textual via custom Messages
+- `ChatLog` (`widgets/chat_log.py`) — VerticalScroll with Static children; during
+  streaming, a single Static is `update()`-d in place; on completion, re-rendered as
+  Rich Markdown
+- Custom Messages (`events.py`) — `StreamChunk`, `StreamDone`, `HeartbeatAlert`, etc.
+- HeartbeatDaemon gets its own lightweight agent (haiku) to avoid contention
+
+**Important Textual gotchas:**
+- `App._driver` is reserved by Textual (terminal driver) — use `_agent_driver`
+- `Static` subclasses must pass initial content to `__init__()`, not `on_mount()`
+- Agno's `Agent.arun(stream=True)` returns an async generator directly, not a coroutine
+
+### Packaging (v0.3)
+Core `agnoclaw` has zero CLI/TUI dependencies. CLI deps (click, rich, prompt-toolkit)
+and TUI deps (textual) are optional extras. `from agnoclaw import AgentHarness`
+succeeds without any CLI/TUI packages installed. Guarded imports in `cli/__init__.py`
+and `tui/__init__.py` raise clean error messages with install instructions.
 
 ### self-improving-agent skill
 Bundled skill at `skills/self-improving-agent/SKILL.md`. When activated (user
