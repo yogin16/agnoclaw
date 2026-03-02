@@ -1,0 +1,236 @@
+# ============================================================================
+# agnoclaw configuration
+# ============================================================================
+#
+# Copy this file to one of:
+#   ~/.agnoclaw/config.toml     (user-level, applies everywhere)
+#   .agnoclaw.toml              (project-level, in your project root)
+#
+# Priority (highest → lowest):
+#   1. Environment variables (AGNOCLAW_*)
+#   2. ~/.agnoclaw/config.toml
+#   3. .agnoclaw.toml in current directory
+#   4. Code defaults
+#
+# All fields are optional — defaults are shown below.
+# ============================================================================
+
+
+# ── Model ──────────────────────────────────────────────────────────────────
+# Any Agno-supported model. Use "provider:model_id" format in code, or
+# set provider separately here.
+
+default_model = "claude-sonnet-4-6"
+default_provider = "anthropic"
+
+# Other examples:
+#   default_model = "gpt-4o"
+#   default_provider = "openai"
+#
+#   default_model = "qwen3:8b"
+#   default_provider = "ollama"      # local, no API key needed
+#
+#   default_model = "gemini-2.0-flash"
+#   default_provider = "google"
+
+
+# ── Workspace ──────────────────────────────────────────────────────────────
+# The agent's home directory. Contains SOUL.md, AGENTS.md, MEMORY.md,
+# HEARTBEAT.md, skills/, etc. Created automatically on first run.
+
+workspace_dir = "~/.agnoclaw/workspace"
+
+# For multi-tenant SaaS, the platform passes workspace_dir per tenant:
+#   AgentHarness(workspace_dir=f"/data/workspaces/{tenant_id}")
+
+
+# ── Session ────────────────────────────────────────────────────────────────
+
+session_history_runs = 10
+# Number of prior runs to include in context for continuity.
+# Higher = more context, more tokens. Lower = cheaper, less continuity.
+
+
+# ── Tools ──────────────────────────────────────────────────────────────────
+
+enable_bash = true
+# Enable the bash tool (shell execution). Disable for sandboxed environments.
+
+enable_web_search = true
+# Enable web_search tool. Auto-detects backend: Tavily → Exa → Brave → DDGS.
+
+enable_web_fetch = true
+# Enable web_fetch tool (URL fetch + HTML-to-text extraction).
+
+enable_background_bash_tools = false
+# Enable bash_start/bash_output/bash_kill tools for long-running processes.
+
+bash_timeout_seconds = 120
+# Timeout for bash tool executions. Commands exceeding this are killed.
+
+
+# ── Skills ─────────────────────────────────────────────────────────────────
+
+skills_dirs = []
+# Additional directories to load skills from (beyond workspace and built-in).
+# Example: skills_dirs = ["/path/to/team-skills", "/path/to/clawhub-skills"]
+
+
+# ── Learning ───────────────────────────────────────────────────────────────
+# Cross-session institutional learning via Agno's LearningMachine.
+# The agent accumulates patterns and insights that persist across sessions.
+
+enable_learning = false
+
+learning_mode = "agentic"
+# How learning happens:
+#   "always"  — extract learnings after every run (automatic)
+#   "agentic" — agent decides when to record learnings (default)
+#   "propose" — learnings are proposed to the human for review
+#   "hitl"    — human must approve each learning before it is stored
+
+
+# ── Context Management ─────────────────────────────────────────────────────
+
+enable_compression = false
+# Enable tool result compression. Recommended for long-running sessions
+# with many tool calls. Agno's CompressionManager summarizes older tool
+# outputs to keep the context window manageable.
+
+# compress_token_limit = 4000
+# Token threshold that triggers compression. When accumulated tool results
+# exceed this, compression runs. Uncomment to override Agno's default.
+
+enable_session_summary = false
+# Generate a summary at the end of each run. On the next run, the summary
+# is injected into context so the agent picks up where it left off.
+
+
+# ── Runtime Governance ─────────────────────────────────────────────────────
+
+permission_mode = "bypass"
+# Controls tool call approval:
+#   "bypass"       — all tools allowed (development, personal use)
+#   "default"      — standard approval rules
+#   "accept_edits" — require approval for file writes and shell commands
+#   "plan"         — read-only mode (no writes, no shell)
+#   "dont_ask"     — deny anything that would require approval
+
+permission_require_approver = false
+# If true, permission-gated tool calls are denied when no approver callback
+# is configured. Useful for SaaS: ensures the platform always handles approval.
+
+# permission_preapproved_tools = ["read_file", "glob_files", "grep_files"]
+# Tool names that skip permission checks entirely.
+
+# permission_preapproved_categories = ["read"]
+# Permission categories that skip checks (e.g., "read", "write", "execute").
+
+event_sink_mode = "best_effort"
+# Event sink behavior:
+#   "best_effort"  — emit events, log errors, continue on failure (default)
+#   "fail_closed"  — raise on emit failure (use for compliance-critical systems)
+
+policy_fail_open = false
+# If true, policy engine evaluation errors default to ALLOW with a warning.
+# If false (default), policy errors block the operation.
+
+
+# ── Guardrails ─────────────────────────────────────────────────────────────
+
+guardrails_enabled = true
+# Master toggle for all runtime guardrails.
+
+path_guardrails_enabled = true
+# Enforce path boundary checks on tool path arguments.
+# Prevents tools from reading/writing outside allowed directories.
+
+# path_allowed_roots = []
+# Allowlisted root paths. Empty defaults to workspace root.
+# Example: path_allowed_roots = ["/home/user/projects", "/tmp"]
+
+# path_blocked_roots = ["/etc", "/var"]
+# Explicitly blocked paths.
+
+network_enabled = true
+# Allow networked tool access (web_search, web_fetch).
+
+network_enforce_https = true
+# Require https:// URLs for URL-based tools.
+
+network_block_private_hosts = true
+# Block localhost, 127.0.0.1, 10.x.x.x, 192.168.x.x, link-local in tools.
+
+network_block_in_bash = true
+# Apply heuristic network-command blocking to bash tool calls
+# (curl, wget, ssh, etc. to blocked hosts).
+
+# network_allowed_hosts = []
+# Optional host allowlist. Empty allows any (non-blocked) host.
+
+# network_blocked_hosts = ["internal.corp.example.com"]
+# Explicit host denylist.
+
+
+# ── TUI ────────────────────────────────────────────────────────────────────
+
+theme = "textual-dark"
+# Textual theme for `agnoclaw tui`. Options: textual-dark, textual-light,
+# or any custom Textual theme name.
+
+
+# ── Debug ──────────────────────────────────────────────────────────────────
+
+debug = false
+# Enable debug mode (verbose logging).
+
+# show_tool_calls = false
+# Show tool call details in output (currently not supported in Agno v2.5.3).
+
+
+# ── Storage ────────────────────────────────────────────────────────────────
+
+[storage]
+backend = "sqlite"
+# Storage backend: "sqlite" or "postgres"
+
+sqlite_path = "~/.agnoclaw/sessions.db"
+# SQLite database path (only used when backend = "sqlite").
+
+# postgres_url = "postgresql://user:pass@localhost:5432/agnoclaw"
+# PostgreSQL connection URL (required when backend = "postgres").
+
+session_table = "agnoclaw_sessions"
+# Table name for session storage.
+
+memory_table = "agnoclaw_memories"
+# Table name for memory/learning storage.
+
+
+# ── Heartbeat ──────────────────────────────────────────────────────────────
+# Periodic agent check-ins. The agent reads HEARTBEAT.md from the workspace
+# and reports anything needing attention.
+
+[heartbeat]
+enabled = false
+
+interval_minutes = 30
+# How often the heartbeat fires (in minutes).
+
+active_hours_start = "08:00"
+active_hours_end = "22:00"
+# Heartbeat only fires during these hours (local time, HH:MM format).
+# Outside active hours, heartbeat is silently skipped.
+
+model = "claude-haiku-4-5-20251001"
+# Cheaper/faster model for heartbeat runs. Saves cost since heartbeat
+# runs frequently and only needs simple analysis.
+
+ok_threshold_chars = 300
+# HEARTBEAT_OK responses under this length are silently suppressed.
+# Prevents noise when nothing needs attention.
+
+target = "last"
+# Where to send heartbeat alerts:
+#   "last" — send to the last active session
+#   "none" — internal only (just logs, no notification)

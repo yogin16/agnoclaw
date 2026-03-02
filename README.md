@@ -449,39 +449,60 @@ Priority order (highest → lowest):
 
 ### Example `.agnoclaw.toml`
 
+See [`.agnoclaw.toml.example`](.agnoclaw.toml.example) for the full annotated template with all options documented.
+
+Quick start — copy and customize:
+
+```bash
+cp .agnoclaw.toml.example .agnoclaw.toml
+# or for user-level config:
+cp .agnoclaw.toml.example ~/.agnoclaw/config.toml
+```
+
+Minimal config (most fields have sensible defaults):
+
 ```toml
 default_model = "claude-sonnet-4-6"
 default_provider = "anthropic"
-workspace_dir = "~/.agnoclaw/workspace"
-session_history_runs = 10
-enable_bash = true
-enable_web_search = true
-bash_timeout_seconds = 120
 
 [storage]
 backend = "sqlite"
-sqlite_path = "~/.agnoclaw/sessions.db"
 
 [heartbeat]
 enabled = false
-interval_minutes = 30
-model = "claude-haiku-4-5-20251001"
 ```
 
 ### Key env vars
 
 ```bash
+# Model
 AGNOCLAW_DEFAULT_MODEL=claude-sonnet-4-6
 AGNOCLAW_DEFAULT_PROVIDER=anthropic
-AGNOCLAW_DEBUG=true
 
 # Storage
 AGNOCLAW_STORAGE__BACKEND=postgres
 AGNOCLAW_STORAGE__POSTGRES_URL=postgresql://user:pass@localhost/agnoclaw
 
+# Learning + context
+AGNOCLAW_ENABLE_LEARNING=true
+AGNOCLAW_LEARNING_MODE=agentic
+AGNOCLAW_ENABLE_COMPRESSION=true
+AGNOCLAW_ENABLE_SESSION_SUMMARY=true
+
 # Heartbeat
 AGNOCLAW_HB_ENABLED=true
 AGNOCLAW_HB_INTERVAL_MINUTES=30
+AGNOCLAW_HB_MODEL=claude-haiku-4-5-20251001
+
+# Runtime governance
+AGNOCLAW_PERMISSION_MODE=default
+AGNOCLAW_GUARDRAILS_ENABLED=true
+
+# TUI
+AGNOCLAW_THEME=textual-dark
+
+# Debug
+AGNOCLAW_DEBUG=true
 ```
 
 ---
