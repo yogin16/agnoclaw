@@ -28,12 +28,18 @@ class HeaderBar(Static):
         session_id: str | None = None,
         **kwargs,
     ) -> None:
-        super().__init__(**kwargs)
         self._model = model
         self._session_id = session_id
+        super().__init__(self._build_text(), **kwargs)
 
-    def on_mount(self) -> None:
-        self._render()
+    def _build_text(self) -> str:
+        parts = ["agnoclaw"]
+        if self._model:
+            parts.append(f"· {self._model}")
+        if self._session_id:
+            short = self._session_id[:8] if len(self._session_id) > 8 else self._session_id
+            parts.append(f"· session:{short}")
+        return " ".join(parts)
 
     def update_info(
         self,
@@ -45,13 +51,4 @@ class HeaderBar(Static):
             self._model = model
         if session_id is not None:
             self._session_id = session_id
-        self._render()
-
-    def _render(self) -> None:
-        parts = ["agnoclaw"]
-        if self._model:
-            parts.append(f"· {self._model}")
-        if self._session_id:
-            short = self._session_id[:8] if len(self._session_id) > 8 else self._session_id
-            parts.append(f"· session:{short}")
-        self.update(" ".join(parts))
+        self.update(self._build_text())
