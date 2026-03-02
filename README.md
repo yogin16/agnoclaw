@@ -71,6 +71,16 @@ agent = AgentHarness("ollama:qwen3:8b")   # local, no API key
 
 The model string `"provider:model_id"` is parsed natively by Agno — no separate `provider=` needed. Legacy `model_id=` + `provider=` kwargs still work.
 
+### Try it now (zero config)
+
+```python
+from agnoclaw import AgentHarness
+
+# Works out of the box with any Agno-supported model
+agent = AgentHarness("ollama:qwen3:8b")  # local, no API key needed
+agent.print_response("What files are in this directory?")
+```
+
 ### With a skill
 
 ```python
@@ -78,6 +88,35 @@ agent.print_response(
     "Research the state of fusion energy in 2026",
     skill="deep-research",
 )
+```
+
+### Use a SkillHub / community skill
+
+Skills from [ClawHub](https://clawhub.dev) or any AgentSkills-compatible repo
+work out of the box — just drop the skill directory in your skills folder:
+
+```bash
+# Install a community skill (e.g. from SkillHub)
+git clone https://github.com/clawhub/skills-collection /tmp/skills-collection
+cp -r /tmp/skills-collection/summarize-pr ~/.agnoclaw/skills/summarize-pr
+```
+
+```python
+from agnoclaw import AgentHarness
+
+agent = AgentHarness()
+agent.print_response(
+    "Summarize PR #42 in the agno-agi/agno repo",
+    skill="summarize-pr",
+)
+```
+
+Or register a skills directory programmatically:
+
+```python
+agent = AgentHarness()
+agent.skills.add_directory("/path/to/clawhub-skills", trust="community")
+agent.print_response("Run the summarize-pr skill", skill="summarize-pr")
 ```
 
 ### Multi-agent team
@@ -357,8 +396,7 @@ daemon.add_cron_job(CronJob(
     prompt="Check if disk usage exceeds 80% and alert if so.",
 ))
 
-daemon.start()
-asyncio.run(asyncio.sleep(float("inf")))  # run forever
+asyncio.run(daemon.run_forever())  # blocks until Ctrl+C
 ```
 
 For always-on operation (survives terminal close), install as a system service:
@@ -486,8 +524,8 @@ if response.active_requirements:
         else:
             req.reject()
 
-    # Resume after approval
-    final = agent.underlying_agent.continue_run(
+    # Resume after approval (use _agent directly for Agno continue_run)
+    final = agent._agent.continue_run(
         run_id=response.run_id,
         requirements=response.requirements,
     )
@@ -701,6 +739,163 @@ agnoclaw/
     ├── self_improving_agent.py # .learnings/ capture + promotion pattern
     ├── claude_code_tools.py   # CC gap analysis + MultiEdit demo
     └── ...
+```
+
+---
+
+## v0.2 Runtime Contracts
+
+AgentHarness v0.2 adds a runtime governance layer between your code and the LLM.
+Every `run()` / `arun()` call passes through this pipeline:
+
+```
+User message
+  → PreRunHooks (transform input)
+  → PolicyEngine.before_run (allow/deny/redact)
+  → PolicyEngine.before_skill_load (gate skills)
+  → PolicyEngine.before_prompt_send (inspect/redact prompts)
+  → Model call (Agno Agent)
+  → PostRunHooks (transform output)
+  → EventSink (audit trail)
+```
+
+### EventSink (observability)
+
+```python
+from agnoclaw.runtime import EventSink
+
+class MyEventSink(EventSink):
+    async def emit(self, event):
+        # Send to your logging/tracing/analytics system
+        print(f"[{event['event_type']}] {event.get('payload', {})}")
+
+agent = AgentHarness(event_sink=MyEventSink())
+```
+
+### PolicyEngine (governance)
+
+```python
+from agnoclaw.runtime import PolicyEngine, PolicyDecision
+
+class CompliancePolicy(PolicyEngine):
+    def before_run(self, run_input, context):
+        if "DELETE FROM" in run_input.message.upper():
+            return PolicyDecision.deny("SQL DELETE statements are blocked")
+        return PolicyDecision.allow()
+
+agent = AgentHarness(policy_engine=CompliancePolicy())
+```
+
+### Hooks (middleware)
+
+```python
+def log_inputs(run_input, context):
+    print(f"User: {run_input.message[:100]}")
+    return run_input  # pass through (or return modified)
+
+def log_outputs(run_input, result, context):
+    print(f"Output: {result.content[:100]}")
+    return result
+
+agent = AgentHarness(
+    pre_run_hooks=[log_inputs],
+    post_run_hooks=[log_outputs],
+)
+```
+
+### Permission modes
+
+```python
+# Bypass all checks (development)
+agent = AgentHarness(permission_mode="bypass")
+
+# Require approval for edits (staging)
+agent = AgentHarness(permission_mode="accept_edits")
+
+# Plan-only mode (no writes, no shell)
+agent = AgentHarness(permission_mode="plan")
+```
+
+---
+
+## Usage Patterns
+
+### 1. Personal assistant (OpenClaw-style, local)
+
+Use agnoclaw as a personal agent that runs on your machine, connects to
+messaging, monitors your workspace, and has cron-scheduled tasks:
+
+```python
+import asyncio
+from agnoclaw import AgentHarness
+from agnoclaw.heartbeat import HeartbeatDaemon, CronJob
+
+agent = AgentHarness(
+    "anthropic:claude-sonnet-4-6",
+    enable_learning=True,
+    enable_user_memory=True,
+    user_id="me",
+)
+
+daemon = HeartbeatDaemon(agent, on_alert=send_to_slack)
+daemon.add_cron_job(CronJob(
+    name="daily-standup",
+    schedule="0 9 * * 1-5",
+    prompt="Run daily standup.",
+    skill="daily-standup",
+    isolated=True,
+))
+asyncio.run(daemon.run_forever())
+```
+
+For WhatsApp/Telegram/Slack integration, build a thin webhook handler that
+calls `agent.arun(message)` and sends the response back. The messaging
+layer is a platform concern — agnoclaw is the agent backend.
+
+```bash
+# Install as always-on service
+agnoclaw heartbeat install-service
+```
+
+### 2. Embed in a SaaS product
+
+Use agnoclaw as the AI backend in your existing product. The messaging
+layer (WebSocket, REST API, etc.) is your platform code — agnoclaw provides
+the agent harness:
+
+```python
+from agnoclaw import AgentHarness
+from agnoclaw.runtime import PolicyEngine, PolicyDecision, EventSink
+
+class TenantPolicy(PolicyEngine):
+    def before_run(self, run_input, context):
+        if context.tenant_id not in allowed_tenants:
+            return PolicyDecision.deny("Tenant not authorized")
+        return PolicyDecision.allow()
+
+# One harness per tenant (or shared with tenant_id in context)
+agent = AgentHarness(
+    "anthropic:claude-sonnet-4-6",
+    policy_engine=TenantPolicy(),
+    event_sink=MyAnalyticsSink(),
+    tenant_id="acme-corp",
+    enable_learning=True,
+    learning_namespace="acme",
+)
+
+# Your API endpoint calls this:
+result = await agent.arun(user_message, user_id=user_id, session_id=session_id)
+```
+
+### 3. CLI-only (no messaging layer)
+
+The CLI works standalone — it IS the messaging layer. Use this for
+development, debugging, and personal productivity:
+
+```bash
+agnoclaw chat                                    # interactive
+agnoclaw run "Fix the bug in src/auth.py"        # one-shot
+agnoclaw run "Review src/" --skill code-review   # with skill
 ```
 
 ---

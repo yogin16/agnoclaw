@@ -205,6 +205,9 @@ def demo_gap_analysis():
         ("TodoWrite",   "create_todo()",     "Task creation (CRUD vs CC's atomic write)"),
         ("TodoRead",    "list_todos()",      "Task listing"),
         ("Task/Spawn",  "spawn_subagent()",  "Subagent spawning (simpler than CC's named agents)"),
+        ("BashStart",   "bash_start()",      "Start background bash task (BashToolkit)"),
+        ("BashOutput",  "bash_output()",     "Retrieve background bash output (BashToolkit)"),
+        ("KillShell",   "bash_kill()",       "Kill a backgrounded shell process (BashToolkit)"),
     ]
 
     missing = [
@@ -212,8 +215,6 @@ def demo_gap_analysis():
         ("NotebookEdit",   "Edit/insert/delete Jupyter cells with cell_id"),
         ("AskUserQuestion","Structured multi-choice prompts — critical for plan mode UX"),
         ("ExitPlanMode",   "Plan mode exit signal — agnoclaw uses text instruction only"),
-        ("BashOutput",     "Retrieve output from background bash tasks by task ID"),
-        ("KillShell",      "Kill a backgrounded shell process"),
         ("Skill (tool)",   "Model-invoked skill tool — CC has a Skill tool; agnoclaw injects via prompt"),
         ("TaskOutput",     "Retrieve output from background subagent by agent ID"),
         ("TaskUpdate",     "Shared task list update for agent teams"),
@@ -266,8 +267,7 @@ def demo_agent_multi_edit(tmp: Path):
     )
 
     agent = AgentHarness(
-        provider=PROVIDER,
-        model_id=MODEL,
+        f"{PROVIDER}:{MODEL}",
         workspace_dir=tmp,
         session_id="multi-edit-demo",
     )

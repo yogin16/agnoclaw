@@ -29,9 +29,10 @@ agnoclaw/
 ### System prompt assembly
 `SystemPromptBuilder` layers sections in order:
 ```
-identity → tone → tasks → tools → security → git → memory →
-skills → [plan_mode] → [learning] → workspace context →
-active skill → extra context → datetime
+identity → tone → narration → tasks → executing_with_care →
+blocked_approaches → tools → security → git → memory → skills →
+[plan_mode] → [heartbeat] → [learning] → custom sections →
+workspace context → active skill → extra context → datetime
 ```
 Workspace context (AGENTS/SOUL/IDENTITY/USER/MEMORY/TOOLS/BOOT) is
 injected near the end so it takes precedence over generic defaults.
@@ -62,7 +63,7 @@ Never store agent state in Python process memory (no singleton patterns).
    CronJob(name="standup", schedule="0 9 * * 1-5", isolated=True)
    ```
    Schedule formats: `"30m"`, `"1h"`, `"2h30m"`, `"45s"`, cron expression (needs `croniter`).
-   `isolated=True` creates a fresh `Agent` for the job (no conversation history).
+   `isolated=True` creates a fresh `AgentHarness` for the job (no conversation history).
 
 3. **Service install** — `agnoclaw heartbeat install-service` registers a launchd
    LaunchAgent (macOS) or systemd user service (Linux) for always-on operation.

@@ -200,7 +200,15 @@ def build_learning_machine(
         "propose": LearningMode.PROPOSE,
         "hitl": LearningMode.HITL,
     }
-    learning_mode = mode_map.get(mode, LearningMode.AGENTIC)
+    learning_mode = mode_map.get(mode)
+    if learning_mode is None:
+        import logging as _logging
+        _logging.getLogger("agnoclaw.memory").warning(
+            "Unknown learning mode '%s', falling back to 'agentic'. "
+            "Valid modes: %s",
+            mode, ", ".join(sorted(mode_map.keys())),
+        )
+        learning_mode = LearningMode.AGENTIC
     _namespace = namespace or "global"
 
     if db is None:
@@ -208,7 +216,8 @@ def build_learning_machine(
 
         from agno.db.sqlite import SqliteDb
 
-        db_path = Path.home() / ".agnoclaw" / "sessions.db"
+        cfg = get_config()
+        db_path = Path(cfg.storage.sqlite_path).expanduser()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         db = SqliteDb(db_file=str(db_path))
 
@@ -225,6 +234,7 @@ def build_learning_machine(
     )
 
     # learned_knowledge: always AGENTIC — knowledge capture is selective by nature
+    # Note: LearnedKnowledgeConfig doesn't take db= (uses LearningMachine's db)
     learned_config = LearnedKnowledgeConfig(
         model=model,
         mode=LearningMode.AGENTIC,

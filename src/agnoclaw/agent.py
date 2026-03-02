@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import warnings
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional, Union
 from uuid import uuid4
@@ -363,6 +364,24 @@ class AgentHarness:
         self._plan_mode_restore_permission_mode: PermissionMode | None = None
 
         # Legacy compat: model_id / extra_tools / extra_instructions
+        if model_id is not None:
+            warnings.warn(
+                "model_id is deprecated, use model instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if extra_tools is not None:
+            warnings.warn(
+                "extra_tools is deprecated, use tools instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if extra_instructions is not None:
+            warnings.warn(
+                "extra_instructions is deprecated, use instructions instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         _model = model or model_id
         _tools = tools or extra_tools
         _instructions = instructions or extra_instructions
@@ -1577,7 +1596,7 @@ class AgentHarness:
         context: Optional[ExecutionContext] = None,
         metadata: Optional[dict[str, Any]] = None,
         **kwargs,
-    ):
+    ) -> Union[RunOutput, AsyncIterator[RunOutputEvent]]:
         """Async version of run()."""
         self._check_context_budget()
 
@@ -1832,24 +1851,25 @@ class AgentHarness:
             ) from exc
 
     def print_response(self, message: str, *, stream: bool = True, skill: Optional[str] = None, **kwargs) -> None:
-        """Run the agent and pretty-print the response to the terminal."""
-        skill_content = None
-        if skill:
-            skill_content = self.skills.load_skill(skill)
-            if skill_content:
-                self._set_system_prompt(skill_content=skill_content)
+        """
+        Run the agent through the full runtime pipeline and pretty-print the response.
 
-        try:
-            self._agent.print_response(
-                message,
-                stream=stream,
-                session_id=self.session_id,
-                user_id=self.user_id,
-                **kwargs,
-            )
-        finally:
-            if skill_content:
-                self._set_system_prompt(session_id=self.session_id)
+        Unlike calling self._agent.print_response() directly, this routes through
+        run() so that hooks, policy, events, permissions, and guardrails are enforced.
+        """
+        if stream:
+            # Stream through run() pipeline → print each chunk
+            response = self.run(message, stream=True, skill=skill, **kwargs)
+            for event in response:
+                content = self._extract_event_content(event)
+                if content:
+                    print(content, end="", flush=True)
+            print()  # final newline
+        else:
+            result = self.run(message, stream=False, skill=skill, **kwargs)
+            content = getattr(result, "content", result)
+            if content:
+                print(content)
 
     def enter_plan_mode(self) -> None:
         """
@@ -1994,13 +2014,14 @@ class AgentHarness:
         This is a manual escape hatch — Agno v2.5.x does not auto-compact.
         """
         # Step 1: Ask the agent to write important facts to memory
+        # Route through harness's arun() so hooks/policy/events are enforced.
         flush_prompt = (
             "SYSTEM: Context compaction is about to occur. Before your conversation "
             "history is cleared, write any important facts, decisions, code locations, "
             "or context that should persist to MEMORY.md. Be concise — only preserve "
             "what a future session would need to continue your work effectively."
         )
-        await self._agent.arun(
+        await self.arun(
             flush_prompt,
             session_id=self.session_id,
             user_id=self.user_id,
@@ -2014,8 +2035,76 @@ class AgentHarness:
 
     @property
     def underlying_agent(self) -> Agent:
-        """Access the underlying Agno Agent for advanced use cases."""
+        """
+        Access the underlying Agno Agent.
+
+        .. deprecated::
+            Use narrow accessors (model_name, storage, chat_history, etc.)
+            instead. Direct access bypasses all harness protections (hooks,
+            policy, events, permissions, guardrails). Will be removed in v1.0.
+        """
+        warnings.warn(
+            "underlying_agent is deprecated — use narrow accessors (model_name, "
+            "storage, chat_history, etc.) instead. Direct access bypasses harness "
+            "protections.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._agent
+
+    # ── Narrow accessors (preferred over underlying_agent) ────────────────
+
+    @property
+    def model_name(self) -> str:
+        """Return the resolved model string (provider:model_id)."""
+        return self._model
+
+    @property
+    def storage(self):
+        """Return the storage backend (SqliteDb or PostgresDb)."""
+        return self._agent.db
+
+    @property
+    def chat_history(self) -> list:
+        """Return chat history for the current session."""
+        return self.get_chat_history()
+
+    @property
+    def system_prompt(self) -> str:
+        """Return the current system prompt."""
+        return self._agent.system_message or ""
+
+    def remove_tool(self, tool_name: str) -> bool:
+        """
+        Remove a tool by name from the agent's tool registry.
+
+        Returns True if the tool was found and removed, False otherwise.
+        """
+        if not hasattr(self._agent, "_tools") or self._agent._tools is None:
+            return False
+        before = len(self._agent._tools)
+        self._agent._tools = [
+            t for t in self._agent._tools
+            if getattr(t, "name", None) != tool_name
+        ]
+        return len(self._agent._tools) < before
+
+    def remove_hook(self, hook, *, kind: str = "pre") -> bool:
+        """
+        Remove a pre-run or post-run hook.
+
+        Args:
+            hook: The hook function/callable to remove.
+            kind: "pre" or "post".
+
+        Returns True if the hook was found and removed, False otherwise.
+        """
+        target = self._pre_run_hooks if kind == "pre" else self._post_run_hooks
+        try:
+            target.remove(hook)
+            return True
+        except ValueError:
+            return False
 
 
 # Backward-compatible alias

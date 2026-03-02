@@ -20,11 +20,14 @@ Rules:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
 import httpx
 from agno.tools.toolkit import Toolkit
+
+logger = logging.getLogger("agnoclaw.tools.web")
 
 
 class WebToolkit(Toolkit):
@@ -99,11 +102,15 @@ class WebToolkit(Toolkit):
 
             content_type = response.headers.get("content-type", "")
             if "text/html" in content_type:
-                return _html_to_text(response.text, url)
+                result = _html_to_text(response.text, url)
             elif "application/json" in content_type:
-                return f"[JSON from {url}]\n{response.text[:5000]}"
+                result = f"[JSON from {url}]\n{response.text[:5000]}"
             else:
-                return response.text[:5000]
+                result = response.text[:5000]
+
+            if prompt:
+                result = f"[Focus: {prompt}]\n\n{result}"
+            return result
         except httpx.HTTPStatusError as e:
             return f"[error] HTTP {e.response.status_code} fetching {url}"
         except httpx.RequestError as e:
@@ -201,11 +208,13 @@ def _html_to_text(html: str, url: str) -> str:
 
         soup = BeautifulSoup(html, "html.parser")
 
+        # Extract title BEFORE removing <head>
+        title = soup.title.string.strip() if soup.title and soup.title.string else ""
+
         # Remove noise
         for tag in soup(["script", "style", "nav", "footer", "aside", "head"]):
             tag.decompose()
 
-        title = soup.title.string.strip() if soup.title and soup.title.string else ""
         text = soup.get_text(separator="\n", strip=True)
         lines = [line for line in text.splitlines() if line.strip()]
         clean = "\n".join(lines)

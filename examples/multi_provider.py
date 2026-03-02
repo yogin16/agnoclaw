@@ -71,7 +71,7 @@ except Exception as e:
     print(f"\n=== Ollama skipped: {e} ===")
 
 
-# ── Legacy API: separate model_id + provider (still works) ────────────────
+# ── Legacy API: separate model_id + provider (deprecated, emits warning) ──
 
 legacy_agent = AgentHarness(model_id="claude-sonnet-4-6", provider="anthropic")
 

@@ -36,9 +36,8 @@ print("(No API key required — runs 100% locally)\n")
 # ── Basic agent ───────────────────────────────────────────────────────────────
 
 agent = AgentHarness(
+    f"ollama:{MODEL}",
     name="ollama-agent",
-    provider="ollama",
-    model_id=MODEL,
     session_id="ollama-local-demo",
 )
 

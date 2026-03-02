@@ -52,7 +52,7 @@ def get_default_tools(
     tools = []
 
     # File operations (always enabled)
-    tools.append(FilesToolkit())
+    tools.append(FilesToolkit(workspace_dir=cfg.workspace_dir))
 
     # Shell execution
     if cfg.enable_bash:
@@ -73,7 +73,7 @@ def get_default_tools(
     tools.append(TodoToolkit())
 
     # Multi-window project tracking (always enabled)
-    tools.append(ProgressToolkit())
+    tools.append(ProgressToolkit(project_dir=cfg.workspace_dir))
 
     # Sub-agent spawning (with optional named agents)
     tools.append(make_subagent_tool(

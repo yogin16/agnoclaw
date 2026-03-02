@@ -44,10 +44,13 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, time
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from agnoclaw.config import HarnessConfig, get_config
 from agnoclaw.workspace import Workspace
+
+if TYPE_CHECKING:
+    from agnoclaw.agent import AgentHarness
 
 logger = logging.getLogger("agnoclaw.heartbeat")
 
@@ -102,7 +105,7 @@ class HeartbeatDaemon:
 
     def __init__(
         self,
-        agent,
+        agent: "AgentHarness",
         on_alert: Optional[Callable[[str], None]] = None,
         config: Optional[HarnessConfig] = None,
         workspace: Optional[Workspace] = None,
@@ -117,7 +120,30 @@ class HeartbeatDaemon:
         self._cron_jobs: list[CronJob] = []
 
     def add_cron_job(self, job: CronJob) -> None:
-        """Add a cron job to run alongside the heartbeat."""
+        """
+        Add a cron job to run alongside the heartbeat.
+
+        Validates the schedule expression before registering. If a cron library
+        (croniter/cronsim) is not installed, cron expressions are accepted
+        optimistically and validated at runtime.
+        """
+        # Validate schedule — only reject if it's truly malformed
+        test_delay = self._seconds_until_next(job.schedule)
+        if test_delay < 0:
+            # _seconds_until_next returns -1 only when no cron library is found.
+            # If the schedule looks like a cron expression (5 fields), accept it
+            # optimistically — it will fail at runtime with a clear error.
+            parts = job.schedule.strip().split()
+            if len(parts) < 5:
+                raise ValueError(
+                    f"Invalid schedule '{job.schedule}' for cron job '{job.name}'. "
+                    f"Use a cron expression ('0 9 * * 1-5') or interval string ('30m', '1h')."
+                )
+            logger.warning(
+                "Cron job '%s': no cron library available to validate schedule '%s'. "
+                "Install croniter: uv add croniter",
+                job.name, job.schedule,
+            )
         self._cron_jobs.append(job)
         logger.info("Registered cron job '%s' (schedule=%s, isolated=%s)", job.name, job.schedule, job.isolated)
 
@@ -155,6 +181,22 @@ class HeartbeatDaemon:
                 task.cancel()
         self._cron_tasks.clear()
         logger.info("Heartbeat daemon stopped")
+
+    async def run_forever(self) -> None:
+        """
+        Start the daemon and block until stopped (via stop() or KeyboardInterrupt).
+
+        Convenience method for CLI and scripts. Equivalent to::
+
+            daemon.start()
+            await daemon.wait()
+        """
+        self.start()
+        try:
+            while self._running:
+                await asyncio.sleep(1)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self.stop()
 
     async def trigger_now(self) -> Optional[str]:
         """
@@ -218,7 +260,7 @@ class HeartbeatDaemon:
             return self._filter_response(content)
         except Exception as e:
             logger.error("Heartbeat run failed: %s", e)
-            return None
+            return f"[heartbeat error] {e}"
 
     # ── Cron job loop ──────────────────────────────────────────────────────────
 
@@ -261,23 +303,24 @@ class HeartbeatDaemon:
 
     async def _run_isolated(self, job: CronJob, prompt: str) -> object:
         """Run a cron job in a fresh isolated session."""
-        from agno.agent import Agent
+        from agnoclaw.agent import AgentHarness
 
         cfg = self._config
         model_id = job.model_id or cfg.heartbeat.model or cfg.default_model
         provider = job.provider or cfg.default_provider
 
-        # Build Agno-native "provider:model_id" string
+        # Build an isolated AgentHarness (not raw Agent) so skills work
         from agnoclaw.agent import _resolve_model
         model_str = _resolve_model(model_id, provider, cfg)
-        isolated_agent = Agent(
+        isolated = AgentHarness(
             model=model_str,
             instructions=(
                 "You are a scheduled task agent. Complete the task and respond concisely. "
                 "You do not have access to conversation history."
             ),
+            config=cfg,
         )
-        return await isolated_agent.arun(prompt)
+        return await isolated.arun(prompt, skill=job.skill)
 
     # ── Schedule parsing ───────────────────────────────────────────────────────
 

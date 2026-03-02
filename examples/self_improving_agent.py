@@ -169,8 +169,7 @@ def demo_with_agent(tmp: Path, learnings_dir: Path):
     print("=== Live Agent Demo: Review Learnings ===")
 
     agent = AgentHarness(
-        provider=PROVIDER,
-        model_id=MODEL,
+        f"{PROVIDER}:{MODEL}",
         workspace_dir=tmp,
         session_id="self-improving-demo",
     )

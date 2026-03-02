@@ -18,24 +18,28 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional
 
-import click
-from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.table import Table
+try:
+    import click
+    from rich.console import Console
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    from rich.table import Table
+except ImportError as e:
+    raise ImportError(
+        "CLI dependencies not installed. Install with: pip install agnoclaw[cli]"
+    ) from e
 
 console = Console()
 
 
 def _build_agent(
-    model: Optional[str],
-    provider: Optional[str],
-    session: Optional[str],
-    workspace: Optional[str],
+    model: str | None,
+    provider: str | None,
+    session: str | None,
+    workspace: str | None,
     debug: bool,
-    permission_mode: Optional[str],
+    permission_mode: str | None,
 ):
     """Shared factory for building an AgentHarness from CLI options."""
     from agnoclaw import AgentHarness
@@ -165,10 +169,36 @@ def init(workspace):
 @WORKSPACE_OPT
 @DEBUG_OPT
 @PERMISSION_MODE_OPT
-def chat(model, provider, session, workspace, debug, permission_mode):
-    """Start an interactive chat session."""
+@click.option(
+    "--sync", "use_sync", is_flag=True, default=False,
+    help="Use legacy blocking REPL instead of async",
+)
+def chat(model, provider, session, workspace, debug, permission_mode, use_sync):
+    """Start an interactive chat session.
+
+    By default uses the async REPL with heartbeat notification support.
+    Use --sync for the legacy blocking REPL.
+    """
     agent = _build_agent(model, provider, session, workspace, debug, permission_mode)
-    queued_skill: Optional[str] = None
+
+    if not use_sync:
+        # Async REPL with heartbeat support
+        from agnoclaw.cli.async_repl import AsyncREPL
+
+        repl = AsyncREPL(agent, enable_heartbeat=True, debug=debug)
+        try:
+            asyncio.run(repl.run())
+        except KeyboardInterrupt:
+            console.print("\n[dim]Goodbye.[/dim]")
+        return
+
+    # Legacy sync REPL
+    _chat_sync(agent, debug)
+
+
+def _chat_sync(agent, debug: bool) -> None:
+    """Legacy synchronous chat REPL (Click-based)."""
+    queued_skill: str | None = None
 
     console.print(Panel(
         f"[bold cyan]agnoclaw[/bold cyan] — interactive session\n"
@@ -224,8 +254,8 @@ def chat(model, provider, session, workspace, debug, permission_mode):
 def _handle_slash_command(
     command: str,
     agent,
-    queued_skill: Optional[str] = None,
-) -> tuple[bool, Optional[str]]:
+    queued_skill: str | None = None,
+) -> tuple[bool, str | None]:
     """Handle /slash commands in chat mode. Returns (handled, queued_skill)."""
     parts = command.split(None, 1)
     cmd = parts[0].lower()
@@ -280,6 +310,31 @@ def _handle_slash_command(
         return True, queued_skill
 
     return False, queued_skill
+
+
+# ── agnoclaw tui ──────────────────────────────────────────────────────────────
+
+@cli.command()
+@MODEL_OPT
+@PROVIDER_OPT
+@SESSION_OPT
+@WORKSPACE_OPT
+@DEBUG_OPT
+@PERMISSION_MODE_OPT
+def tui(model, provider, session, workspace, debug, permission_mode):
+    """Launch the full Textual TUI (requires agnoclaw[tui])."""
+    try:
+        from agnoclaw.tui import AgnoClawApp
+    except ImportError:
+        console.print(
+            "[red]TUI dependencies not installed.[/red]\n"
+            "Install with: [bold]pip install agnoclaw\\[tui][/bold]"
+        )
+        sys.exit(1)
+
+    agent = _build_agent(model, provider, session, workspace, debug, permission_mode)
+    app = AgnoClawApp(agent=agent, debug=debug)
+    app.run()
 
 
 # ── agnoclaw run ──────────────────────────────────────────────────────────────
@@ -343,8 +398,9 @@ def skill_inspect(name, workspace):
 @WORKSPACE_OPT
 def skill_install(path_or_url, workspace):
     """Install a skill from a local path or GitHub URL."""
-    from agnoclaw.workspace import Workspace
     import shutil
+
+    from agnoclaw.workspace import Workspace
 
     ws = Workspace(workspace)
     ws.initialize()
@@ -514,8 +570,8 @@ def _manage_launchd_service(
     workspace,
     interval: int,
     uninstall: bool,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
+    model: str | None = None,
+    provider: str | None = None,
 ) -> None:
     """Install/uninstall launchd LaunchAgent on macOS."""
     import subprocess
@@ -584,8 +640,8 @@ def _manage_systemd_service(
     workspace,
     interval: int,
     uninstall: bool,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
+    model: str | None = None,
+    provider: str | None = None,
 ) -> None:
     """Install/uninstall systemd user service on Linux."""
     import shlex

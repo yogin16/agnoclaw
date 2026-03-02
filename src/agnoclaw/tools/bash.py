@@ -7,15 +7,19 @@ Background flow (Claude/OpenClaw style):
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from agno.tools import tool
 from agno.tools.toolkit import Toolkit
+
+
+logger = logging.getLogger("agnoclaw.tools.bash")
 
 
 @dataclass
@@ -24,6 +28,7 @@ class _BackgroundTask:
     process: subprocess.Popen
     command: str
     output_path: Path
+    output_file: Any  # open file handle — kept alive while process runs
     working_dir: Optional[str]
     started_at: float
     description: Optional[str] = None
@@ -68,6 +73,15 @@ class BashToolkit(Toolkit):
             return f"... [truncated to last {max_chars} chars]\n{text[-max_chars:]}"
         return text[:max_chars] + f"\n... [truncated to first {max_chars} chars]"
 
+    @staticmethod
+    def _cleanup_task(task: _BackgroundTask) -> None:
+        """Close the output file handle for a finished task."""
+        try:
+            if task.output_file and not task.output_file.closed:
+                task.output_file.close()
+        except Exception:
+            pass
+
     def _prune_finished_tasks(self) -> None:
         if len(self._tasks) <= self.max_background_tasks:
             return
@@ -78,6 +92,7 @@ class BashToolkit(Toolkit):
         for task in finished:
             if len(self._tasks) <= self.max_background_tasks:
                 break
+            self._cleanup_task(task)
             self._tasks.pop(task.task_id, None)
 
     @tool(
@@ -98,7 +113,7 @@ class BashToolkit(Toolkit):
         """Run a bash command and return its output."""
         del description
         cwd = self._resolve_cwd(working_dir)
-        timeout = int(timeout_seconds) if timeout_seconds else self.timeout
+        timeout = int(timeout_seconds) if timeout_seconds is not None else self.timeout
 
         try:
             result = subprocess.run(
@@ -156,7 +171,8 @@ class BashToolkit(Toolkit):
                 cwd=cwd,
                 text=True,
             )
-            output_file.close()
+            # NOTE: output_file must stay open while the process runs.
+            # It is closed in _cleanup_task() when the process exits.
         except Exception as e:
             return f"[error] Failed to start background command: {e}"
 
@@ -165,6 +181,7 @@ class BashToolkit(Toolkit):
             process=process,
             command=command,
             output_path=output_path,
+            output_file=output_file,
             working_dir=cwd,
             started_at=time.time(),
             description=description,
@@ -194,6 +211,8 @@ class BashToolkit(Toolkit):
             return f"[error] Unknown task id: {task_id}"
 
         status, code = self._task_status(task)
+        if code is not None:
+            self._cleanup_task(task)
         if not task.output_path.exists():
             body = "[no output yet]"
         else:
@@ -234,6 +253,7 @@ class BashToolkit(Toolkit):
                 task.process.kill()
                 task.process.wait(timeout=2.0)
             code = task.process.poll()
+            self._cleanup_task(task)
             return f"Killed task {task_id} (exit code {code})."
         except Exception as e:
             return f"[error] Failed to kill task {task_id}: {e}"

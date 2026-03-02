@@ -18,7 +18,7 @@ from __future__ import annotations
 import tomllib
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -52,7 +52,7 @@ class StorageConfig(BaseSettings):
     """'sqlite' or 'postgres'"""
 
     sqlite_path: str = "~/.agnoclaw/sessions.db"
-    postgres_url: Optional[str] = None
+    postgres_url: str | None = None
     """PostgreSQL connection URL. Required when backend='postgres'."""
 
     session_table: str = "agnoclaw_sessions"
@@ -115,7 +115,7 @@ class HarnessConfig(BaseSettings):
     each LLM API call. Recommended for long-running sessions or agents that
     generate many tool results."""
 
-    compress_token_limit: Optional[int] = None
+    compress_token_limit: int | None = None
     """Token limit that triggers compression. When the accumulated tool results
     exceed this limit, compression runs. None uses Agno's default count-based
     trigger (compress_tool_results_limit=3)."""
@@ -131,6 +131,10 @@ class HarnessConfig(BaseSettings):
 
     # Storage
     storage: StorageConfig = Field(default_factory=StorageConfig)
+
+    # TUI
+    theme: str = "textual-dark"
+    """Textual theme name for TUI mode. Options: textual-dark, textual-light, etc."""
 
     # Debug
     debug: bool = False

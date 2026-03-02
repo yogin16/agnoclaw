@@ -12,7 +12,7 @@ and LangChain DeepAgents' middleware insights — and runs them on Agno's produc
 - **Framework**: Agno v2.5.x (`pip install agno`)
 - **CLI**: Click + Rich + prompt-toolkit
 - **Storage**: SQLite (dev), PostgreSQL (prod) — via Agno's `SqliteDb` / `PostgresDb`
-- **Scheduling**: APScheduler (heartbeat daemon)
+- **Scheduling**: asyncio (heartbeat daemon + cron jobs)
 - **Frontmatter**: python-frontmatter (SKILL.md parsing)
 
 ## Package Layout
@@ -25,17 +25,17 @@ src/agnoclaw/
 ├── config.py         # Settings via pydantic-settings + TOML
 ├── prompts/
 │   ├── system.py     # System prompt assembler (layered composition)
-│   └── sections.py   # Each section: identity, tone, tasks, tools, security, git
+│   └── sections.py   # Sections: identity, tone, narration, tasks, care, blocked, tools, security, git, memory, skills, plan, heartbeat, learning
 ├── tools/
-│   ├── bash.py       # ShellTool
-│   ├── files.py      # ReadTool, WriteTool, EditTool, GlobTool, GrepTool
-│   ├── web.py        # WebFetchTool, WebSearchTool
-│   └── tasks.py      # TodoTool, SubagentTool
+│   ├── bash.py       # BashToolkit (bash, bash_start, bash_output, bash_kill)
+│   ├── files.py      # FilesToolkit (read, write, edit, multi_edit, glob, grep, list_dir)
+│   ├── web.py        # WebToolkit (web_search, web_fetch)
+│   └── tasks.py      # TodoToolkit, ProgressToolkit, SubagentTool
 ├── skills/
 │   ├── loader.py     # SKILL.md frontmatter + content parser
 │   └── registry.py   # Skill discovery and selective injection
 ├── heartbeat/
-│   └── daemon.py     # APScheduler-based heartbeat
+│   └── daemon.py     # asyncio-based HeartbeatDaemon + CronJob scheduler
 └── cli/
     └── main.py       # Click CLI entry point
 ```
@@ -72,11 +72,14 @@ from agnoclaw import AgentHarness
 from agnoclaw.config import HarnessConfig
 
 # Tools
-from agnoclaw.tools import DEFAULT_TOOLS, BashTool, FilesToolkit
+from agnoclaw.tools import get_default_tools, BashToolkit, FilesToolkit, WebToolkit
 
 # Skills
 from agnoclaw.skills import SkillRegistry
 
 # Workspace
 from agnoclaw.workspace import Workspace
+
+# Heartbeat
+from agnoclaw.heartbeat import HeartbeatDaemon, CronJob
 ```
