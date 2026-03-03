@@ -5,18 +5,24 @@ Demonstrates using Agno's structured output with Pydantic models to produce
 machine-readable risk assessments from contract analysis.
 
 Run: uv run python examples/legal_rag/risk_assessment.py
-Requires: ANTHROPIC_API_KEY
 """
 
 from __future__ import annotations
 
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from _utils import detect_model
+
 from agno.agent import Agent
+
+MODEL = detect_model()
 
 
 # ── Pydantic models for structured output ───────────────────────────────
@@ -80,8 +86,8 @@ def assess_contract(contract_text: str) -> RiskAssessment:
     Uses Agno's structured output to get a Pydantic model back from the LLM.
     """
     agent = Agent(
-        model="anthropic:claude-sonnet-4-6",
-        response_model=RiskAssessment,
+        model=MODEL,
+        output_schema=RiskAssessment,
         instructions=(
             "You are a legal risk assessment specialist. Analyze the contract "
             "and produce a structured risk assessment. Be thorough but concise. "
@@ -94,6 +100,7 @@ def assess_contract(contract_text: str) -> RiskAssessment:
         f"Analyze this contract for risks:\n\n{contract_text}"
     )
 
+    # Agno returns the structured output in response.content
     return response.content
 
 

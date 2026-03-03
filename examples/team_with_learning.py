@@ -9,8 +9,10 @@ Demonstrates:
 - Session ID for team continuity
 """
 
+from _utils import detect_model
 from agnoclaw.teams import research_team, code_team, data_team
 
+MODEL = detect_model()
 
 # ── Research Team with Learning ───────────────────────────────────────────
 # The research team accumulates learnings about:
@@ -21,7 +23,7 @@ from agnoclaw.teams import research_team, code_team, data_team
 print("=== Research Team (with learning) ===\n")
 
 r_team = research_team(
-    model_id="claude-haiku-4-5-20251001",  # cheaper for demo
+    model_id=MODEL,
     session_id="research-session-001",
     enable_learning=True,  # namespaced to "research-team"
 )
@@ -59,7 +61,7 @@ c_team.print_response(
 print("\n\n=== Data Team ===\n")
 
 d_team = data_team(
-    model_id="claude-haiku-4-5-20251001",
+    model_id=MODEL,
     session_id="data-session-001",
 )
 

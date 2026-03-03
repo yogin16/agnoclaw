@@ -95,6 +95,8 @@ class ClawHubClient:
         """
         Search for skills by keyword.
 
+        Uses ClawHub's vector search endpoint (/api/search) for relevance-ranked results.
+
         Args:
             query: Search query string.
             category: Optional category filter.
@@ -107,19 +109,19 @@ class ClawHubClient:
         if category:
             params["category"] = category
 
-        data = self._get("/api/v1/skills", params=params)
+        data = self._get("/api/search", params=params)
         if not data:
             return []
 
-        results = data if isinstance(data, list) else data.get("results", data.get("skills", []))
+        results = data if isinstance(data, list) else data.get("results", data.get("items", []))
         return [self._parse_skill_info(item) for item in results]
 
     def inspect(self, name: str) -> Optional[HubSkillDetail]:
         """
-        Get full detail for a skill by name.
+        Get full detail for a skill by name/slug.
 
         Args:
-            name: Skill name (e.g., "coding-agent").
+            name: Skill slug (e.g., "code", "sensitive-data-masker").
 
         Returns:
             Full skill detail, or None if not found.
@@ -129,51 +131,71 @@ class ClawHubClient:
             return None
         return self._parse_skill_detail(data)
 
-    def download(self, name: str, dest_dir: str | Path) -> Optional[Path]:
+    def download(self, name: str, dest_dir: str | Path, version: str = "") -> Optional[Path]:
         """
-        Download a skill's SKILL.md to a local directory.
+        Download a skill as a ZIP and extract to a local directory.
 
-        Creates dest_dir/name/SKILL.md with the skill content.
+        Creates dest_dir/name/ with all skill files (SKILL.md + auxiliary files).
 
         Args:
-            name: Skill name to download.
+            name: Skill slug to download.
             dest_dir: Parent directory where the skill subdirectory will be created.
+            version: Optional version to download. Defaults to latest.
 
         Returns:
             Path to the created skill directory, or None on failure.
         """
+        import io
+        import zipfile
+
         dest = Path(dest_dir).expanduser().resolve()
 
-        # First try the download endpoint
-        data = self._get(f"/api/v1/skills/{name}/download")
-        if not data:
-            # Fallback: inspect and use the skill_md_preview
-            detail = self.inspect(name)
-            if not detail or not detail.skill_md_preview:
-                logger.warning("Could not download skill '%s': no content available", name)
-                return None
-            content = detail.skill_md_preview
-        else:
-            content = data if isinstance(data, str) else data.get("content", data.get("skill_md", ""))
+        params = {"slug": name}
+        if version:
+            params["version"] = version
 
-        if not content:
-            logger.warning("Downloaded empty content for skill '%s'", name)
+        url = f"{self._base_url}/api/download"
+        try:
+            response = self._client.get(url, params=params)
+            response.raise_for_status()
+        except httpx.HTTPError as e:
+            logger.warning("Failed to download skill '%s': %s", name, e)
+            return None
+
+        content_type = response.headers.get("content-type", "")
+        if "zip" not in content_type and "octet" not in content_type:
+            logger.warning("Unexpected content-type for skill '%s': %s", name, content_type)
             return None
 
         skill_dir = dest / name
         skill_dir.mkdir(parents=True, exist_ok=True)
-        skill_md_path = skill_dir / "SKILL.md"
-        skill_md_path.write_text(content, encoding="utf-8")
 
-        logger.info("Downloaded skill '%s' to %s", name, skill_dir)
+        try:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+                for file_info in zf.infolist():
+                    # Skip directories and hidden files
+                    if file_info.is_dir() or file_info.filename.startswith("."):
+                        continue
+                    target = skill_dir / file_info.filename
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(zf.read(file_info.filename))
+                    logger.debug("Extracted %s", target)
+        except zipfile.BadZipFile as e:
+            logger.warning("Invalid ZIP for skill '%s': %s", name, e)
+            return None
+
+        logger.info("Downloaded skill '%s' (%d files) to %s", name, len(list(skill_dir.iterdir())), skill_dir)
         return skill_dir
 
     def categories(self) -> list[str]:
         """
         List all available skill categories.
 
+        Note: ClawHub currently does not expose a categories endpoint.
+        This method returns an empty list until the API adds support.
+
         Returns:
-            List of category names.
+            List of category names (currently empty).
         """
         data = self._get("/api/v1/categories")
         if not data:
@@ -261,9 +283,13 @@ class ClawHubClient:
 
     @staticmethod
     def _parse_skill_info(data: dict) -> HubSkillInfo:
+        """Parse a skill info from search results or listing.
+
+        ClawHub API uses: slug, displayName, summary, score, updatedAt
+        """
         return HubSkillInfo(
-            name=data.get("name", ""),
-            description=data.get("description", ""),
+            name=data.get("slug", data.get("name", "")),
+            description=data.get("summary", data.get("description", "")),
             author=data.get("author", ""),
             version=data.get("version", ""),
             downloads=data.get("downloads", 0),
@@ -273,21 +299,31 @@ class ClawHubClient:
 
     @staticmethod
     def _parse_skill_detail(data: dict) -> HubSkillDetail:
+        """Parse full skill detail from /api/v1/skills/<slug>.
+
+        ClawHub API wraps in: {"skill": {...}, "latestVersion": {...}, "owner": {...}}
+        """
+        skill = data.get("skill", data)
+        latest = data.get("latestVersion", {})
+        owner = data.get("owner", {})
+        stats = skill.get("stats", {})
+        tags = skill.get("tags", {})
+
         return HubSkillDetail(
-            name=data.get("name", ""),
-            description=data.get("description", ""),
-            author=data.get("author", ""),
-            version=data.get("version", ""),
-            downloads=data.get("downloads", 0),
-            categories=data.get("categories", []),
-            emoji=data.get("emoji", ""),
-            homepage=data.get("homepage", ""),
-            repository=data.get("repository", ""),
-            readme=data.get("readme", ""),
-            skill_md_preview=data.get("skill_md_preview", data.get("skill_md", "")),
-            dependencies=data.get("dependencies", []),
-            created_at=data.get("created_at", ""),
-            updated_at=data.get("updated_at", ""),
+            name=skill.get("slug", skill.get("name", "")),
+            description=skill.get("summary", skill.get("description", "")),
+            author=owner.get("handle", owner.get("displayName", "")),
+            version=tags.get("latest", latest.get("version", "")),
+            downloads=stats.get("downloads", 0),
+            categories=skill.get("categories", []),
+            emoji=skill.get("emoji", ""),
+            homepage=skill.get("homepage", ""),
+            repository=skill.get("repository", ""),
+            readme=latest.get("changelog", ""),
+            skill_md_preview="",
+            dependencies=skill.get("dependencies", []),
+            created_at=str(skill.get("createdAt", "")),
+            updated_at=str(skill.get("updatedAt", "")),
         )
 
     def close(self) -> None:

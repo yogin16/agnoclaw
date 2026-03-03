@@ -42,11 +42,12 @@ def _mock_response(data, status_code=200, content_type="application/json"):
 
 
 def test_search_returns_skill_info(hub_client, mock_httpx_client):
+    # Mock matches real ClawHub /api/search response (uses slug/summary)
     mock_httpx_client.get.return_value = _mock_response({
         "results": [
             {
-                "name": "code-review",
-                "description": "Automated code review",
+                "slug": "code-review",
+                "summary": "Automated code review",
                 "author": "community",
                 "version": "1.0.0",
                 "downloads": 500,
@@ -71,17 +72,24 @@ def test_search_empty_results(hub_client, mock_httpx_client):
 
 
 def test_inspect_returns_detail(hub_client, mock_httpx_client):
+    # Mock matches real ClawHub API response shape: nested skill/latestVersion/owner
     mock_httpx_client.get.return_value = _mock_response({
-        "name": "coding-agent",
-        "description": "Autonomous coding agent",
-        "author": "clawhub",
-        "version": "2.0.0",
-        "downloads": 1000,
-        "categories": ["development", "automation"],
-        "homepage": "https://clawhub.ai/skills/coding-agent",
-        "repository": "https://github.com/clawhub/coding-agent",
-        "skill_md_preview": "---\nname: coding-agent\n---\n# Coding Agent",
-        "dependencies": ["httpx", "git"],
+        "skill": {
+            "slug": "coding-agent",
+            "summary": "Autonomous coding agent",
+            "categories": ["development", "automation"],
+            "homepage": "https://clawhub.ai/skills/coding-agent",
+            "repository": "https://github.com/clawhub/coding-agent",
+            "dependencies": ["httpx", "git"],
+            "stats": {"downloads": 1000},
+            "tags": {"latest": "2.0.0"},
+        },
+        "latestVersion": {
+            "version": "2.0.0",
+        },
+        "owner": {
+            "handle": "clawhub",
+        },
     })
 
     detail = hub_client.inspect("coding-agent")
@@ -89,8 +97,8 @@ def test_inspect_returns_detail(hub_client, mock_httpx_client):
     assert detail is not None
     assert detail.name == "coding-agent"
     assert detail.version == "2.0.0"
+    assert detail.author == "clawhub"
     assert "development" in detail.categories
-    assert detail.skill_md_preview.startswith("---")
 
 
 def test_inspect_not_found(hub_client, mock_httpx_client):
@@ -105,10 +113,23 @@ def test_inspect_not_found(hub_client, mock_httpx_client):
 
 
 def test_download_creates_skill_dir(hub_client, mock_httpx_client, tmp_path):
+    import io
+    import zipfile
+
     skill_content = "---\nname: test-skill\ndescription: A test\n---\n\n# Test Skill\nDo things."
-    mock_httpx_client.get.return_value = _mock_response({
-        "content": skill_content,
-    })
+
+    # Build a ZIP in memory (matches real ClawHub /api/download response)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("SKILL.md", skill_content)
+    buf.seek(0)
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {"content-type": "application/zip"}
+    resp.content = buf.getvalue()
+    resp.raise_for_status = MagicMock()
+    mock_httpx_client.get.return_value = resp
 
     dest = tmp_path / "skills"
     dest.mkdir()
@@ -151,16 +172,31 @@ def test_cache_write_and_read(hub_client, mock_httpx_client):
 
 def test_install_from_hub(tmp_path):
     """install_from_hub should download and make the skill available."""
+    import io
+    import zipfile
+
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     registry = SkillRegistry(workspace_skills_dir=skills_dir)
 
     skill_content = "---\nname: hub-skill\ndescription: From ClawHub\n---\n\n# Hub Skill\nHello."
 
+    # Build a ZIP in memory (matches real ClawHub /api/download response)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("SKILL.md", skill_content)
+    buf.seek(0)
+
     with patch("agnoclaw.skills.hub.httpx.Client") as mock_cls:
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
-        mock_client.get.return_value = _mock_response({"content": skill_content})
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/zip"}
+        resp.content = buf.getvalue()
+        resp.raise_for_status = MagicMock()
+        mock_client.get.return_value = resp
 
         result = registry.install_from_hub(
             "hub-skill",

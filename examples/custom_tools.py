@@ -9,6 +9,8 @@ Demonstrates:
 """
 
 from agno.tools import tool, Toolkit
+
+from _utils import detect_model
 from agnoclaw import AgentHarness
 
 
@@ -88,6 +90,7 @@ toolkit = TextAnalysisToolkit()
 
 agent = AgentHarness(
     name="TextAnalyst",
+    model=detect_model(),
     tools=[toolkit],
 )
 
@@ -105,6 +108,7 @@ from agnoclaw.tools import make_bash_tool
 
 minimal_agent = AgentHarness(
     name="MinimalAgent",
+    model=detect_model(),
     tools=[word_count],
     # Disable defaults via config
     config=None,  # uses defaults — but you can pass a custom HarnessConfig

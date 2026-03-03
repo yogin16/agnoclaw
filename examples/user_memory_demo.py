@@ -8,7 +8,10 @@ Demonstrates:
 - Combined MemoryManager + LearningMachine
 """
 
+from _utils import detect_model
 from agnoclaw import AgentHarness
+
+MODEL = detect_model()
 
 # ── Single user with persistent memory ───────────────────────────────────
 # The MemoryManager extracts and stores facts about "alice" in the DB.
@@ -18,6 +21,7 @@ print("=== User Memory: alice ===\n")
 
 alice_agent = AgentHarness(
     name="personal-assistant",
+    model=MODEL,
     user_id="alice",
     enable_user_memory=True,  # enables MemoryManager (Tier 2)
 )
@@ -35,6 +39,7 @@ print("\n--- Second interaction (memory should be recalled) ---\n")
 # Second interaction — agent recalls alice's preferences
 alice_agent2 = AgentHarness(
     name="personal-assistant",
+    model=MODEL,
     user_id="alice",
     enable_user_memory=True,
 )
@@ -51,6 +56,7 @@ print("\n\n=== User Memory: bob (isolated from alice) ===\n")
 
 bob_agent = AgentHarness(
     name="personal-assistant",
+    model=MODEL,
     user_id="bob",
     enable_user_memory=True,
 )
@@ -65,6 +71,7 @@ bob_agent.print_response(
 # Bob's agent has no knowledge of alice's preferences
 bob_agent2 = AgentHarness(
     name="personal-assistant",
+    model=MODEL,
     user_id="bob",
     enable_user_memory=True,
 )
@@ -83,6 +90,7 @@ print("\n\n=== Combined Memory + Learning ===\n")
 
 combined_agent = AgentHarness(
     name="combined",
+    model=MODEL,
     user_id="charlie",
     enable_user_memory=True,    # per-user preferences (private)
     enable_learning=True,       # institutional patterns (shared)

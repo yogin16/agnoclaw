@@ -11,13 +11,19 @@ records with metadata, and each record points to the actual contract document
 (either a local file path or a remote URL).
 
 Run: uv run python examples/legal_rag/hybrid_contract_rag.py
-Requires: ANTHROPIC_API_KEY
+
+The example auto-detects available providers (Anthropic → OpenAI → Ollama).
 """
 
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from _utils import detect_model
 
 from agno.tools.toolkit import Toolkit
 
@@ -268,6 +274,9 @@ Key relationships:
 # ── Demo ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    model = detect_model()
+    print(f"Using model: {model}")
+
     # Setup database (reuse from data_agent_rag.py)
     from data_agent_rag import setup_database, DB_PATH
 
@@ -278,6 +287,7 @@ if __name__ == "__main__":
 
     agent = AgentHarness(
         name="hybrid-contract-agent",
+        model=model,
         tools=[toolkit],
         instructions=(
             "You are a contract analysis agent with access to both a contracts database "

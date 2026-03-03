@@ -6,13 +6,19 @@ generates SQL from natural language, and performs deep research using
 structured queries. Works as embedded library in a SaaS backend.
 
 Run: uv run python examples/legal_rag/data_agent_rag.py
-Requires: ANTHROPIC_API_KEY
+
+The example auto-detects available providers (Anthropic → OpenAI → Ollama).
 """
 
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from _utils import detect_model
 
 from agno.tools.toolkit import Toolkit
 
@@ -312,6 +318,8 @@ TABLE clauses:
 # ── Demo ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    model = detect_model()
+    print(f"Using model: {model}")
     setup_database()
 
     toolkit = ContractSQLToolkit(DB_PATH)
@@ -319,6 +327,7 @@ if __name__ == "__main__":
     # Create agent with SQL toolkit
     agent = AgentHarness(
         name="contract-data-agent",
+        model=model,
         tools=[toolkit],
         instructions=(
             "You are a contract data analyst. Use the contract_db toolkit to query "

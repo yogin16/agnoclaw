@@ -13,13 +13,13 @@ This pattern is inspired by Claude Code's progress.md and the
 initializer-then-coder pattern for large, long-running projects.
 
 Run: uv run python examples/progress_tracking.py
-Requires: ANTHROPIC_API_KEY env var
 """
 
 import json
 import tempfile
 from pathlib import Path
 
+from _utils import detect_model
 from agnoclaw.tools.tasks import ProgressToolkit
 
 
@@ -117,6 +117,7 @@ def demo_with_agent(project_dir: str) -> None:
     # Pass a custom ProgressToolkit pointed at our project dir
     agent = AgentHarness(
         name="progress-demo-agent",
+        model=detect_model(),
         tools=[ProgressToolkit(project_dir=project_dir)],
     )
 

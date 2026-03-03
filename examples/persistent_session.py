@@ -8,13 +8,16 @@ Demonstrates:
 - Picking up exactly where you left off
 """
 
+from _utils import detect_model
 from agnoclaw import AgentHarness
+
+MODEL = detect_model()
 
 # ── First run: start a session ─────────────────────────────────────────────
 
 SESSION_ID = "my-project-session-001"
 
-agent = AgentHarness(session_id=SESSION_ID, name="ProjectAgent")
+agent = AgentHarness(model=MODEL, session_id=SESSION_ID, name="ProjectAgent")
 
 # Run the first task
 result = agent.run("Create a TODO list for a Python web API project")
@@ -31,7 +34,7 @@ agent.save_session_summary(
 # In a real scenario this would be a new process. Here we re-create the agent
 # with the same session_id — the storage backend restores history.
 
-agent2 = AgentHarness(session_id=SESSION_ID, name="ProjectAgent")
+agent2 = AgentHarness(model=MODEL, session_id=SESSION_ID, name="ProjectAgent")
 
 result2 = agent2.run("What was on the TODO list from our last conversation?")
 print("\n=== Run 2 (resumed) ===")

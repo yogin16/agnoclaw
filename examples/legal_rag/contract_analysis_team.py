@@ -10,22 +10,32 @@ Demonstrates a team of specialized agents working together:
 Uses Agno's Agent team pattern with AgentHarness integration.
 
 Run: uv run python examples/legal_rag/contract_analysis_team.py
-Requires: ANTHROPIC_API_KEY
+
+The example auto-detects available providers (Anthropic → OpenAI → Ollama).
 """
 
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from _utils import detect_model
 
 from agno.agent import Agent
 from agno.team.team import Team
 
 from agnoclaw import AgentHarness
 
+MODEL = detect_model()
+
+print(f"Using model: {MODEL}")
+
 
 # ── Specialized agents ──────────────────────────────────────────────────
 
 extractor = Agent(
     name="Contract Extractor",
-    model="anthropic:claude-sonnet-4-6",
+    model=MODEL,
     role="Extract key terms",
     instructions=(
         "You are a contract data extraction specialist. When given a contract, "
@@ -41,7 +51,7 @@ extractor = Agent(
 
 risk_analyst = Agent(
     name="Risk Analyst",
-    model="anthropic:claude-sonnet-4-6",
+    model=MODEL,
     role="Assess contract risks",
     instructions=(
         "You are a contract risk analyst. Review the extracted terms and:\n"
@@ -55,7 +65,7 @@ risk_analyst = Agent(
 
 compliance_checker = Agent(
     name="Compliance Checker",
-    model="anthropic:claude-sonnet-4-6",
+    model=MODEL,
     role="Check regulatory compliance",
     instructions=(
         "You are a regulatory compliance specialist. Review the contract for:\n"
@@ -69,7 +79,7 @@ compliance_checker = Agent(
 
 summary_writer = Agent(
     name="Summary Writer",
-    model="anthropic:claude-sonnet-4-6",
+    model=MODEL,
     role="Write final analysis report",
     instructions=(
         "You are a legal report writer. Synthesize the findings from the "
@@ -90,7 +100,7 @@ summary_writer = Agent(
 analysis_team = Team(
     name="Contract Analysis Team",
     mode="coordinate",
-    model="anthropic:claude-sonnet-4-6",
+    model=MODEL,
     members=[extractor, risk_analyst, compliance_checker, summary_writer],
     instructions=(
         "You coordinate a contract analysis team. For each contract:\n"
@@ -131,6 +141,7 @@ if __name__ == "__main__":
     # Wrap the team leader as the AgentHarness's underlying agent
     harness = AgentHarness(
         name="contract-team-harness",
+        model=MODEL,
         instructions=(
             "You are a contract analysis coordinator. Use your team of "
             "specialists to analyze contracts thoroughly."

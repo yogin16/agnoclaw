@@ -8,11 +8,12 @@ Demonstrates:
 - Daily memory logs
 """
 
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
-from agnoclaw.workspace import Workspace
+from _utils import detect_model
 from agnoclaw import AgentHarness
+from agnoclaw.workspace import Workspace
 
 
 # ── Create a project-specific workspace ──────────────────────────────────
@@ -118,6 +119,7 @@ Do NOT run tests or make changes during boot — only gather context.
     # ── Use the workspace with an agent ──────────────────────────────────
     agent = AgentHarness(
         name="project-agent",
+        model=detect_model(),
         workspace_dir=workspace_path,
     )
 

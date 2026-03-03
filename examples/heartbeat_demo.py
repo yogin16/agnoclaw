@@ -4,7 +4,6 @@ Heartbeat daemon example.
 Demonstrates the heartbeat system — periodic agent check-ins.
 
 Run: uv run python examples/heartbeat_demo.py
-Requires: ANTHROPIC_API_KEY env var
 
 The example:
 1. Initializes the workspace with a HEARTBEAT.md checklist
@@ -16,6 +15,7 @@ The example:
 import asyncio
 from pathlib import Path
 
+from _utils import detect_model
 from agnoclaw import AgentHarness
 from agnoclaw.heartbeat import HeartbeatDaemon
 from agnoclaw.workspace import Workspace
@@ -40,6 +40,7 @@ If nothing needs attention, reply HEARTBEAT_OK.
 
     # Create agent
     agent = AgentHarness(
+        model=detect_model(),
         session_id="heartbeat-demo",
         workspace_dir=ws.path,
     )

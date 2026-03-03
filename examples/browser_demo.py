@@ -5,9 +5,11 @@ Demonstrates the browser toolkit for navigating websites, extracting content,
 filling forms, and taking snapshots.
 
 Run: uv run --extra browser python examples/browser_demo.py
-Requires: ANTHROPIC_API_KEY, playwright installed (npx playwright install chromium)
+
+Also requires: playwright installed (npx playwright install chromium)
 """
 
+from _utils import detect_model
 from agnoclaw import AgentHarness
 from agnoclaw.config import HarnessConfig
 
@@ -16,6 +18,8 @@ def main():
     print("=" * 60)
     print("Browser Toolkit Demo")
     print("=" * 60)
+
+    model = detect_model()
 
     # Check if playwright is available
     try:
@@ -29,12 +33,15 @@ def main():
         print("\nBrowser toolkit not available.")
         return
 
+    print(f"Using model: {model}")
+
     # Create agent with browser toolkit
     config = HarnessConfig(enable_browser=True)
     browser = BrowserToolkit(headless=True)
 
     agent = AgentHarness(
         name="browser-agent",
+        model=model,
         tools=[browser],
         config=config,
         instructions=(

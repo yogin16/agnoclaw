@@ -5,13 +5,14 @@ Demonstrates connecting to MCP (Model Context Protocol) servers and
 using their tools as native Agno tools within AgentHarness.
 
 Run: uv run --extra mcp python examples/mcp_demo.py
-Requires: ANTHROPIC_API_KEY, mcp package, an MCP server to connect to
+Requires: mcp package, an MCP server to connect to
 
 Example MCP servers:
   - Filesystem: npx -y @anthropic-ai/mcp-filesystem /path/to/dir
   - Brave Search: requires BRAVE_API_KEY
 """
 
+from _utils import detect_model
 from agnoclaw import AgentHarness
 
 
@@ -48,6 +49,7 @@ def main():
         # Create agent with MCP tools
         agent = AgentHarness(
             name="mcp-agent",
+            model=detect_model(),
             tools=[toolkit],
             instructions="You have filesystem tools via MCP. Use them to explore /tmp.",
         )

@@ -99,6 +99,8 @@ class MediaToolkit(Toolkit):
             return self._read_pdf_pymupdf(file_path, page_indices)
         except ImportError:
             pass
+        except Exception as e:
+            return f"[error] Failed to read PDF with pymupdf: {e}"
 
         # Fallback to pypdf
         try:
@@ -109,6 +111,8 @@ class MediaToolkit(Toolkit):
                 "  pip install pymupdf    (recommended)\n"
                 "  pip install pypdf"
             )
+        except Exception as e:
+            return f"[error] Failed to read PDF with pypdf: {e}"
 
     @staticmethod
     def _read_pdf_pymupdf(path: Path, page_indices: Optional[list[int]] = None) -> str:

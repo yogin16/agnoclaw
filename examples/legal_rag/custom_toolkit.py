@@ -217,6 +217,13 @@ class ContractToolkit(Toolkit):
 # ── Demo: use with AgentHarness ─────────────────────────────────────────
 
 if __name__ == "__main__":
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from _utils import detect_model
+
+    from agnoclaw import AgentHarness
+
     contracts_dir = Path(__file__).parent / "sample_contracts"
 
     toolkit = ContractToolkit(contracts_dir=contracts_dir)
@@ -224,6 +231,7 @@ if __name__ == "__main__":
     # Use as embedded library — AgentHarness with custom toolkit
     agent = AgentHarness(
         name="contract-assistant",
+        model=detect_model(),
         tools=[toolkit],
         instructions=(
             "You are a contract analysis assistant. Use the contracts toolkit "

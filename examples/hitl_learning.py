@@ -8,8 +8,10 @@ Demonstrates:
 - Namespace isolation between agents
 """
 
+from _utils import detect_model
 from agnoclaw import AgentHarness
 
+MODEL = detect_model()
 
 # ── HITL mode: human approves each learning ───────────────────────────────
 # Best for: high-stakes environments, regulated industries, personal agents
@@ -17,6 +19,7 @@ from agnoclaw import AgentHarness
 
 hitl_agent = AgentHarness(
     name="hitl-agent",
+    model=MODEL,
     enable_learning=True,
     learning_mode="hitl",
     learning_namespace="code-review",
@@ -36,6 +39,7 @@ hitl_agent.print_response(
 
 propose_agent = AgentHarness(
     name="propose-agent",
+    model=MODEL,
     enable_learning=True,
     learning_mode="propose",
     learning_namespace="research",
@@ -56,6 +60,7 @@ propose_agent.print_response(
 
 agentic_agent = AgentHarness(
     name="agentic-agent",
+    model=MODEL,
     enable_learning=True,
     learning_mode="agentic",
     learning_namespace="general",
@@ -74,12 +79,14 @@ agentic_agent.print_response(
 
 research_agent = AgentHarness(
     name="research",
+    model=MODEL,
     enable_learning=True,
     learning_namespace="research-v2",
 )
 
 code_agent = AgentHarness(
     name="code",
+    model=MODEL,
     enable_learning=True,
     learning_namespace="code-v2",
 )

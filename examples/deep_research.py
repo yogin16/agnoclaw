@@ -1,18 +1,16 @@
 """
 Deep research example — single agent with deep-research skill.
 
-Demonstrates skill activation, streaming events, and structured output.
+Demonstrates skill activation and structured output.
 
 Run: uv run python examples/deep_research.py
-Requires: ANTHROPIC_API_KEY env var
 """
 
-import asyncio
 from pydantic import BaseModel, Field
 from typing import List
 
+from _utils import detect_model
 from agnoclaw import AgentHarness
-from agno.run.agent import RunEvent
 
 
 # Optional: structured output
@@ -24,11 +22,13 @@ class ResearchReport(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in findings 0-1")
 
 
+MODEL = detect_model()
+
 # ── Option A: Simple streaming with skill ─────────────────────────────────────
 print("Option A: Streaming with deep-research skill")
 print("-" * 50)
 
-agent = AgentHarness(session_id="deep-research-example")
+agent = AgentHarness(model=MODEL, session_id="deep-research-example")
 agent.print_response(
     "What are the most significant AI agent breakthroughs in early 2026?",
     stream=True,
@@ -36,33 +36,13 @@ agent.print_response(
 )
 
 
-# ── Option B: Async with streaming events ─────────────────────────────────────
-async def research_with_events():
-    print("\nOption B: Async with streaming events")
-    print("-" * 50)
+# ── Option B: Synchronous run with skill ──────────────────────────────────────
+print("\nOption B: Synchronous run")
+print("-" * 50)
 
-    agent = AgentHarness(session_id="deep-research-async")
-
-    async for event in agent.arun(
-        "Research the competitive landscape of open-source LLM frameworks",
-        stream=True,
-        stream_events=True,
-        skill="deep-research",
-    ):
-        match event.event:
-            case RunEvent.run_content:
-                print(event.content, end="", flush=True)
-            case RunEvent.tool_call_started:
-                tool_name = getattr(event, "tool_name", None) or getattr(
-                    getattr(event, "tool", None), "tool_name", "unknown"
-                )
-                print(f"\n[tool: {tool_name}]", flush=True)
-            case RunEvent.run_completed:
-                metrics = getattr(
-                    getattr(event, "run_output", None), "metrics", None
-                )
-                if metrics:
-                    print(f"\n\n[tokens: {metrics}]")
-
-
-asyncio.run(research_with_events())
+agent2 = AgentHarness(model=MODEL, session_id="deep-research-sync")
+response = agent2.run(
+    "Research the competitive landscape of open-source LLM frameworks",
+    skill="deep-research",
+)
+print(response.content)
