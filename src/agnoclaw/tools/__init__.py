@@ -10,6 +10,7 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -19,6 +20,8 @@ from .bash import BashToolkit, make_bash_tool
 from .files import FilesToolkit
 from .tasks import ProgressToolkit, SubagentDefinition, TodoToolkit, make_subagent_tool
 from .web import WebToolkit
+
+logger = logging.getLogger("agnoclaw.tools")
 
 __all__ = [
     "make_bash_tool",
@@ -80,5 +83,49 @@ def get_default_tools(
         default_model=cfg.default_model,
         subagents=subagents,
     ))
+
+    # ── Optional toolkits (conditional on config + importability) ─────────
+
+    # Browser toolkit (requires agnoclaw[browser])
+    if cfg.enable_browser:
+        try:
+            from .browser import BrowserToolkit
+            tools.append(BrowserToolkit())
+            logger.debug("Browser toolkit enabled")
+        except ImportError:
+            logger.debug("Browser toolkit requested but playwright not installed")
+
+    # MCP toolkits (one per configured server)
+    for server_cfg in cfg.mcp_servers:
+        try:
+            from .mcp import MCPToolkit
+
+            toolkit = MCPToolkit(
+                name=server_cfg.get("name", "mcp"),
+                command=server_cfg.get("command"),
+                url=server_cfg.get("url"),
+                env=server_cfg.get("env"),
+            )
+            # Defer connection — connect on first tool call or explicitly
+            tools.append(toolkit)
+            logger.debug("MCP toolkit configured: %s", server_cfg.get("name", "mcp"))
+        except ImportError:
+            logger.debug("MCP toolkit requested but mcp package not installed")
+            break
+
+    # Media toolkit (requires agnoclaw[media])
+    if cfg.enable_media_tools:
+        try:
+            from .media import MediaToolkit
+            tools.append(MediaToolkit())
+            logger.debug("Media toolkit enabled")
+        except ImportError:
+            logger.debug("Media toolkit requested but dependencies not installed")
+
+    # Notebook toolkit (nbformat or raw JSON fallback)
+    if cfg.enable_notebook_tools:
+        from .notebook import NotebookToolkit
+        tools.append(NotebookToolkit())
+        logger.debug("Notebook toolkit enabled")
 
     return tools

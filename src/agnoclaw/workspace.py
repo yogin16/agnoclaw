@@ -98,16 +98,43 @@ If nothing needs attention, reply HEARTBEAT_OK.
 
 class Workspace:
     """
-    Represents an agent workspace directory.
+    Represents an agent workspace directory with hierarchical parent chain.
 
     The workspace contains context files (AGENTS.md, SOUL.md, USER.md, MEMORY.md)
     that shape agent behavior, plus a skills/ subdirectory for workspace-level skill overrides.
+
+    Hierarchy (child files override parent):
+      global (~/.agnoclaw/global) → project (.agnoclaw/) → workspace (~/.agnoclaw/workspace)
+
+    When reading context files, the workspace checks its own directory first,
+    then falls through to the project-level directory, then to the global directory.
+    This enables organizations to set global defaults, projects to override them,
+    and individual workspaces to further customize.
     """
 
-    def __init__(self, path: Optional[str | Path] = None):
+    def __init__(
+        self,
+        path: Optional[str | Path] = None,
+        global_dir: Optional[str | Path] = None,
+        project_dir: Optional[str | Path] = None,
+    ):
         if path is None:
             path = Path.home() / ".agnoclaw" / "workspace"
         self.path = Path(path).expanduser().resolve()
+
+        # Hierarchical parent chain
+        self._global_dir: Optional[Path] = None
+        self._project_dir: Optional[Path] = None
+
+        if global_dir:
+            gd = Path(global_dir).expanduser().resolve()
+            if gd.exists():
+                self._global_dir = gd
+
+        if project_dir:
+            pd = Path(project_dir).expanduser().resolve()
+            if pd.exists():
+                self._project_dir = pd
 
     def initialize(self) -> None:
         """Create the workspace directory and default files if they don't exist."""
@@ -129,22 +156,35 @@ class Workspace:
     def read_file(self, name: str) -> Optional[str]:
         """Read a workspace file by logical name or filename. Returns None if not found.
 
+        Checks the hierarchical chain: workspace → project → global.
+        The first directory that contains the file wins.
+
         MEMORY.md is automatically capped at MEMORY_STARTUP_LINES (200) lines on read.
         This matches Claude Code's auto-memory behaviour: the first 200 lines of MEMORY.md
         are loaded at startup; content beyond line 200 is not injected into context.
         Keep MEMORY.md concise — move detailed notes into separate topic files.
         """
         filename = WORKSPACE_FILES.get(name, name)
-        path = self.path / filename
-        if path.exists():
-            content = path.read_text(encoding="utf-8")
-            # MEMORY.md startup cap: first 200 lines only
-            if name == "memory" or filename == "MEMORY.md":
-                lines = content.splitlines()
-                if len(lines) > MEMORY_STARTUP_LINES:
-                    content = "\n".join(lines[:MEMORY_STARTUP_LINES])
-            content = content.strip()
-            return content if content else None
+
+        # Check hierarchy: workspace (highest) → project → global (lowest)
+        search_dirs = [self.path]
+        if self._project_dir:
+            search_dirs.append(self._project_dir)
+        if self._global_dir:
+            search_dirs.append(self._global_dir)
+
+        for search_dir in search_dirs:
+            path = search_dir / filename
+            if path.exists():
+                content = path.read_text(encoding="utf-8")
+                # MEMORY.md startup cap: first 200 lines only
+                if name == "memory" or filename == "MEMORY.md":
+                    lines = content.splitlines()
+                    if len(lines) > MEMORY_STARTUP_LINES:
+                        content = "\n".join(lines[:MEMORY_STARTUP_LINES])
+                content = content.strip()
+                return content if content else None
+
         return None
 
     def write_file(self, name: str, content: str) -> None:

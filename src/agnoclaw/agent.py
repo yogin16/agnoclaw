@@ -389,9 +389,13 @@ class AgentHarness:
         # Resolve model → Agno-native "provider:model_id" string
         self._model = _resolve_model(_model, provider, self.config)
 
-        # Workspace
+        # Workspace (with hierarchical parent chain)
         _ws_dir = workspace_dir or self.config.workspace_dir
-        self.workspace = Workspace(_ws_dir)
+        self.workspace = Workspace(
+            _ws_dir,
+            global_dir=self.config.global_workspace_dir,
+            project_dir=self.config.project_workspace_dir,
+        )
         self.workspace.initialize()
         self._guardrails = RuntimeGuardrails(
             workspace_dir=self.workspace.path,
@@ -424,6 +428,27 @@ class AgentHarness:
         _all_tools = get_default_tools(self.config, subagents=subagents)
         if _tools:
             _all_tools.extend(_tools)
+
+        # ── Plugin system ────────────────────────────────────────────────
+        self._plugin_loader = None
+        if self.config.enable_plugins:
+            from .plugins import PluginLoader
+            self._plugin_loader = PluginLoader()
+            manifests = self._plugin_loader.discover()
+            # Also load explicitly configured plugin paths
+            for path in self.config.plugin_paths:
+                self._plugin_loader.load_from_path(path)
+
+            # Merge plugin contributions
+            _all_tools.extend(self._plugin_loader.get_all_tools())
+            for skills_dir in self._plugin_loader.get_all_skills_dirs():
+                self.skills.add_directory(skills_dir, trust="community")
+            self._pre_run_hooks.extend(self._plugin_loader.get_all_pre_run_hooks())
+            self._post_run_hooks.extend(self._plugin_loader.get_all_post_run_hooks())
+
+            if manifests:
+                logger.info("Loaded %d plugin(s): %s", len(manifests), ", ".join(m.name for m in manifests))
+
         self._attach_tool_runtime_hooks(_all_tools)
 
         # Resolve learning flags before building system prompt
@@ -517,9 +542,25 @@ class AgentHarness:
     ) -> str:
         """Build the canonical system prompt for this harness instance."""
         include_learning = self._include_learning and not self._plan_mode
+
+        # Compose extra context: user instructions + skill catalog for auto-selection
+        extra_parts = []
+        if self._extra_instructions:
+            extra_parts.append(self._extra_instructions)
+
+        # Inject available skill descriptions so the model can auto-select skills.
+        # This mirrors Claude Code's skill awareness: the model sees all available
+        # skills and can request activation of the most relevant one.
+        if not skill_content:
+            skill_descriptions = self.skills.get_skill_descriptions()
+            if skill_descriptions:
+                extra_parts.append(skill_descriptions)
+
+        extra_context = "\n\n".join(extra_parts) if extra_parts else None
+
         return self._prompt_builder.build(
             skill_content=skill_content,
-            extra_context=self._extra_instructions,
+            extra_context=extra_context,
             include_learning=include_learning,
             include_plan_mode=self._plan_mode,
             session_id=session_id if session_id is not None else self.session_id,
@@ -536,6 +577,35 @@ class AgentHarness:
             skill_content=skill_content,
             session_id=session_id,
         )
+
+    def _dispatch_command_tool(self, tool_name: str, arguments: str) -> str:
+        """
+        Invoke a registered tool directly, bypassing the LLM.
+
+        Used for skills with command-dispatch: tool.
+        """
+        # Search registered tools for the target
+        for tool in self._agent.tools or []:
+            if isinstance(tool, Toolkit):
+                for fname, func in tool.functions.items():
+                    if fname == tool_name:
+                        try:
+                            return str(func.entrypoint(arguments))
+                        except TypeError:
+                            return str(func.entrypoint())
+            elif isinstance(tool, Function):
+                if tool.name == tool_name:
+                    try:
+                        return str(tool.entrypoint(arguments))
+                    except TypeError:
+                        return str(tool.entrypoint())
+            elif callable(tool) and getattr(tool, "__name__", "") == tool_name:
+                try:
+                    return str(tool(arguments))
+                except TypeError:
+                    return str(tool())
+
+        return f"[error] Command-dispatch tool '{tool_name}' not found in registered tools."
 
     def set_event_sink(self, sink: EventSink, mode: Optional[str] = None) -> None:
         """Swap event sink at runtime."""
@@ -1408,7 +1478,48 @@ class AgentHarness:
                     context=ctx,
                     payload={"name": run_input.skill, "loaded": bool(skill_content)},
                 )
+
                 if skill_content:
+                    # ── Skill enforcement: context:fork ──────────────────
+                    # If the skill declares context: fork, run it in an isolated
+                    # subagent instead of the main agent loop.
+                    skill_obj = self.skills._get_skill(run_input.skill)
+                    if skill_obj and skill_obj.meta.context == "fork":
+                        from .tools.tasks import _run_subagent
+                        fork_result = _run_subagent(
+                            task=run_input.message,
+                            instructions=skill_content,
+                            model_id=skill_obj.meta.model or self._model,
+                            tool_names=skill_obj.meta.allowed_tools or None,
+                        )
+                        self._emit_event_sync(
+                            event_type="skill.fork.completed",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={"name": run_input.skill, "result_chars": len(fork_result)},
+                        )
+                        if self._agent.system_message != base_prompt:
+                            self._agent.system_message = base_prompt
+                        return fork_result
+
+                    # ── Skill enforcement: command-dispatch ──────────────
+                    # If the skill declares command-dispatch: tool, invoke the
+                    # specified tool directly — bypassing the LLM entirely.
+                    if skill_obj and skill_obj.meta.command_dispatch == "tool" and skill_obj.meta.command_tool:
+                        tool_result = self._dispatch_command_tool(
+                            tool_name=skill_obj.meta.command_tool,
+                            arguments=run_input.message,
+                        )
+                        self._emit_event_sync(
+                            event_type="skill.command_dispatch.completed",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={"name": run_input.skill, "tool": skill_obj.meta.command_tool},
+                        )
+                        if self._agent.system_message != base_prompt:
+                            self._agent.system_message = base_prompt
+                        return tool_result
+
                     self._set_system_prompt(skill_content=skill_content, session_id=effective_session)
 
             prompt = PromptEnvelope(

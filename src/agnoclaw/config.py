@@ -132,6 +132,43 @@ class HarnessConfig(BaseSettings):
     # Storage
     storage: StorageConfig = Field(default_factory=StorageConfig)
 
+    # Browser
+    enable_browser: bool = False
+    """Enable Playwright-based browser toolkit. Requires agnoclaw[browser]."""
+
+    # MCP
+    mcp_servers: list[dict] = Field(default_factory=list)
+    """MCP server configurations. Each entry: {name, command?, url?, env?}."""
+
+    # Media
+    enable_media_tools: bool = False
+    """Enable media toolkit (PDF, image reading). Requires agnoclaw[media]."""
+
+    # Notebook
+    enable_notebook_tools: bool = False
+    """Enable Jupyter notebook toolkit."""
+
+    # Plugins
+    enable_plugins: bool = True
+    """Enable automatic plugin discovery via entry points."""
+
+    plugin_paths: list[str] = Field(default_factory=list)
+    """Explicit plugin module paths to load (e.g., 'my_package.plugin')."""
+
+    # ClawHub
+    clawhub_url: str = "https://clawhub.ai"
+    """ClawHub skill registry API base URL."""
+
+    clawhub_cache_dir: str = "~/.agnoclaw/cache/hub"
+    """Local cache directory for ClawHub metadata."""
+
+    # Hierarchical workspace
+    global_workspace_dir: str = "~/.agnoclaw/global"
+    """Global workspace directory (lowest priority in hierarchy)."""
+
+    project_workspace_dir: str = ".agnoclaw"
+    """Project-level workspace directory (middle priority in hierarchy)."""
+
     # TUI
     theme: str = "textual-dark"
     """Textual theme name for TUI mode. Options: textual-dark, textual-light, etc."""
