@@ -19,7 +19,8 @@ class LogViewer(RichLog):
     DEFAULT_CSS = """
     LogViewer {
         height: 12;
-        border: solid $surface-lighten-2;
+        border: none;
+        background: #121217;
         padding: 0 1;
         scrollbar-size: 1 1;
         display: none;
