@@ -1,6 +1,5 @@
 """Tests for the media toolkit."""
 
-from pathlib import Path
 
 import pytest
 

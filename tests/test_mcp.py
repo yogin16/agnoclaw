@@ -36,7 +36,7 @@ def test_mcp_toolkit_requires_transport():
     """MCPToolkit should raise ValueError without command or url."""
     from agnoclaw.tools.mcp import MCPToolkit
 
-    toolkit = MCPToolkit(name="no-transport")
+    MCPToolkit(name="no-transport")
     with patch("agnoclaw.tools.mcp._check_mcp", return_value=True):
         # Mock the mcp imports
         with patch.dict("sys.modules", {"mcp": MagicMock(), "mcp.client": MagicMock()}):

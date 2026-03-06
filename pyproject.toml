@@ -149,6 +149,7 @@ testpaths = ["tests"]
 source = ["src/agnoclaw"]
 omit = [
     "*/cli/*",     # CLI tested via Click test runner, not coverage
+    "*/tui/*",     # TUI requires Textual display, tested separately
     "*/__init__.py",
 ]
 

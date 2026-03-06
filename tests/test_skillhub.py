@@ -1,11 +1,10 @@
 """Tests for the SkillHub / ClawHub integration."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agnoclaw.skills.hub import ClawHubClient, HubSkillDetail, HubSkillInfo
+from agnoclaw.skills.hub import ClawHubClient
 from agnoclaw.skills.registry import SkillRegistry
 
 

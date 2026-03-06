@@ -522,9 +522,9 @@ def hub_install(name, workspace):
         # Verify it loads
         content = registry.load_skill(name)
         if content:
-            console.print(f"[green]Verified: skill loads successfully[/green]")
+            console.print("[green]Verified: skill loads successfully[/green]")
         else:
-            console.print(f"[yellow]Warning: skill installed but failed to load[/yellow]")
+            console.print("[yellow]Warning: skill installed but failed to load[/yellow]")
     else:
         console.print(f"[red]Failed to install '{name}' from ClawHub[/red]")
         sys.exit(1)

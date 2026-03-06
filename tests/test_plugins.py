@@ -1,6 +1,5 @@
 """Tests for the plugin system."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 import types
 

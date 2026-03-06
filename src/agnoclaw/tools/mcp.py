@@ -26,7 +26,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Optional
 
@@ -191,7 +190,7 @@ class MCPToolkit(Toolkit):
     async def _acall_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """Async call to an MCP tool."""
         if not self._session:
-            return f"[error] MCP session not connected. Call connect() first."
+            return "[error] MCP session not connected. Call connect() first."
 
         try:
             result = await self._session.call_tool(tool_name, arguments)
