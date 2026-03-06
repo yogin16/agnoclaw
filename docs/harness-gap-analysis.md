@@ -4,7 +4,7 @@ Unified comparison of `agnoclaw` harness core against:
 - Claude Code (v2.1.50 patterns)
 - OpenClaw (docs/repo patterns, February 2026)
 
-Last updated: 2026-02-24
+Last updated: 2026-03-03
 
 ---
 
@@ -37,6 +37,16 @@ Deferred by design:
 - Plan-mode runtime enforcement (read-only tool behavior)
 - Background bash lifecycle tools (`bash_start`, `bash_output`, `bash_kill`) via opt-in `BashToolkit`
 - Heartbeat + cron scheduler with launchd/systemd install support
+- Browser toolkit (Playwright-based, optional extra)
+- MCP toolkit (stdio + SSE transports, optional extra)
+- Media toolkit (image + PDF reading, optional extra)
+- Notebook toolkit (Jupyter .ipynb read/edit/add)
+- Plugin system (entry-point-based discovery + explicit module paths)
+- Hierarchical workspace (global → project → workspace layering)
+- Skill `context: fork` enforcement (routes to isolated subagent)
+- Skill `command-dispatch: tool` enforcement (bypasses LLM, invokes tool directly)
+- ClawHub integration (search, inspect, install community skills)
+- Auto-skill selection (skill catalog injected into system prompt)
 
 ---
 
@@ -56,19 +66,36 @@ Deferred by design:
 | Scheduler | None | Heartbeat + Cron | **Implemented** | Low | Harness |
 | Persistent cron management | N/A | Durable job management | **Partial** (in-memory jobs) | Medium | Harness |
 | Workspace core files | CLAUDE.md hierarchy | AGENTS/SOUL/IDENTITY/USER/etc | **Implemented** (OpenClaw-style files) | Low | Harness |
-| Hierarchical workspace layering | Hierarchical CLAUDE.md/rules loading | Layered behavior files | **Missing** | Medium | Harness |
+| Hierarchical workspace layering | Hierarchical CLAUDE.md/rules loading | Layered behavior files | **Implemented** (global → project → workspace) | ~~Medium~~ Done | Harness |
 | Skill metadata compatibility | AgentSkills + CC frontmatter | OpenClaw metadata and install specs | **Implemented** | Low | Harness |
-| Skill `context: fork` execution | Skill fork contexts | Fork-style skill execution | **Missing** (parsed, not enforced) | Medium | Harness |
-| Skill `command-dispatch` execution | Tool-level skill execution paths | Direct dispatch metadata | **Missing** (parsed, not enforced) | Medium | Harness |
+| Skill `context: fork` execution | Skill fork contexts | Fork-style skill execution | **Implemented** (routes to subagent) | ~~Medium~~ Done | Harness |
+| Skill `command-dispatch` execution | Tool-level skill execution paths | Direct dispatch metadata | **Implemented** (direct tool invocation) | ~~Medium~~ Done | Harness |
 | Structured plan UX tools | `AskUserQuestion`, `ExitPlanMode` tool | Guided workflow patterns | **Missing** | Medium | Harness |
-| Notebook tools | Notebook read/edit tools | N/A | **Missing** | Medium | Harness |
-| MCP parity | MCP tools/resources/search | MCP integrations | **Deferred** | Deferred | Platform/Harness later |
+| Notebook tools | Notebook read/edit tools | N/A | **Implemented** (NotebookToolkit) | ~~Medium~~ Done | Harness |
+| MCP parity | MCP tools/resources/search | MCP integrations | **Implemented** (MCPToolkit: stdio + SSE) | ~~Deferred~~ Done | Harness |
+| Browser tools | Playwright browser automation | Browser use tools | **Implemented** (BrowserToolkit, optional extra) | ~~N/A~~ Done | Harness |
+| Media tools | Image/PDF reading | Document processing | **Implemented** (MediaToolkit, optional extra) | ~~N/A~~ Done | Harness |
+| Plugin system | N/A | Plugin hook packs | **Implemented** (entry-point discovery) | ~~N/A~~ Done | Harness |
+| ClawHub integration | N/A | SkillHub community registry | **Implemented** (search/inspect/install) | ~~N/A~~ Done | Harness |
+| Auto-skill selection | Model self-selects skills | Agent-driven skill selection | **Implemented** (skill catalog in system prompt) | ~~N/A~~ Done | Harness |
 
 ---
 
 ## What Changed Recently
 
-Newly closed or reduced gaps:
+Newly closed or reduced gaps (v0.3):
+1. **Browser toolkit** — Playwright-based with navigate, click, type, screenshot, snapshot, scroll, fill_form, close.
+2. **MCP toolkit** — Connect to MCP servers via stdio or SSE transport; auto-discovers and registers tools.
+3. **Media toolkit** — Read images (base64) and PDFs (text extraction with page range support).
+4. **Notebook toolkit** — Read, edit cells, and add cells in Jupyter .ipynb files.
+5. **Plugin system** — Entry-point discovery (`agnoclaw.plugins` group) + explicit module loading.
+6. **Hierarchical workspace** — Global → project → workspace layering with child-overrides-parent.
+7. **Skill `context: fork` enforcement** — Routes fork-context skills to isolated subagent execution.
+8. **Skill `command-dispatch: tool` enforcement** — Bypasses LLM, invokes the specified tool directly.
+9. **ClawHub integration** — HTTP client for community skill registry (search, inspect, download, install).
+10. **Auto-skill selection** — Skill catalog injected into system prompt so model can self-select relevant skills.
+
+Previously closed:
 1. Runtime permission modes are now implemented in the harness core.
 2. Plan mode now enforces read-only behavior at runtime, not prompt-only.
 3. Background shell lifecycle tools now exist (`bash_start`, `bash_output`, `bash_kill`).
@@ -97,17 +124,17 @@ Still open in this area:
 1. Persistent scheduler state + cron CRUD surface
 - Persist jobs and run metadata; add first-class CLI management.
 
-2. Skill runtime parity for `context: fork` and `command-dispatch`
-- Enforce parsed skill metadata in runtime execution.
+2. ~~Skill runtime parity for `context: fork` and `command-dispatch`~~ **DONE**
+- ~~Enforce parsed skill metadata in runtime execution.~~
 
-3. Hierarchical workspace context loading
-- Deterministic layer precedence (global -> project -> workspace/path).
+3. ~~Hierarchical workspace context loading~~ **DONE**
+- ~~Deterministic layer precedence (global -> project -> workspace/path).~~
 
 4. Plan UX tooling
 - Add harness-level tools/signals for structured user questions and explicit plan completion.
 
-5. Notebook tools
-- Add read/edit support for notebook-centric workflows.
+5. ~~Notebook tools~~ **DONE**
+- ~~Add read/edit support for notebook-centric workflows.~~
 
 ---
 

@@ -451,6 +451,51 @@ class SkillRegistry:
             return ["go", "install", pkg]
         return None
 
+    # ── ClawHub integration ──────────────────────────────────────────────────
+
+    def install_from_hub(
+        self,
+        name: str,
+        hub_url: str = "https://clawhub.ai",
+        cache_dir: str = "~/.agnoclaw/cache/hub",
+    ) -> Optional[Path]:
+        """
+        Download and install a skill from ClawHub to the workspace skills directory.
+
+        The skill is installed to the first writable local directory in the search path.
+        After installation, the skill is immediately available for loading.
+
+        Args:
+            name: Skill name on ClawHub.
+            hub_url: ClawHub API base URL.
+            cache_dir: Cache directory for ClawHub metadata.
+
+        Returns:
+            Path to the installed skill directory, or None on failure.
+        """
+        from .hub import ClawHubClient
+
+        # Determine destination: first local dir, or user skills dir
+        if self._local_dirs:
+            dest_dir = self._local_dirs[0]
+        else:
+            dest_dir = Path.home() / ".agnoclaw" / "skills"
+
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        client = ClawHubClient(base_url=hub_url, cache_dir=cache_dir)
+        try:
+            skill_dir = client.download(name, dest_dir)
+        finally:
+            client.close()
+
+        if skill_dir:
+            # Invalidate cache so the new skill is discovered
+            self._cache.pop(name, None)
+            logger.info("Installed skill '%s' from ClawHub to %s", name, skill_dir)
+
+        return skill_dir
+
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _get_skill(self, name: str) -> Optional[Skill]:

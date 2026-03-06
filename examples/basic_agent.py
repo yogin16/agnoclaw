@@ -2,14 +2,16 @@
 Basic agent example — single agent with default tools.
 
 Run: uv run python examples/basic_agent.py
-Requires: ANTHROPIC_API_KEY env var
 """
+
+from _utils import detect_model
 
 from agnoclaw import AgentHarness
 
-# Create agent with defaults (Claude Sonnet, SQLite storage, ~/.agnoclaw/workspace)
+# Create agent with auto-detected model (SQLite storage, ~/.agnoclaw/workspace)
 agent = AgentHarness(
     name="my-agent",
+    model=detect_model(),
     session_id="basic-example",  # persistent session
 )
 

@@ -425,6 +425,131 @@ def skill_install(path_or_url, workspace):
         console.print(f"[green]Installed skill '{skill_name}' to {dest}[/green]")
 
 
+# ── agnoclaw hub ─────────────────────────────────────────────────────────────
+
+@cli.group()
+def hub():
+    """Browse, search, and install skills from ClawHub."""
+    pass
+
+
+@hub.command("search")
+@click.argument("query")
+@click.option("--category", "-c", default="", help="Filter by category")
+@click.option("--limit", "-n", default=20, type=int, help="Max results")
+def hub_search(query, category, limit):
+    """Search for skills on ClawHub."""
+    from agnoclaw.skills.hub import ClawHubClient
+
+    client = ClawHubClient()
+    try:
+        results = client.search(query, category=category, limit=limit)
+    finally:
+        client.close()
+
+    if not results:
+        console.print(f"[dim]No skills found for '{query}'.[/dim]")
+        return
+
+    table = Table(title=f"ClawHub: '{query}'", border_style="dim")
+    table.add_column("Name", style="cyan bold")
+    table.add_column("Description")
+    table.add_column("Author", style="dim")
+    table.add_column("Downloads", justify="right")
+
+    for skill in results:
+        table.add_row(
+            f"{skill.emoji} {skill.name}" if skill.emoji else skill.name,
+            skill.description[:60] + ("..." if len(skill.description) > 60 else ""),
+            skill.author,
+            str(skill.downloads),
+        )
+
+    console.print(table)
+
+
+@hub.command("inspect")
+@click.argument("name")
+def hub_inspect(name):
+    """Show full details of a ClawHub skill."""
+    from agnoclaw.skills.hub import ClawHubClient
+
+    client = ClawHubClient()
+    try:
+        detail = client.inspect(name)
+    finally:
+        client.close()
+
+    if not detail:
+        console.print(f"[red]Skill not found: {name}[/red]")
+        sys.exit(1)
+
+    console.print(Panel(
+        f"[bold cyan]{detail.emoji} {detail.name}[/bold cyan] v{detail.version}\n"
+        f"[dim]{detail.description}[/dim]\n\n"
+        f"Author: {detail.author}\n"
+        f"Downloads: {detail.downloads}\n"
+        f"Categories: {', '.join(detail.categories) or 'none'}\n"
+        f"Homepage: {detail.homepage or 'none'}\n"
+        f"Repository: {detail.repository or 'none'}\n"
+        f"Dependencies: {', '.join(detail.dependencies) or 'none'}",
+        title=f"ClawHub: {name}",
+        border_style="cyan",
+    ))
+
+    if detail.skill_md_preview:
+        console.print("\n[bold]SKILL.md Preview:[/bold]")
+        console.print(Markdown(detail.skill_md_preview[:2000]))
+
+
+@hub.command("install")
+@click.argument("name")
+@WORKSPACE_OPT
+def hub_install(name, workspace):
+    """Install a skill from ClawHub to your workspace."""
+    from agnoclaw.skills import SkillRegistry
+    from agnoclaw.workspace import Workspace
+
+    ws = Workspace(workspace)
+    ws.initialize()
+    registry = SkillRegistry(ws.skills_dir())
+
+    console.print(f"[dim]Installing '{name}' from ClawHub...[/dim]")
+    skill_dir = registry.install_from_hub(name)
+
+    if skill_dir:
+        console.print(f"[green]Installed '{name}' to {skill_dir}[/green]")
+        # Verify it loads
+        content = registry.load_skill(name)
+        if content:
+            console.print("[green]Verified: skill loads successfully[/green]")
+        else:
+            console.print("[yellow]Warning: skill installed but failed to load[/yellow]")
+    else:
+        console.print(f"[red]Failed to install '{name}' from ClawHub[/red]")
+        sys.exit(1)
+
+
+@hub.command("categories")
+def hub_categories():
+    """List available skill categories on ClawHub."""
+    from agnoclaw.skills.hub import ClawHubClient
+
+    client = ClawHubClient()
+    try:
+        cats = client.categories()
+    finally:
+        client.close()
+
+    if not cats:
+        console.print("[dim]No categories found.[/dim]")
+        return
+
+    console.print("[bold]ClawHub Categories:[/bold]")
+    for cat in cats:
+        console.print(f"  - {cat}")
+
+
 def _print_skill_list(skills: list[dict]) -> None:
     if not skills:
         console.print("[dim]No skills found.[/dim]")

@@ -8,12 +8,8 @@ on:
 
 jobs:
   test:
-    name: Test (Python ${{ matrix.python-version }})
+    name: Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
-      fail-fast: false
 
     steps:
       - uses: actions/checkout@v4
@@ -24,14 +20,14 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "**/pyproject.toml"
 
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
+      - name: Set up Python
+        run: uv python install 3.13
 
       - name: Install dependencies
         run: uv sync --frozen --extra dev
 
       - name: Run tests
-        run: uv run pytest tests/ -q -m "not integration" --tb=short --cov=agnoclaw --cov-report=term-missing --cov-fail-under=70
+        run: uv run pytest tests/ -q -m "not integration" --tb=short --cov=agnoclaw --cov-report=term-missing --cov-fail-under=80
 
   lint:
     name: Lint

@@ -9,18 +9,20 @@ Demonstrates:
 - Using Groq for fast/cheap inference
 """
 
+from _utils import detect_model
 from agnoclaw import AgentHarness
 
 TASK = "Explain the CAP theorem in 3 bullet points for a senior engineer."
 
+MODEL = detect_model()
 
-# ── New API: provider:model_id as a single string ─────────────────────────
+# ── Default provider (auto-detected) ─────────────────────────────────────
 
-claude_agent = AgentHarness("anthropic:claude-sonnet-4-6", name="claude")
+default_agent = AgentHarness(MODEL, name="default")
 
-print("=== Claude (Anthropic) ===")
-claude_result = claude_agent.run(TASK)
-print(claude_result.content)
+print(f"=== Default ({MODEL}) ===")
+default_result = default_agent.run(TASK)
+print(default_result.content)
 
 
 # ── OpenAI (GPT) ──────────────────────────────────────────────────────────
@@ -71,13 +73,9 @@ except Exception as e:
     print(f"\n=== Ollama skipped: {e} ===")
 
 
-# ── Legacy API: separate model_id + provider (deprecated, emits warning) ──
-
-legacy_agent = AgentHarness(model_id="claude-sonnet-4-6", provider="anthropic")
-
 # ── Env-based provider selection ─────────────────────────────────────────
 # Production pattern: set AGNOCLAW_DEFAULT_MODEL and AGNOCLAW_DEFAULT_PROVIDER
-# in the environment or ~/.agnoclaw/config.toml
+# in the environment or ~/.agnoclaw/config.toml, or use detect_model()
 
-env_agent = AgentHarness()  # picks up defaults from env/config
+env_agent = AgentHarness(model=MODEL)
 print(f"\n=== Default from config: model={env_agent._model} ===")

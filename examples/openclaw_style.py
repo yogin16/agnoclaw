@@ -9,7 +9,6 @@ Demonstrates the full OpenClaw-inspired feature set:
 - ProgressToolkit for multi-session project tracking
 
 Run: uv run python examples/openclaw_style.py
-Requires: ANTHROPIC_API_KEY env var
 
 This is the "everything wired up" reference. For a minimal example,
 see examples/basic_agent.py.
@@ -19,6 +18,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 
+from _utils import detect_model
 from agnoclaw import AgentHarness
 from agnoclaw.heartbeat import HeartbeatDaemon
 from agnoclaw.workspace import Workspace
@@ -209,6 +209,7 @@ async def main() -> None:
         # 2. Boot agent — workspace context injected into system prompt automatically
         agent = AgentHarness(
             name="openclaw-demo",
+            model=detect_model(),
             session_id="openclaw-demo-session",
             workspace_dir=workspace_path,
         )

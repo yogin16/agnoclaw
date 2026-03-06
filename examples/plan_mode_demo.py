@@ -8,10 +8,14 @@ Demonstrates:
 - Exiting plan mode
 """
 
-from agnoclaw import AgentHarness
 from pathlib import Path
 
-agent = AgentHarness(name="planner")
+from _utils import detect_model
+from agnoclaw import AgentHarness
+
+MODEL = detect_model()
+
+agent = AgentHarness(name="planner", model=MODEL)
 
 # ── Enter plan mode ───────────────────────────────────────────────────────
 # Agent will only read/search — no writes, edits, or shell commands
@@ -35,7 +39,10 @@ if plan_file.exists():
     print(plan_file.read_text())
 
 # ── User approves the plan ────────────────────────────────────────────────
-user_input = input("\nApprove this plan? [y/n]: ").strip().lower()
+try:
+    user_input = input("\nApprove this plan? [y/n]: ").strip().lower()
+except (EOFError, KeyboardInterrupt):
+    user_input = "y"  # auto-approve in non-interactive mode
 
 if user_input == "y":
     # Exit plan mode — agent can now make changes
@@ -61,7 +68,7 @@ else:
 
 def automated_plan_and_implement(task: str, auto_approve: bool = False):
     """Run a task through plan-then-implement workflow."""
-    a = AgentHarness(name="auto-planner")
+    a = AgentHarness(name="auto-planner", model=MODEL)
 
     a.enter_plan_mode()
     plan_result = a.run(f"Plan how to: {task}")

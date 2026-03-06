@@ -16,9 +16,42 @@
 # ============================================================================
 
 
+# ── Environment Variables Reference ──────────────────────────────────────
+# agnoclaw reads these env vars (set in your shell profile or .env):
+#
+# LLM Provider Keys (at least one required, or use Ollama):
+#   ANTHROPIC_API_KEY    — Anthropic/Claude models (default provider)
+#   OPENAI_API_KEY       — OpenAI models (gpt-4o, gpt-4o-mini, etc.)
+#   GOOGLE_API_KEY       — Google Gemini models
+#   GROQ_API_KEY         — Groq inference (llama, mixtral, etc.)
+#   MISTRAL_API_KEY      — Mistral AI models
+#   COHERE_API_KEY       — Cohere models
+#   TOGETHER_API_KEY     — Together AI models
+#   FIREWORKS_API_KEY    — Fireworks AI models
+#   DEEPSEEK_API_KEY     — DeepSeek models
+#   XAI_API_KEY          — xAI/Grok models
+#   (No key needed for Ollama — just start: ollama serve)
+#
+# Web Search (optional, for web_search tool):
+#   TAVILY_API_KEY       — Tavily web search
+#   SERP_API_KEY         — SerpAPI web search
+#   BRAVE_API_KEY        — Brave Search API
+#   GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX — Google Custom Search
+#
+# Storage (optional, for production):
+#   DATABASE_URL         — PostgreSQL URL (default: local SQLite)
+#
+# Debug:
+#   AGNOCLAW_DEBUG=1     — Enable verbose logging
+#   AGNOCLAW_LOG_LEVEL   — Log level (DEBUG, INFO, WARNING, ERROR)
+
+
 # ── Model ──────────────────────────────────────────────────────────────────
 # Any Agno-supported model. Use "provider:model_id" format in code, or
 # set provider separately here.
+#
+# Zero-config option: Ollama (no API key needed, just `ollama serve`).
+# Examples use detect_model() which checks: Anthropic → OpenAI → Ollama.
 
 default_model = "claude-sonnet-4-6"
 default_provider = "anthropic"
@@ -27,7 +60,7 @@ default_provider = "anthropic"
 #   default_model = "gpt-4o"
 #   default_provider = "openai"
 #
-#   default_model = "qwen3:8b"
+#   default_model = "llama3.2"
 #   default_provider = "ollama"      # local, no API key needed
 #
 #   default_model = "gemini-2.0-flash"

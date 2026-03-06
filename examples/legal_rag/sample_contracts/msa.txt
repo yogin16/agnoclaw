@@ -1,0 +1,99 @@
+MASTER SERVICES AGREEMENT
+
+This Master Services Agreement ("Agreement") is entered into as of February 1, 2026,
+by and between:
+
+SERVICE PROVIDER: TechServ Inc., a Delaware corporation ("Provider")
+CLIENT: GlobalCorp Industries, a New York corporation ("Client")
+
+1. SERVICES
+Provider shall perform the professional services described in one or more Statements
+of Work ("SOW") executed by both parties under this Agreement. Each SOW shall reference
+this Agreement and describe the specific services, deliverables, timeline, and fees.
+
+2. TERM
+This Agreement commences on the date first written above and continues for an initial
+term of two (2) years ("Initial Term"). Thereafter, this Agreement shall automatically
+renew for successive one (1) year periods ("Renewal Terms") unless either party provides
+written notice of non-renewal at least ninety (90) days prior to the end of the then-current
+term.
+
+3. FEES AND PAYMENT
+(a) Fees shall be as set forth in each SOW.
+(b) Provider shall invoice Client monthly in arrears.
+(c) Payment is due within thirty (30) days of invoice date.
+(d) Late payments shall accrue interest at the rate of 1.5% per month or the maximum
+    rate permitted by law, whichever is less.
+(e) Client shall reimburse Provider for pre-approved travel and out-of-pocket expenses.
+
+4. INTELLECTUAL PROPERTY
+(a) Pre-Existing IP: Each party retains ownership of its pre-existing intellectual property.
+(b) Work Product: All deliverables created specifically for Client under a SOW ("Work Product")
+    shall be owned by Client upon full payment.
+(c) Provider Tools: Provider retains ownership of its tools, frameworks, methodologies,
+    and general-purpose code ("Provider Tools"). Client receives a non-exclusive,
+    perpetual license to use Provider Tools embedded in Work Product.
+
+5. CONFIDENTIALITY
+Each party agrees to protect the other party's Confidential Information with the same
+degree of care it uses for its own confidential information, but no less than reasonable
+care. Confidential Information excludes information that is publicly available, independently
+developed, or rightfully received from a third party.
+
+6. REPRESENTATIONS AND WARRANTIES
+(a) Provider warrants that services shall be performed in a professional and workmanlike
+    manner consistent with industry standards.
+(b) Provider warrants that deliverables shall materially conform to the specifications
+    in the applicable SOW for a period of sixty (60) days after acceptance ("Warranty Period").
+(c) EXCEPT AS EXPRESSLY SET FORTH HEREIN, PROVIDER MAKES NO OTHER WARRANTIES, EXPRESS
+    OR IMPLIED, INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY OR
+    FITNESS FOR A PARTICULAR PURPOSE.
+
+7. LIMITATION OF LIABILITY
+(a) NEITHER PARTY SHALL BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL,
+    OR PUNITIVE DAMAGES.
+(b) EACH PARTY'S TOTAL AGGREGATE LIABILITY UNDER THIS AGREEMENT SHALL NOT EXCEED THE
+    TOTAL FEES PAID OR PAYABLE UNDER THE APPLICABLE SOW DURING THE TWELVE (12) MONTHS
+    PRECEDING THE CLAIM.
+(c) THE FOREGOING LIMITATIONS SHALL NOT APPLY TO: (i) BREACHES OF CONFIDENTIALITY,
+    (ii) INTELLECTUAL PROPERTY INFRINGEMENT, OR (iii) WILLFUL MISCONDUCT.
+
+8. INDEMNIFICATION
+(a) Provider shall indemnify Client against third-party claims arising from: (i) Provider's
+    negligent performance of services, or (ii) infringement of third-party intellectual
+    property rights by the deliverables.
+(b) Client shall indemnify Provider against third-party claims arising from Client's use
+    of deliverables in combination with non-Provider products in a manner not contemplated
+    by the SOW.
+
+9. TERMINATION
+(a) Either party may terminate this Agreement for cause upon thirty (30) days written
+    notice if the other party materially breaches this Agreement and fails to cure such
+    breach within the notice period.
+(b) Client may terminate any SOW for convenience upon sixty (60) days written notice.
+    Client shall pay for all services performed through the effective date of termination
+    plus any non-cancellable costs.
+(c) Upon termination, Provider shall deliver all completed and in-progress Work Product.
+
+10. FORCE MAJEURE
+Neither party shall be liable for failure to perform due to circumstances beyond its
+reasonable control, including but not limited to: natural disasters, pandemics, government
+actions, war, terrorism, utility failures, or internet outages. The affected party shall
+provide prompt notice and use reasonable efforts to resume performance.
+
+11. GOVERNING LAW AND DISPUTE RESOLUTION
+This Agreement shall be governed by the laws of the State of New York. Any disputes shall
+be resolved by binding arbitration in New York City under the Commercial Arbitration Rules
+of the American Arbitration Association.
+
+12. GENERAL PROVISIONS
+(a) This Agreement may be amended only by written agreement signed by both parties.
+(b) Neither party may assign this Agreement without the other's written consent.
+(c) This Agreement constitutes the entire agreement between the parties.
+(d) If any provision is held invalid, the remaining provisions shall remain in effect.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement.
+
+TECHSERV INC.                        GLOBALCORP INDUSTRIES
+By: Sarah Chen, CEO                  By: Michael Roberts, VP Operations
+Date: February 1, 2026               Date: February 1, 2026

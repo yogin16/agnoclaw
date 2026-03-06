@@ -1,0 +1,78 @@
+NON-DISCLOSURE AGREEMENT
+
+This Non-Disclosure Agreement ("Agreement") is entered into as of January 15, 2026,
+by and between:
+
+DISCLOSING PARTY: Acme Corporation, a Delaware corporation, with principal offices
+at 123 Innovation Drive, San Francisco, CA 94105 ("Acme")
+
+RECEIVING PARTY: Beta Solutions LLC, a California limited liability company, with
+principal offices at 456 Technology Blvd, Palo Alto, CA 94301 ("Beta")
+
+1. DEFINITION OF CONFIDENTIAL INFORMATION
+"Confidential Information" means any and all non-public information, whether oral,
+written, electronic, or visual, disclosed by either party to the other, including but
+not limited to: trade secrets, business plans, financial data, customer lists, product
+designs, source code, algorithms, technical specifications, marketing strategies, and
+personnel information.
+
+2. OBLIGATIONS OF RECEIVING PARTY
+The Receiving Party shall:
+(a) Hold all Confidential Information in strict confidence;
+(b) Not disclose Confidential Information to any third party without prior written
+    consent of the Disclosing Party;
+(c) Use Confidential Information solely for the purpose of evaluating a potential
+    business relationship between the parties ("Purpose");
+(d) Limit access to Confidential Information to those employees and contractors who
+    have a need to know and are bound by confidentiality obligations at least as
+    restrictive as those in this Agreement.
+
+3. EXCLUSIONS
+Confidential Information does not include information that:
+(a) Is or becomes publicly available through no fault of the Receiving Party;
+(b) Was known to the Receiving Party prior to disclosure;
+(c) Is independently developed by the Receiving Party without use of Confidential Information;
+(d) Is rightfully received from a third party without restriction.
+
+4. TERM AND TERMINATION
+This Agreement shall remain in effect for a period of three (3) years from the date
+first written above. The confidentiality obligations shall survive termination for an
+additional period of two (2) years.
+
+Either party may terminate this Agreement with thirty (30) days written notice. Upon
+termination, the Receiving Party shall promptly return or destroy all Confidential
+Information and certify such destruction in writing.
+
+5. REMEDIES
+The parties acknowledge that any breach of this Agreement may cause irreparable harm
+for which monetary damages would be inadequate. Accordingly, the Disclosing Party
+shall be entitled to seek injunctive relief in addition to any other remedies available
+at law or in equity.
+
+6. NO LICENSE
+Nothing in this Agreement grants any license under any patent, copyright, trademark,
+or other intellectual property right.
+
+7. GOVERNING LAW
+This Agreement shall be governed by and construed in accordance with the laws of the
+State of California, without regard to its conflict of laws principles.
+
+8. DISPUTE RESOLUTION
+Any dispute arising out of this Agreement shall first be submitted to mediation in
+San Francisco, California. If mediation fails within 60 days, the dispute shall be
+resolved by binding arbitration under the rules of the American Arbitration Association.
+
+9. ENTIRE AGREEMENT
+This Agreement constitutes the entire agreement between the parties concerning the
+subject matter hereof and supersedes all prior agreements and understandings.
+
+10. LIABILITY CAP
+In no event shall either party's aggregate liability under this Agreement exceed
+$500,000, except in cases of willful misconduct or breach of Section 2.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement as of the date first
+written above.
+
+ACME CORPORATION                    BETA SOLUTIONS LLC
+By: Jane Smith, CEO                 By: John Doe, Managing Partner
+Date: January 15, 2026              Date: January 15, 2026
