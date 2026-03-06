@@ -17,9 +17,9 @@ class NotificationPanel(RichLog):
 
     DEFAULT_CSS = """
     NotificationPanel {
-        width: 35;
         height: 1fr;
-        border: solid $surface-lighten-2;
+        border: none;
+        background: #111114;
         padding: 0 1;
         scrollbar-size: 1 1;
     }
@@ -58,6 +58,15 @@ class NotificationPanel(RichLog):
         )
         self.write(Text(text[:200]), scroll_end=True)
         self.write(Text(""), scroll_end=True)
+
+    def add_system_note(self, note: str, *, style: str = "cyan") -> None:
+        """Add a generic system-level note."""
+        self._count += 1
+        ts = datetime.now().strftime("%H:%M")
+        self.write(
+            Text.from_markup(f"[{style}]{note}[/{style}] [dim]{ts}[/dim]"),
+            scroll_end=True,
+        )
 
     @property
     def alert_count(self) -> int:

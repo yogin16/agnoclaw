@@ -86,6 +86,24 @@ class CronResult(Message):
         self.text = text
 
 
+# ── Session maintenance ────────────────────────────────────────────────────────
+
+
+class SessionCompactionDone(Message):
+    """Session compaction completed successfully."""
+
+    def __init__(self) -> None:
+        super().__init__()
+
+
+class SessionCompactionError(Message):
+    """Session compaction failed."""
+
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+
 # ── User input ────────────────────────────────────────────────────────────────
 
 
