@@ -31,7 +31,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Run tests
-        run: uv run pytest tests/ -q -m "not integration" --tb=short --cov=agnoclaw --cov-report=term-missing --cov-fail-under=70
+        run: uv run pytest tests/ -q -m "not integration" --tb=short --cov=agnoclaw --cov-report=term-missing --cov-fail-under=80
 
   lint:
     name: Lint

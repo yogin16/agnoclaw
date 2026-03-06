@@ -67,6 +67,7 @@ cli = [
 ]
 dev = [
     { name = "mypy" },
+    { name = "openai" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -130,6 +131,7 @@ requires-dist = [
     { name = "ollama", marker = "extra == 'all-models'", specifier = ">=0.6.1" },
     { name = "ollama", marker = "extra == 'local'", specifier = ">=0.6.1" },
     { name = "openai", marker = "extra == 'all-models'", specifier = ">=2.0.0" },
+    { name = "openai", marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "openai", marker = "extra == 'local'", specifier = ">=2.0.0" },
     { name = "pathspec", specifier = ">=0.12.0" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.40.0" },
