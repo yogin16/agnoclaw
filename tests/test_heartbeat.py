@@ -340,3 +340,356 @@ async def test_run_isolated_uses_async_arun():
         await daemon._run_isolated(job, "Ping now")
 
     mock_harness.arun.assert_awaited_once_with("Ping now", skill="test-skill")
+
+
+# ── _filter_response tests ──────────────────────────────────────────────
+
+
+def test_filter_response_heartbeat_ok_short():
+    """Short HEARTBEAT_OK response is suppressed (returns None)."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    result = daemon._filter_response("HEARTBEAT_OK")
+    assert result is None
+
+
+def test_filter_response_heartbeat_ok_with_brief_note():
+    """HEARTBEAT_OK with short note under threshold is suppressed."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    result = daemon._filter_response("HEARTBEAT_OK. All clear.")
+    assert result is None
+
+
+def test_filter_response_alert_returned():
+    """Non-OK response is returned as alert."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    result = daemon._filter_response("Database connection timeout detected!")
+    assert result == "Database connection timeout detected!"
+
+
+def test_filter_response_empty_returns_none():
+    """Empty response returns None."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    result = daemon._filter_response("")
+    assert result is None
+
+
+def test_filter_response_ok_with_long_content():
+    """HEARTBEAT_OK with long content beyond threshold returns the extra content."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.config import HarnessConfig, HeartbeatConfig
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    cfg = HarnessConfig(heartbeat=HeartbeatConfig(ok_threshold_chars=50))
+    daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
+
+    long_content = "HEARTBEAT_OK " + "A" * 200
+    result = daemon._filter_response(long_content)
+    assert result is not None
+    assert "HEARTBEAT_OK" not in result  # token stripped
+
+
+# ── _default_alert tests ────────────────────────────────────────────────
+
+
+def test_default_alert_prints(capsys):
+    """_default_alert prints to console."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    HeartbeatDaemon._default_alert("Test alert message")
+    captured = capsys.readouterr()
+    assert "HEARTBEAT ALERT" in captured.out
+    assert "Test alert message" in captured.out
+
+
+# ── start/stop lifecycle tests ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_start_creates_tasks():
+    """start() creates asyncio tasks for heartbeat and cron jobs."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    job = CronJob(name="test-job", schedule="1h", prompt="test")
+    daemon.add_cron_job(job)
+
+    daemon.start()
+    assert daemon._running is True
+    assert daemon._task is not None
+    assert len(daemon._cron_tasks) == 1
+
+    # Clean up
+    daemon.stop()
+    assert daemon._running is False
+
+
+@pytest.mark.asyncio
+async def test_start_twice_is_noop():
+    """Calling start() twice does not create duplicate tasks."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    daemon.start()
+    first_task = daemon._task
+    daemon.start()  # second call should be no-op
+    assert daemon._task is first_task
+
+    daemon.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_tasks():
+    """stop() cancels running tasks."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    daemon.add_cron_job(CronJob(name="job1", schedule="30m", prompt="test"))
+    daemon.start()
+
+    assert daemon._running is True
+    daemon.stop()
+
+    assert daemon._running is False
+    assert len(daemon._cron_tasks) == 0
+
+
+# ── trigger_cron tests ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_trigger_cron_not_found():
+    """trigger_cron returns error for unknown job name."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    result = await daemon.trigger_cron("nonexistent")
+    assert "[error]" in result
+
+
+@pytest.mark.asyncio
+async def test_trigger_cron_found():
+    """trigger_cron executes a registered job."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="cron result"))
+
+    daemon = HeartbeatDaemon(agent=mock_agent)
+    daemon.add_cron_job(CronJob(name="my-job", schedule="1h", prompt="do it"))
+
+    result = await daemon.trigger_cron("my-job")
+    assert result == "cron result"
+
+
+# ── _run_heartbeat tests ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_heartbeat_returns_alert():
+    """_run_heartbeat returns alert message from agent."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.workspace.is_empty_heartbeat = MagicMock(return_value=False)
+    mock_agent.workspace.heartbeat_md = MagicMock(return_value="Check the server status")
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="Server is down!"))
+
+    daemon = HeartbeatDaemon(agent=mock_agent)
+    result = await daemon._run_heartbeat()
+    assert result == "Server is down!"
+
+
+@pytest.mark.asyncio
+async def test_run_heartbeat_suppresses_ok():
+    """_run_heartbeat returns None for HEARTBEAT_OK responses."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.workspace.is_empty_heartbeat = MagicMock(return_value=False)
+    mock_agent.workspace.heartbeat_md = MagicMock(return_value="check items")
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="HEARTBEAT_OK"))
+
+    daemon = HeartbeatDaemon(agent=mock_agent)
+    result = await daemon._run_heartbeat()
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_run_heartbeat_handles_exception():
+    """_run_heartbeat returns error message on exception."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.workspace.is_empty_heartbeat = MagicMock(return_value=False)
+    mock_agent.workspace.heartbeat_md = MagicMock(return_value="check items")
+    mock_agent.arun = AsyncMock(side_effect=RuntimeError("connection failed"))
+
+    daemon = HeartbeatDaemon(agent=mock_agent)
+    result = await daemon._run_heartbeat()
+    assert "[heartbeat error]" in result
+
+
+@pytest.mark.asyncio
+async def test_run_heartbeat_no_heartbeat_content():
+    """_run_heartbeat works when heartbeat_md returns empty string."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.workspace.is_empty_heartbeat = MagicMock(return_value=False)
+    mock_agent.workspace.heartbeat_md = MagicMock(return_value="")
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="HEARTBEAT_OK"))
+
+    daemon = HeartbeatDaemon(agent=mock_agent)
+    result = await daemon._run_heartbeat()
+    assert result is None
+
+
+# ── _run_cron_job tests ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_cron_job_non_isolated():
+    """Non-isolated cron job runs on the main agent."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="done"))
+
+    daemon = HeartbeatDaemon(agent=mock_agent)
+    job = CronJob(name="main-job", schedule="1h", prompt="do work", skill="my-skill")
+
+    result = await daemon._run_cron_job(job)
+    assert result == "done"
+    mock_agent.arun.assert_awaited_once_with("do work", skill="my-skill")
+
+
+@pytest.mark.asyncio
+async def test_run_cron_job_exception_returns_none():
+    """Cron job that raises returns None (logged, not propagated)."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.arun = AsyncMock(side_effect=RuntimeError("boom"))
+
+    daemon = HeartbeatDaemon(agent=mock_agent)
+    job = CronJob(name="fail-job", schedule="1h", prompt="fail")
+
+    result = await daemon._run_cron_job(job)
+    assert result is None
+
+
+# ── Active hours edge cases ─────────────────────────────────────────────
+
+
+def test_active_hours_overnight_range():
+    """Overnight range (e.g. 22:00-06:00) works correctly."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.config import HarnessConfig, HeartbeatConfig
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    cfg = HarnessConfig(heartbeat=HeartbeatConfig(
+        active_hours_start="22:00",
+        active_hours_end="06:00",
+    ))
+    daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
+
+    # 23:00 should be active (after start, before midnight)
+    with patch("agnoclaw.heartbeat.daemon.datetime") as mock_dt:
+        mock_dt.now.return_value.time.return_value = time(23, 0)
+        assert daemon._is_active_hours() is True
+
+    # 03:00 should be active (after midnight, before end)
+    with patch("agnoclaw.heartbeat.daemon.datetime") as mock_dt:
+        mock_dt.now.return_value.time.return_value = time(3, 0)
+        assert daemon._is_active_hours() is True
+
+    # 12:00 should be inactive (between end and start)
+    with patch("agnoclaw.heartbeat.daemon.datetime") as mock_dt:
+        mock_dt.now.return_value.time.return_value = time(12, 0)
+        assert daemon._is_active_hours() is False
+
+
+def test_active_hours_parse_failure_returns_true():
+    """If active hours can't be parsed, always return True (active)."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.config import HarnessConfig, HeartbeatConfig
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    cfg = HarnessConfig(heartbeat=HeartbeatConfig(
+        active_hours_start="not-a-time",
+        active_hours_end="also-bad",
+    ))
+    daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
+    assert daemon._is_active_hours() is True
+
+
+# ── add_cron_job validation ─────────────────────────────────────────────
+
+
+def test_add_cron_job_invalid_schedule_raises():
+    """add_cron_job raises ValueError for clearly invalid schedule."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    # "bad" is not an interval, not a cron expression (< 5 fields), and cron libs return -1
+    job = CronJob(name="bad-job", schedule="bad", prompt="test")
+    with pytest.raises(ValueError, match="Invalid schedule"):
+        daemon.add_cron_job(job)
+
+
+def test_add_cron_job_disabled_not_started():
+    """Disabled cron jobs are registered but not started."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    job = CronJob(name="disabled", schedule="1h", prompt="test", enabled=False)
+    daemon.add_cron_job(job)
+    assert len(daemon._cron_jobs) == 1
