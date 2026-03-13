@@ -57,8 +57,9 @@ import asyncio
 import inspect
 import logging
 import warnings
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterator, Optional, Union
+from typing import Any
 from uuid import uuid4
 
 from agno.agent import Agent
@@ -76,6 +77,9 @@ from .runtime import (
     ExecutionContext,
     HarnessError,
     NullEventSink,
+    PermissionApprover,
+    PermissionController,
+    PermissionMode,
     PolicyAction,
     PolicyDecision,
     PolicyEngine,
@@ -84,16 +88,13 @@ from .runtime import (
     PromptEnvelope,
     RunInput,
     RunResultEnvelope,
+    RuntimeGuardrails,
     SkillLoadRequest,
     ToolCallRequest,
     ToolCallResult,
-    PermissionApprover,
-    PermissionController,
-    PermissionMode,
-    normalize_permission_mode,
-    RuntimeGuardrails,
     apply_redactions,
     build_event,
+    normalize_permission_mode,
 )
 from .skills.registry import SkillRegistry
 from .tools import get_default_tools
@@ -154,7 +155,7 @@ _KNOWN_PROVIDERS: set[str] = {
 }
 
 
-def _resolve_model(model: Optional[str], provider: Optional[str], config: HarnessConfig) -> str:
+def _resolve_model(model: str | None, provider: str | None, config: HarnessConfig) -> str:
     """
     Return an Agno-compatible 'provider:model_id' string.
 
@@ -261,57 +262,64 @@ class AgentHarness:
 
     def __init__(
         self,
-        model: Optional[str] = None,
+        model: str | None = None,
         *,
-        provider: Optional[str] = None,
-        session_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        workspace_dir: Optional[str | Path] = None,
-        tools: Optional[list] = None,
-        instructions: Optional[str] = None,
-        config: Optional[HarnessConfig] = None,
+        provider: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        workspace_dir: str | Path | None = None,
+        tools: list | None = None,
+        instructions: str | None = None,
+        config: HarnessConfig | None = None,
         name: str = "agnoclaw",
-        agent_id: Optional[str] = None,
+        agent_id: str | None = None,
         debug: bool = False,
         # Subagents
-        subagents: Optional[dict] = None,
+        subagents: dict | None = None,
         # Memory options
         enable_user_memory: bool = False,
-        enable_learning: Optional[bool] = None,
-        learning_mode: Optional[str] = None,
-        learning_namespace: Optional[str] = None,
+        enable_learning: bool | None = None,
+        learning_mode: str | None = None,
+        learning_namespace: str | None = None,
         # Context management
-        enable_compression: Optional[bool] = None,
-        compress_token_limit: Optional[int] = None,
-        enable_session_summary: Optional[bool] = None,
-        num_history_runs: Optional[int] = None,
-        num_history_messages: Optional[int] = None,
-        max_tool_calls_from_history: Optional[int] = None,
-        max_context_tokens: Optional[int] = None,
+        enable_compression: bool | None = None,
+        compress_token_limit: int | None = None,
+        enable_session_summary: bool | None = None,
+        num_history_runs: int | None = None,
+        num_history_messages: int | None = None,
+        max_tool_calls_from_history: int | None = None,
+        max_context_tokens: int | None = None,
         # v0.2 runtime contracts
-        event_sink: Optional[EventSink] = None,
-        event_sink_mode: Optional[str] = None,
-        policy_engine: Optional[PolicyEngine] = None,
-        policy_fail_open: Optional[bool] = None,
-        permission_mode: Optional[str] = None,
-        permission_approver: Optional[PermissionApprover] = None,
-        permission_require_approver: Optional[bool] = None,
-        permission_preapproved_tools: Optional[list[str] | tuple[str, ...]] = None,
-        permission_preapproved_categories: Optional[list[str] | tuple[str, ...]] = None,
-        pre_run_hooks: Optional[list[PreRunHook]] = None,
-        post_run_hooks: Optional[list[PostRunHook]] = None,
-        tenant_id: Optional[str] = None,
-        org_id: Optional[str] = None,
-        team_id: Optional[str] = None,
-        roles: Optional[list[str] | tuple[str, ...]] = None,
-        scopes: Optional[list[str] | tuple[str, ...]] = None,
-        request_id: Optional[str] = None,
-        trace_id: Optional[str] = None,
-        context_metadata: Optional[dict[str, Any]] = None,
+        event_sink: EventSink | None = None,
+        event_sink_mode: str | None = None,
+        policy_engine: PolicyEngine | None = None,
+        policy_fail_open: bool | None = None,
+        permission_mode: str | None = None,
+        permission_approver: PermissionApprover | None = None,
+        permission_require_approver: bool | None = None,
+        permission_preapproved_tools: list[str] | tuple[str, ...] | None = None,
+        permission_preapproved_categories: list[str] | tuple[str, ...] | None = None,
+        pre_run_hooks: list[PreRunHook] | None = None,
+        post_run_hooks: list[PostRunHook] | None = None,
+        tenant_id: str | None = None,
+        org_id: str | None = None,
+        team_id: str | None = None,
+        roles: list[str] | tuple[str, ...] | None = None,
+        scopes: list[str] | tuple[str, ...] | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        context_metadata: dict[str, Any] | None = None,
+        # Skills directories — list of (path, trust_level) tuples
+        skills_dirs: list[tuple[str | Path, str]] | None = None,
+        # Session lifecycle callbacks
+        on_compaction: Callable[[str], Awaitable[None]] | None = None,
+        on_session_end: Callable[[str], Awaitable[None]] | None = None,
+        # Event enrichment — merged into every HarnessEvent's metadata
+        session_metadata: dict[str, Any] | None = None,
         # Legacy compat — use model + provider instead
-        model_id: Optional[str] = None,
-        extra_tools: Optional[list] = None,
-        extra_instructions: Optional[str] = None,
+        model_id: str | None = None,
+        extra_tools: list | None = None,
+        extra_instructions: str | None = None,
     ):
         self.config = config or get_config()
         self.name = name
@@ -325,6 +333,9 @@ class AgentHarness:
         self._request_id = request_id
         self._trace_id = trace_id
         self._context_metadata = dict(context_metadata or {})
+        self._on_compaction = on_compaction
+        self._on_session_end = on_session_end
+        self._session_metadata = dict(session_metadata or {})
 
         # Runtime extension contracts
         self._event_sink: EventSink = event_sink or NullEventSink()
@@ -413,6 +424,9 @@ class AgentHarness:
 
         # Skills registry
         self.skills = SkillRegistry(self.workspace.skills_dir())
+        if skills_dirs:
+            for path, trust in skills_dirs:
+                self.skills.add_directory(path, trust=trust)
 
         # System prompt builder
         self._prompt_builder = SystemPromptBuilder(self.workspace.path)
@@ -537,8 +551,8 @@ class AgentHarness:
     def _build_system_prompt(
         self,
         *,
-        skill_content: Optional[str] = None,
-        session_id: Optional[str] = None,
+        skill_content: str | None = None,
+        session_id: str | None = None,
     ) -> str:
         """Build the canonical system prompt for this harness instance."""
         include_learning = self._include_learning and not self._plan_mode
@@ -569,8 +583,8 @@ class AgentHarness:
     def _set_system_prompt(
         self,
         *,
-        skill_content: Optional[str] = None,
-        session_id: Optional[str] = None,
+        skill_content: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         """Update the underlying agent's system prompt."""
         self._agent.system_message = self._build_system_prompt(
@@ -607,7 +621,7 @@ class AgentHarness:
 
         return f"[error] Command-dispatch tool '{tool_name}' not found in registered tools."
 
-    def set_event_sink(self, sink: EventSink, mode: Optional[str] = None) -> None:
+    def set_event_sink(self, sink: EventSink, mode: str | None = None) -> None:
         """Swap event sink at runtime."""
         self._event_sink = sink
         if mode is not None:
@@ -953,7 +967,7 @@ class AgentHarness:
         except HarnessError as exc:
             self._raise_agent_run_exception(exc)
 
-    def _active_session_id(self, override: Optional[str]) -> Optional[str]:
+    def _active_session_id(self, override: str | None) -> str | None:
         if override is not None:
             return override
         return self.session_id or getattr(self._agent, "session_id", None)
@@ -961,9 +975,9 @@ class AgentHarness:
     def _build_execution_context(
         self,
         *,
-        user_id: Optional[str],
-        session_id: Optional[str],
-        metadata: Optional[dict[str, Any]] = None,
+        user_id: str | None,
+        session_id: str | None,
+        metadata: dict[str, Any] | None = None,
     ) -> ExecutionContext:
         merged_metadata = dict(self._context_metadata)
         merged_metadata.setdefault("permission_mode", self.permission_mode)
@@ -989,13 +1003,14 @@ class AgentHarness:
         event_type: str,
         run_id: str,
         context: ExecutionContext,
-        payload: Optional[dict[str, Any]] = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
+        merged_payload = {**self._session_metadata, **(payload or {})}
         event = build_event(
             event_type=event_type,
             run_id=run_id,
             context=context,
-            payload=payload,
+            payload=merged_payload,
         )
         try:
             maybe_awaitable = self._event_sink.emit(event)
@@ -1043,13 +1058,14 @@ class AgentHarness:
         event_type: str,
         run_id: str,
         context: ExecutionContext,
-        payload: Optional[dict[str, Any]] = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
+        merged_payload = {**self._session_metadata, **(payload or {})}
         event = build_event(
             event_type=event_type,
             run_id=run_id,
             context=context,
-            payload=payload,
+            payload=merged_payload,
         )
         try:
             maybe_awaitable = self._event_sink.emit(event)
@@ -1394,13 +1410,14 @@ class AgentHarness:
         *,
         stream: bool = False,
         stream_events: bool = False,
-        skill: Optional[str] = None,
-        session_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        context: Optional[ExecutionContext] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        skill: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+        output_schema: type | None = None,
         **kwargs,
-    ) -> Union[RunOutput, Iterator[RunOutputEvent]]:
+    ) -> RunOutput | Iterator[RunOutputEvent]:
         """Run the agent on a message."""
         self._check_context_budget()
 
@@ -1451,7 +1468,7 @@ class AgentHarness:
             if before_run_decision.action == PolicyAction.ALLOW_WITH_REDACTION:
                 run_input.message = apply_redactions(run_input.message, before_run_decision.redactions)
 
-            skill_content: Optional[str] = None
+            skill_content: str | None = None
             if run_input.skill:
                 self._emit_event_sync(
                     event_type="skill.load.started",
@@ -1564,6 +1581,8 @@ class AgentHarness:
             call_kwargs = dict(kwargs)
             extra_metadata = call_kwargs.pop("metadata", None)
             call_kwargs.pop("run_id", None)
+            if output_schema is not None:
+                call_kwargs["output_schema"] = output_schema
             agent_metadata = self._build_agent_run_metadata(
                 context=ctx,
                 run_input=run_input,
@@ -1701,13 +1720,14 @@ class AgentHarness:
         *,
         stream: bool = False,
         stream_events: bool = False,
-        skill: Optional[str] = None,
-        session_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        context: Optional[ExecutionContext] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        skill: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+        output_schema: type | None = None,
         **kwargs,
-    ) -> Union[RunOutput, AsyncIterator[RunOutputEvent]]:
+    ) -> RunOutput | AsyncIterator[RunOutputEvent]:
         """Async version of run()."""
         self._check_context_budget()
 
@@ -1758,7 +1778,7 @@ class AgentHarness:
             if before_run_decision.action == PolicyAction.ALLOW_WITH_REDACTION:
                 run_input.message = apply_redactions(run_input.message, before_run_decision.redactions)
 
-            skill_content: Optional[str] = None
+            skill_content: str | None = None
             if run_input.skill:
                 await self._emit_event_async(
                     event_type="skill.load.started",
@@ -1830,6 +1850,8 @@ class AgentHarness:
             call_kwargs = dict(kwargs)
             extra_metadata = call_kwargs.pop("metadata", None)
             call_kwargs.pop("run_id", None)
+            if output_schema is not None:
+                call_kwargs["output_schema"] = output_schema
             agent_metadata = self._build_agent_run_metadata(
                 context=ctx,
                 run_input=run_input,
@@ -1968,7 +1990,7 @@ class AgentHarness:
                 retryable=True,
             ) from exc
 
-    def print_response(self, message: str, *, stream: bool = True, skill: Optional[str] = None, **kwargs) -> None:
+    def print_response(self, message: str, *, stream: bool = True, skill: str | None = None, **kwargs) -> None:
         """
         Run the agent through the full runtime pipeline and pretty-print the response.
 
@@ -2030,7 +2052,7 @@ class AgentHarness:
         active_session = self.session_id or getattr(self._agent, "session_id", "")
         return self._agent.get_chat_history(active_session or "")
 
-    def clear_session_context(self, new_session_id: Optional[str] = None) -> str:
+    def clear_session_context(self, new_session_id: str | None = None) -> str:
         """
         Switch to a fresh session ID so subsequent turns start with empty history.
 
@@ -2129,6 +2151,9 @@ class AgentHarness:
         important context to MEMORY.md. Then generates a session summary to
         preserve continuity. Call this when the context window is getting full.
 
+        Fires on_compaction callback (if set) with the summary text so the
+        platform can persist it externally (e.g. to a database).
+
         This is a manual escape hatch — Agno v2.5.x does not auto-compact.
         """
         # Step 1: Ask the agent to write important facts to memory
@@ -2146,10 +2171,54 @@ class AgentHarness:
         )
 
         # Step 2: Generate and persist a session summary
+        summary: str | None = None
         if self._agent.session_summary_manager:
             session = self._agent.get_session(self.session_id)
             if session:
-                self._agent.session_summary_manager.create_session_summary(session)
+                summary = self._agent.session_summary_manager.create_session_summary(session)
+
+        # Step 3: Fire compaction callback so platform can persist the summary
+        if self._on_compaction and summary:
+            await self._on_compaction(summary)
+
+    async def end_session(self, generate_summary: bool = True) -> str | None:
+        """
+        End the current session.
+
+        Optionally generates a conversation summary via a lightweight LLM call,
+        fires the on_session_end callback so the platform can persist it, and
+        returns the summary text.
+        """
+        summary = None
+        if generate_summary:
+            summary = await self._generate_session_summary()
+        if self._on_session_end and summary:
+            await self._on_session_end(summary)
+        return summary
+
+    async def _generate_session_summary(self) -> str | None:
+        """Generate a short summary of the current session via a cheap LLM call."""
+        messages = self.get_chat_history()
+        if not messages:
+            return None
+
+        # Take the last N messages to keep the summary call cheap
+        recent = messages[-20:]
+        history_text = "\n".join(
+            f"{getattr(m, 'role', 'unknown')}: {getattr(m, 'content', str(m))}"
+            for m in recent
+            if getattr(m, "content", None)
+        )
+        if not history_text:
+            return None
+
+        prompt = (
+            "Summarize this conversation in 3-5 bullets focusing on "
+            "decisions made and artifacts produced. Be concise.\n\n"
+            f"{history_text}"
+        )
+        result = await self.arun(prompt, session_id=self.session_id)
+        return str(getattr(result, "content", result) or "")
 
     @property
     def underlying_agent(self) -> Agent:
