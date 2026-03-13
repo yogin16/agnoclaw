@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agnoclaw"
-version = "0.3.0"
+version = "0.4.0"
 description = "A hackable, model-agnostic agent harness built on Agno — with Claude Code's prompt wisdom, OpenClaw's UX patterns, and full Python extensibility"
 readme = "README.md"
 license = { text = "MIT" }
@@ -117,10 +117,10 @@ dev = [
 agnoclaw = "agnoclaw.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/agnoclaw/agnoclaw"
-Documentation = "https://github.com/agnoclaw/agnoclaw#readme"
-Repository = "https://github.com/agnoclaw/agnoclaw"
-Issues = "https://github.com/agnoclaw/agnoclaw/issues"
+Homepage = "https://github.com/yogin16/agnoclaw"
+Documentation = "https://github.com/yogin16/agnoclaw#readme"
+Repository = "https://github.com/yogin16/agnoclaw"
+Issues = "https://github.com/yogin16/agnoclaw/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agnoclaw"]

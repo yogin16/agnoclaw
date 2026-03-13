@@ -438,3 +438,169 @@ def test_guardrails_apply_to_bash_start_network_calls(tmp_path):
     inner = exc.value.args[0]
     assert isinstance(inner, HarnessError)
     assert inner.code == "GUARDRAIL_DENIED"
+
+
+# ── session_metadata on events ────────────────────────────────────────
+
+
+def test_session_metadata_merged_into_events(tmp_path):
+    """session_metadata dict is merged into every emitted event's payload."""
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        session_metadata={"deal_id": "acme-123", "fund_id": "fund-iii"},
+    )
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    harness.run("hello")
+
+    for event in sink.events:
+        assert event.payload.get("deal_id") == "acme-123", (
+            f"Event {event.event_type} missing deal_id"
+        )
+        assert event.payload.get("fund_id") == "fund-iii", (
+            f"Event {event.event_type} missing fund_id"
+        )
+
+
+def test_session_metadata_does_not_clobber_event_payload(tmp_path):
+    """Event-specific payload keys take precedence over session_metadata."""
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        session_metadata={"stream": "should-be-overridden"},
+    )
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    harness.run("hello")
+
+    started = [e for e in sink.events if e.event_type == "run.started"][0]
+    # The run.started payload sets stream=False, which should win
+    assert started.payload["stream"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_metadata_on_async_events(tmp_path):
+    """session_metadata works in the async path too."""
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        session_metadata={"tenant": "t-1"},
+    )
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="ok"))
+
+    await harness.arun("hello")
+
+    for event in sink.events:
+        assert event.payload.get("tenant") == "t-1", (
+            f"Async event {event.event_type} missing tenant"
+        )
+
+
+# ── on_compaction callback ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_on_compaction_callback_fires(tmp_path):
+    """on_compaction is called with the summary after compact_session()."""
+    received: list[str] = []
+
+    async def on_compaction(summary: str) -> None:
+        received.append(summary)
+
+    harness, mock_agent = _make_harness(tmp_path, on_compaction=on_compaction)
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="flushed"))
+
+    # Mock session_summary_manager to return a summary
+    mock_ssm = MagicMock()
+    mock_ssm.create_session_summary.return_value = "Session summary text"
+    mock_agent.session_summary_manager = mock_ssm
+    mock_agent.get_session.return_value = SimpleNamespace(session_id="s-1")
+
+    await harness.compact_session()
+
+    assert received == ["Session summary text"]
+
+
+@pytest.mark.asyncio
+async def test_on_compaction_not_called_when_no_summary(tmp_path):
+    """on_compaction is NOT called when there's no summary to report."""
+    received: list[str] = []
+
+    async def on_compaction(summary: str) -> None:
+        received.append(summary)
+
+    harness, mock_agent = _make_harness(tmp_path, on_compaction=on_compaction)
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="flushed"))
+    mock_agent.session_summary_manager = None
+
+    await harness.compact_session()
+
+    assert received == []
+
+
+# ── end_session + on_session_end callback ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_end_session_generates_summary_and_fires_callback(tmp_path):
+    """end_session() generates a summary and fires on_session_end."""
+    received: list[str] = []
+
+    async def on_session_end(summary: str) -> None:
+        received.append(summary)
+
+    harness, mock_agent = _make_harness(tmp_path, on_session_end=on_session_end)
+
+    # Mock chat history so _generate_session_summary has messages
+    mock_agent.get_chat_history.return_value = [
+        SimpleNamespace(role="user", content="hello"),
+        SimpleNamespace(role="assistant", content="world"),
+    ]
+    # Mock arun to return the summary response
+    mock_agent.arun = AsyncMock(
+        return_value=SimpleNamespace(content="- Decision 1\n- Decision 2")
+    )
+
+    result = await harness.end_session()
+
+    assert result == "- Decision 1\n- Decision 2"
+    assert received == ["- Decision 1\n- Decision 2"]
+
+
+@pytest.mark.asyncio
+async def test_end_session_skips_summary_when_disabled(tmp_path):
+    """end_session(generate_summary=False) skips LLM call and callback."""
+    received: list[str] = []
+
+    async def on_session_end(summary: str) -> None:
+        received.append(summary)
+
+    harness, mock_agent = _make_harness(tmp_path, on_session_end=on_session_end)
+    mock_agent.arun = AsyncMock()
+
+    result = await harness.end_session(generate_summary=False)
+
+    assert result is None
+    assert received == []
+    mock_agent.arun.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_end_session_no_callback_still_returns_summary(tmp_path):
+    """end_session() works without on_session_end callback."""
+    harness, mock_agent = _make_harness(tmp_path)
+
+    mock_agent.get_chat_history.return_value = [
+        SimpleNamespace(role="user", content="hi"),
+    ]
+    mock_agent.arun = AsyncMock(
+        return_value=SimpleNamespace(content="summary")
+    )
+
+    result = await harness.end_session()
+
+    assert result == "summary"
