@@ -340,6 +340,16 @@ async def test_arun_keeps_recoverable_error_as_output_and_marks_failed(tmp_path)
     assert "run.completed" not in event_types
 
 
+@pytest.mark.asyncio
+async def test_arun_passes_max_turns_to_underlying_agent(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path)
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="ok"))
+
+    await harness.arun("hello", max_turns=4)
+
+    assert mock_agent.arun.call_args.kwargs["max_turns"] == 4
+
+
 def _tool_run_context(harness: AgentHarness):
     ctx = ExecutionContext.create(
         user_id="tool-user",

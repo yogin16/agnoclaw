@@ -1,5 +1,6 @@
 """Additional coverage tests for AgentHarness — easy utility methods and branches."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agno.exceptions import AgentRunException
@@ -218,3 +219,83 @@ def test_dispatch_command_tool_not_found(tmp_path):
     result = harness._dispatch_command_tool("nonexistent", {})
     assert "[error]" in result
     assert "nonexistent" in result
+
+
+# ── session helpers ───────────────────────────────────────────────────────
+
+
+def test_get_session_messages_with_explicit_session_id(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path)
+    mock_agent.get_chat_history.return_value = [SimpleNamespace(role="user", content="hi")]
+
+    messages = harness.get_session_messages("session-123")
+
+    assert len(messages) == 1
+    mock_agent.get_chat_history.assert_called_once_with("session-123")
+
+
+def test_get_session_messages_without_session_returns_empty(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path)
+    harness.session_id = None
+    mock_agent.session_id = None
+
+    assert harness.get_session_messages() == []
+    mock_agent.get_chat_history.assert_not_called()
+
+
+def test_list_sessions_uses_db_list_sessions_and_normalizes(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path, user_id="u-1")
+    db = SimpleNamespace()
+    db.list_sessions = MagicMock(
+        return_value=[
+            {"session_id": "s-1", "user_id": "u-1", "run_count": 2},
+            SimpleNamespace(id="s-2", user_id="u-1", summary="hello"),
+        ]
+    )
+    mock_agent.db = db
+
+    sessions = harness.list_sessions(limit=10)
+
+    assert [s["session_id"] for s in sessions] == ["s-1", "s-2"]
+    db.list_sessions.assert_called_once_with(user_id="u-1", limit=10)
+
+
+def test_list_sessions_returns_empty_when_no_backend_method(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path)
+    mock_agent.db = SimpleNamespace()
+
+    assert harness.list_sessions() == []
+
+
+def test_resume_session_switches_active_session(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path, session_id="old-session")
+
+    resumed = harness.resume_session("new-session")
+
+    assert resumed == "new-session"
+    assert harness.session_id == "new-session"
+    assert mock_agent.session_id == "new-session"
+
+
+def test_resume_session_verify_exists_raises_for_missing_session(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path)
+    mock_agent.get_session.return_value = None
+    mock_agent.get_chat_history.return_value = []
+
+    try:
+        harness.resume_session("missing-session", verify_exists=True)
+        raised = False
+    except HarnessError as exc:
+        raised = True
+        assert exc.code == "SESSION_NOT_FOUND"
+
+    assert raised is True
+
+
+def test_run_passes_max_turns_to_underlying_agent(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path)
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    harness.run("hello", max_turns=3)
+
+    assert mock_agent.run.call_args.kwargs["max_turns"] == 3
