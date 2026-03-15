@@ -84,6 +84,7 @@ export AGNOCLAW_NETWORK_BLOCK_PRIVATE_HOSTS=true
 - Guardrail deny: `HarnessError(code="GUARDRAIL_DENIED", category="guardrail")`
 - Policy deny: `HarnessError(code="POLICY_DENIED", category="policy")`
 - Policy evaluation failure: `HarnessError(code="POLICY_EVALUATION_FAILED", category="policy")` unless `policy_fail_open=true`
+- Auth/config model failures: `AgnoAuthError` / `AgnoConfigError` (raised for non-recoverable provider setup issues)
 
 ## Event behavior
 
@@ -92,4 +93,8 @@ These events are emitted for observability:
 - `tool.call.started`
 - `tool.call.completed`
 - `tool.call.failed`
+- `step_started`
+- `step_completed`
+- `response_chunk`
+- `thinking`
 - `guardrail.violation`

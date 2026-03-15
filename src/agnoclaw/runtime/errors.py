@@ -20,6 +20,32 @@ class HarnessError(Exception):
         return f"[{self.code}] {self.message}"
 
 
+class AgnoConfigError(HarnessError):
+    """Raised when model/provider configuration is invalid."""
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None):
+        super().__init__(
+            code="AGNO_CONFIG_ERROR",
+            category="config",
+            message=message,
+            retryable=False,
+            details=details,
+        )
+
+
+class AgnoAuthError(HarnessError):
+    """Raised when model/provider authentication is missing or invalid."""
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None):
+        super().__init__(
+            code="AGNO_AUTH_ERROR",
+            category="auth",
+            message=message,
+            retryable=False,
+            details=details,
+        )
+
+
 def from_exception(
     exc: Exception,
     *,
@@ -41,4 +67,3 @@ def from_exception(
         retryable=retryable,
         details=payload,
     )
-

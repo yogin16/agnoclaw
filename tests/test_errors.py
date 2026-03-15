@@ -1,6 +1,6 @@
 """Tests for runtime error types."""
 
-from agnoclaw.runtime.errors import HarnessError, from_exception
+from agnoclaw.runtime.errors import AgnoAuthError, AgnoConfigError, HarnessError, from_exception
 
 
 def test_harness_error_fields():
@@ -67,3 +67,19 @@ def test_from_exception_with_custom_details():
     result = from_exception(exc, details={"disk": "/dev/sda1"})
     assert result.details["disk"] == "/dev/sda1"
     assert result.details["exception_type"] == "OSError"
+
+
+def test_agno_config_error_shape():
+    err = AgnoConfigError("bad model config")
+    assert isinstance(err, HarnessError)
+    assert err.code == "AGNO_CONFIG_ERROR"
+    assert err.category == "config"
+    assert err.retryable is False
+
+
+def test_agno_auth_error_shape():
+    err = AgnoAuthError("missing key")
+    assert isinstance(err, HarnessError)
+    assert err.code == "AGNO_AUTH_ERROR"
+    assert err.category == "auth"
+    assert err.retryable is False

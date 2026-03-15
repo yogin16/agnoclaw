@@ -12,6 +12,7 @@ from agno.exceptions import AgentRunException
 from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
 from agnoclaw.runtime import (
+    AgnoAuthError,
     ExecutionContext,
     HarnessError,
     InMemoryEventSink,
@@ -81,6 +82,42 @@ def test_run_emits_lifecycle_events(tmp_path):
     payload = first_event.to_dict()
     assert first_event.event_version == "0.2"
     assert payload["context"]["workspace_id"] == str(harness.workspace.path)
+
+
+def test_run_raises_auth_error_for_auth_failures(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    mock_agent.run.return_value = SimpleNamespace(
+        content='"Could not resolve authentication method. Expected either api_key or auth_token to be set."',
+        status=SimpleNamespace(value="error"),
+        events=[],
+    )
+
+    with pytest.raises(AgnoAuthError):
+        harness.run("hello")
+
+    event_types = [e.event_type for e in sink.events]
+    assert "run.failed" in event_types
+    assert "run.completed" not in event_types
+
+
+def test_run_keeps_recoverable_error_as_output_and_marks_failed(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    model_output = SimpleNamespace(
+        content="Rate limit exceeded, please retry later",
+        status=SimpleNamespace(value="error"),
+        events=[],
+    )
+    mock_agent.run.return_value = model_output
+
+    result = harness.run("hello")
+
+    assert result is model_output
+    event_types = [e.event_type for e in sink.events]
+    assert "model.request.failed" in event_types
+    assert "run.failed" in event_types
+    assert "run.completed" not in event_types
 
 
 def test_policy_deny_blocks_run(tmp_path):
@@ -159,6 +196,36 @@ def test_stream_run_emits_content_events(tmp_path):
     assert "run.completed" in event_types
 
 
+def test_stream_emits_response_and_thinking_events_and_marks_failed(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    mock_agent.run.return_value = iter(
+        [
+            SimpleNamespace(event="ReasoningContentDelta", content="", reasoning_content="plan step"),
+            SimpleNamespace(event="RunContent", content="A"),
+            SimpleNamespace(
+                event="RunError",
+                content="Rate limit exceeded",
+                error_id="model_rate_limit_error",
+                error_type="model_provider_error",
+                additional_data={},
+            ),
+        ]
+    )
+
+    list(harness.run("hello", stream=True, stream_events=True))
+
+    event_types = [e.event_type for e in sink.events]
+    assert "thinking" in event_types
+    assert "response_chunk" in event_types
+    assert "run.failed" in event_types
+    assert "run.completed" not in event_types
+
+    chunks = [e.payload for e in sink.events if e.event_type == "response_chunk"]
+    assert chunks[0]["content"] == "A"
+    assert chunks[-1]["is_final"] is True
+
+
 def test_context_override_propagates_to_model_call(tmp_path):
     harness, mock_agent = _make_harness(tmp_path)
     mock_agent.run.return_value = SimpleNamespace(content="ok")
@@ -231,6 +298,46 @@ async def test_async_hooks_and_events(tmp_path):
     assert call_args.args[0] == "hello async"
     assert order == ["pre", "post"]
     assert "run.completed" in [e.event_type for e in sink.events]
+
+
+@pytest.mark.asyncio
+async def test_arun_raises_auth_error_for_auth_failures(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    mock_agent.arun = AsyncMock(
+        return_value=SimpleNamespace(
+            content="Could not resolve authentication method. Expected either api_key or auth_token to be set.",
+            status=SimpleNamespace(value="error"),
+            events=[],
+        )
+    )
+
+    with pytest.raises(AgnoAuthError):
+        await harness.arun("hello")
+
+    event_types = [e.event_type for e in sink.events]
+    assert "run.failed" in event_types
+    assert "run.completed" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_arun_keeps_recoverable_error_as_output_and_marks_failed(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    model_output = SimpleNamespace(
+        content="Rate limit exceeded, please retry later",
+        status=SimpleNamespace(value="error"),
+        events=[],
+    )
+    mock_agent.arun = AsyncMock(return_value=model_output)
+
+    result = await harness.arun("hello")
+
+    assert result is model_output
+    event_types = [e.event_type for e in sink.events]
+    assert "model.request.failed" in event_types
+    assert "run.failed" in event_types
+    assert "run.completed" not in event_types
 
 
 def _tool_run_context(harness: AgentHarness):
@@ -331,6 +438,32 @@ def test_tool_policy_redacts_input_and_output(tmp_path):
 
     harness._handle_tool_post_hook(fc=fc, run_context=run_context)
     assert fc.result == "[REDACTED] output"
+
+
+def test_tool_events_include_step_progress_and_result_preview(tmp_path):
+    sink = InMemoryEventSink()
+    harness, _ = _make_harness(tmp_path, event_sink=sink)
+    run_context = _tool_run_context(harness)
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="web_fetch"),
+        arguments={"url": "https://example.com"},
+        result="line one\nline two",
+        error=None,
+        call_id="tc-step-1",
+    )
+
+    harness._handle_tool_pre_hook(fc=fc, run_context=run_context)
+    harness._handle_tool_post_hook(fc=fc, run_context=run_context)
+
+    event_types = [e.event_type for e in sink.events]
+    assert "step_started" in event_types
+    assert "step_completed" in event_types
+    assert "tool.call.completed" in event_types
+
+    completed = [e for e in sink.events if e.event_type == "tool.call.completed"][-1]
+    assert completed.payload["step_id"] == "tc-step-1"
+    assert completed.payload["duration_ms"] >= 0
+    assert completed.payload["result_preview"] == "line one line two"
 
 
 def test_guardrails_block_path_outside_workspace(tmp_path):
