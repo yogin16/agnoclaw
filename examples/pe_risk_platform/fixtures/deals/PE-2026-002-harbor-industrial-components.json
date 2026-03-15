@@ -1,0 +1,74 @@
+{
+  "deal_id": "PE-2026-002",
+  "deal_name": "Harbor Industrial Components",
+  "sponsor": "Agnoclaw Capital Partners",
+  "strategy": "Control buyout",
+  "sector": "Automotive and industrial components",
+  "investment_thesis": "Acquire a fragmented components platform and drive procurement savings plus footprint rationalization.",
+  "transaction": {
+    "enterprise_value_usd_mn": 640,
+    "entry_ebitda_multiple": 10.1,
+    "equity_check_usd_mn": 230,
+    "debt_package": {
+      "total_leverage_x": 5.6,
+      "cash_interest_rate_pct": 9.4,
+      "minimum_interest_coverage_x": 1.6,
+      "covenant_headroom_x": 0.3
+    }
+  },
+  "metrics": {
+    "interest_coverage_x": 1.9,
+    "recurring_revenue_pct": 38.0,
+    "net_revenue_retention_pct": 94.0,
+    "top_customer_pct": 31.0,
+    "customer_churn_pct": 13.0,
+    "qoe_adjustments_pct_ebitda": 22.0,
+    "free_cash_flow_conversion_pct": 55.0,
+    "working_capital_volatility_pct_sales": 16.0,
+    "capex_pct_revenue": 12.0,
+    "end_market_cyclicality_1_to_5": 5,
+    "supplier_concentration_pct": 42.0,
+    "pricing_power_1_to_5": 2,
+    "regulatory_complexity_1_to_5": 3,
+    "open_litigation_count": 2,
+    "management_turnover_3y": 4,
+    "finance_team_depth_1_to_5": 2,
+    "board_reporting_maturity_1_to_5": 2,
+    "value_creation_dependency_1_to_5": 4,
+    "execution_complexity_1_to_5": 4,
+    "integration_risk_1_to_5": 4
+  },
+  "diligence_flags": [
+    {
+      "id": "ENV-07",
+      "severity": "high",
+      "dimension": "legal_regulatory",
+      "description": "Environmental reserve appears under-accrued at two legacy facilities based on Phase II review."
+    },
+    {
+      "id": "QOE-19",
+      "severity": "high",
+      "dimension": "earnings_quality",
+      "description": "QoE identified normalization adjustments equal to 22% of adjusted EBITDA."
+    },
+    {
+      "id": "CUST-11",
+      "severity": "medium",
+      "dimension": "revenue_quality",
+      "description": "Largest customer contract includes annual rebid right with no minimum volume commitment."
+    }
+  ],
+  "open_diligence_questions": [
+    "Re-underwrite downside EBITDA under -15% auto production scenario.",
+    "Validate environmental indemnity coverage and escrow adequacy.",
+    "Confirm covenant breach timing under delayed plant consolidation case."
+  ],
+  "expected_outcome": {
+    "expected_risk_band": "severe",
+    "expected_action": "No-go until mitigated",
+    "score_range": [
+      80,
+      92
+    ]
+  }
+}

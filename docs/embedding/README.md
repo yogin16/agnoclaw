@@ -46,4 +46,6 @@ print(result.content)
 
 - [Policy and Guardrails](./policy-and-guardrails.md)
 - [AgentOS Adapter](./agentos-adapter.md)
+- [PE Risk Testing Plan](./pe-risk-testing-plan.md)
+- [PE Simulation Package](../../examples/pe_risk_platform/README.md)
 - [v0.2 Spec](../../spec/v0.2-harness-core.md)

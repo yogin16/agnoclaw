@@ -1,0 +1,74 @@
+{
+  "deal_id": "PE-2026-004",
+  "deal_name": "Lumina Consumer Roll-up",
+  "sponsor": "Agnoclaw Capital Partners",
+  "strategy": "Buy-and-build",
+  "sector": "Consumer wellness brands",
+  "investment_thesis": "Create a scaled omnichannel wellness platform by integrating five founder-owned brands into one shared services model.",
+  "transaction": {
+    "enterprise_value_usd_mn": 455,
+    "entry_ebitda_multiple": 12.8,
+    "equity_check_usd_mn": 175,
+    "debt_package": {
+      "total_leverage_x": 4.8,
+      "cash_interest_rate_pct": 8.9,
+      "minimum_interest_coverage_x": 1.8,
+      "covenant_headroom_x": 0.6
+    }
+  },
+  "metrics": {
+    "interest_coverage_x": 2.2,
+    "recurring_revenue_pct": 44.0,
+    "net_revenue_retention_pct": 98.0,
+    "top_customer_pct": 18.0,
+    "customer_churn_pct": 11.0,
+    "qoe_adjustments_pct_ebitda": 14.0,
+    "free_cash_flow_conversion_pct": 68.0,
+    "working_capital_volatility_pct_sales": 11.0,
+    "capex_pct_revenue": 9.0,
+    "end_market_cyclicality_1_to_5": 4,
+    "supplier_concentration_pct": 33.0,
+    "pricing_power_1_to_5": 3,
+    "regulatory_complexity_1_to_5": 3,
+    "open_litigation_count": 1,
+    "management_turnover_3y": 2,
+    "finance_team_depth_1_to_5": 3,
+    "board_reporting_maturity_1_to_5": 3,
+    "value_creation_dependency_1_to_5": 4,
+    "execution_complexity_1_to_5": 5,
+    "integration_risk_1_to_5": 5
+  },
+  "diligence_flags": [
+    {
+      "id": "OPS-06",
+      "severity": "high",
+      "dimension": "value_creation_execution",
+      "description": "Integration blueprint assumes ERP harmonization across five brands within 9 months."
+    },
+    {
+      "id": "REV-09",
+      "severity": "medium",
+      "dimension": "revenue_quality",
+      "description": "Marketplace channel dependence increased to 41% of gross sales in the last 12 months."
+    },
+    {
+      "id": "SUP-03",
+      "severity": "medium",
+      "dimension": "market_operational",
+      "description": "Single-source raw ingredient for top SKU with no secondary supplier qualification complete."
+    }
+  ],
+  "open_diligence_questions": [
+    "Recast synergy ramp under 18-month integration timeline rather than 9 months.",
+    "Test margin resilience under elevated promo-spend and platform fee inflation.",
+    "Confirm contingency sourcing plan for top-volume ingredient and packaging materials."
+  ],
+  "expected_outcome": {
+    "expected_risk_band": "high",
+    "expected_action": "Pause / reprice",
+    "score_range": [
+      60,
+      79
+    ]
+  }
+}

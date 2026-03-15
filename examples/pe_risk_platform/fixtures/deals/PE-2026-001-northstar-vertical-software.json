@@ -1,0 +1,68 @@
+{
+  "deal_id": "PE-2026-001",
+  "deal_name": "Northstar Vertical Software",
+  "sponsor": "Agnoclaw Capital Partners",
+  "strategy": "Control buyout",
+  "sector": "Vertical SaaS",
+  "investment_thesis": "Acquire a category leader in compliance workflow software and scale through add-on acquisitions and pricing optimization.",
+  "transaction": {
+    "enterprise_value_usd_mn": 820,
+    "entry_ebitda_multiple": 14.2,
+    "equity_check_usd_mn": 390,
+    "debt_package": {
+      "total_leverage_x": 4.1,
+      "cash_interest_rate_pct": 8.3,
+      "minimum_interest_coverage_x": 2.0,
+      "covenant_headroom_x": 0.9
+    }
+  },
+  "metrics": {
+    "interest_coverage_x": 2.9,
+    "recurring_revenue_pct": 86.0,
+    "net_revenue_retention_pct": 111.0,
+    "top_customer_pct": 8.0,
+    "customer_churn_pct": 4.0,
+    "qoe_adjustments_pct_ebitda": 7.0,
+    "free_cash_flow_conversion_pct": 88.0,
+    "working_capital_volatility_pct_sales": 4.0,
+    "capex_pct_revenue": 4.0,
+    "end_market_cyclicality_1_to_5": 2,
+    "supplier_concentration_pct": 18.0,
+    "pricing_power_1_to_5": 4,
+    "regulatory_complexity_1_to_5": 2,
+    "open_litigation_count": 0,
+    "management_turnover_3y": 1,
+    "finance_team_depth_1_to_5": 4,
+    "board_reporting_maturity_1_to_5": 4,
+    "value_creation_dependency_1_to_5": 3,
+    "execution_complexity_1_to_5": 3,
+    "integration_risk_1_to_5": 2
+  },
+  "diligence_flags": [
+    {
+      "id": "CYBER-12",
+      "severity": "medium",
+      "dimension": "legal_regulatory",
+      "description": "Legacy SOC2 controls in one acquired module require remediation within 2 quarters."
+    },
+    {
+      "id": "COMM-04",
+      "severity": "low",
+      "dimension": "revenue_quality",
+      "description": "Top 5 customer contracts renew in the next 14 months; renewal pipeline already initiated."
+    }
+  ],
+  "open_diligence_questions": [
+    "Validate churn resilience under a 5% SMB IT budget contraction scenario.",
+    "Confirm integration timeline for planned tuck-in acquisitions against product roadmap dependencies.",
+    "Stress test debt service under +250 bps base rate scenario."
+  ],
+  "expected_outcome": {
+    "expected_risk_band": "low",
+    "expected_action": "Proceed",
+    "score_range": [
+      26,
+      40
+    ]
+  }
+}

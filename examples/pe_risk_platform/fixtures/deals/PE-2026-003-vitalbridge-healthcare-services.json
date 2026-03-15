@@ -1,0 +1,74 @@
+{
+  "deal_id": "PE-2026-003",
+  "deal_name": "VitalBridge Healthcare Services",
+  "sponsor": "Agnoclaw Capital Partners",
+  "strategy": "Control buyout",
+  "sector": "Post-acute healthcare services",
+  "investment_thesis": "Build regional scale in home-health and post-acute care with payer mix optimization and route-density gains.",
+  "transaction": {
+    "enterprise_value_usd_mn": 510,
+    "entry_ebitda_multiple": 11.4,
+    "equity_check_usd_mn": 160,
+    "debt_package": {
+      "total_leverage_x": 6.2,
+      "cash_interest_rate_pct": 9.9,
+      "minimum_interest_coverage_x": 1.5,
+      "covenant_headroom_x": 0.1
+    }
+  },
+  "metrics": {
+    "interest_coverage_x": 1.4,
+    "recurring_revenue_pct": 52.0,
+    "net_revenue_retention_pct": 96.0,
+    "top_customer_pct": 25.0,
+    "customer_churn_pct": 9.0,
+    "qoe_adjustments_pct_ebitda": 18.0,
+    "free_cash_flow_conversion_pct": 62.0,
+    "working_capital_volatility_pct_sales": 12.0,
+    "capex_pct_revenue": 8.0,
+    "end_market_cyclicality_1_to_5": 3,
+    "supplier_concentration_pct": 20.0,
+    "pricing_power_1_to_5": 2,
+    "regulatory_complexity_1_to_5": 5,
+    "open_litigation_count": 3,
+    "management_turnover_3y": 3,
+    "finance_team_depth_1_to_5": 2,
+    "board_reporting_maturity_1_to_5": 2,
+    "value_creation_dependency_1_to_5": 5,
+    "execution_complexity_1_to_5": 4,
+    "integration_risk_1_to_5": 3
+  },
+  "diligence_flags": [
+    {
+      "id": "REG-01",
+      "severity": "critical",
+      "dimension": "legal_regulatory",
+      "description": "Active federal reimbursement coding investigation with potential recoupment exposure."
+    },
+    {
+      "id": "COMP-08",
+      "severity": "high",
+      "dimension": "legal_regulatory",
+      "description": "Compliance audit identified material documentation lapses in three major regions."
+    },
+    {
+      "id": "DEBT-05",
+      "severity": "high",
+      "dimension": "leverage_debt_service",
+      "description": "Base case covenant headroom below one quarter under current run-rate assumptions."
+    }
+  ],
+  "open_diligence_questions": [
+    "Quantify recoupment exposure under conservative and severe enforcement scenarios.",
+    "Define remediation cost and timeline to close documentation and billing-control gaps.",
+    "Assess lender willingness for covenant holiday tied to regulatory milestone closure."
+  ],
+  "expected_outcome": {
+    "expected_risk_band": "severe",
+    "expected_action": "No-go until mitigated",
+    "score_range": [
+      82,
+      96
+    ]
+  }
+}
