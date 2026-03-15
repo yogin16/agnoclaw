@@ -1,7 +1,7 @@
 """v0.2 harness runtime contracts."""
 
 from .context import ExecutionContext
-from .errors import HarnessError
+from .errors import AgnoAuthError, AgnoConfigError, HarnessError
 from .events import (
     EVENT_VERSION,
     EventSink,
@@ -50,6 +50,8 @@ __all__ = [
     "AllowAllPolicyEngine",
     "AgentOSClaimKeys",
     "AgentOSContextAdapter",
+    "AgnoAuthError",
+    "AgnoConfigError",
     "EVENT_VERSION",
     "EventSink",
     "EventSinkMode",

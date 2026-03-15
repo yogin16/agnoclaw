@@ -27,6 +27,8 @@ from .agent import AgentHarness, HarnessAgent  # HarnessAgent = backward compat 
 from .config import HarnessConfig, get_config
 from .runtime import (
     AllowAllPolicyEngine,
+    AgnoAuthError,
+    AgnoConfigError,
     AgentOSClaimKeys,
     AgentOSContextAdapter,
     EventSinkMode,
@@ -45,6 +47,8 @@ from .workspace import Workspace
 
 __all__ = [
     "AllowAllPolicyEngine",
+    "AgnoAuthError",
+    "AgnoConfigError",
     "AgentOSClaimKeys",
     "AgentOSContextAdapter",
     "AgentHarness",
@@ -65,4 +69,4 @@ __all__ = [
     "Workspace",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"

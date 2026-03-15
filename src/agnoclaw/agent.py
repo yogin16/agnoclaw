@@ -59,6 +59,7 @@ import logging
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -72,6 +73,8 @@ from .config import HarnessConfig, get_config
 from .prompts.system import SystemPromptBuilder
 from .runtime import (
     AllowAllPolicyEngine,
+    AgnoAuthError,
+    AgnoConfigError,
     EventSink,
     EventSinkMode,
     ExecutionContext,
@@ -101,6 +104,9 @@ from .tools import get_default_tools
 from .workspace import Workspace
 
 logger = logging.getLogger("agnoclaw.agent")
+
+_ERROR_MESSAGE_LIMIT = 500
+_RESULT_PREVIEW_LIMIT = 240
 
 # Provider name aliases → Agno's canonical provider names
 _PROVIDER_ALIASES: dict[str, str] = {
@@ -153,6 +159,43 @@ _KNOWN_PROVIDERS: set[str] = {
     "vllm",
     "xai",
 }
+
+
+def _run_output_status_value(value: Any) -> str | None:
+    status = getattr(value, "status", None)
+    if status is None:
+        return None
+    raw = getattr(status, "value", status)
+    if raw is None:
+        return None
+    text = str(raw).strip().lower()
+    return text or None
+
+
+def _run_output_is_error(value: Any) -> bool:
+    return _run_output_status_value(value) == "error"
+
+
+def _patch_run_output_string_behavior() -> None:
+    """Make str(RunOutput) return user-facing content instead of dataclass repr."""
+    if getattr(RunOutput, "_agnoclaw_str_patched", False):
+        return
+
+    def _run_output_str(self) -> str:
+        content = getattr(self, "content", None)
+        if content is None:
+            return ""
+        return content if isinstance(content, str) else str(content)
+
+    RunOutput.__str__ = _run_output_str  # type: ignore[assignment]
+
+    if not hasattr(RunOutput, "is_error"):
+        RunOutput.is_error = property(_run_output_is_error)  # type: ignore[attr-defined]
+
+    RunOutput._agnoclaw_str_patched = True  # type: ignore[attr-defined]
+
+
+_patch_run_output_string_behavior()
 
 
 def _resolve_model(model: str | None, provider: str | None, config: HarnessConfig) -> str:
@@ -547,6 +590,8 @@ class AgentHarness:
             session_summary_manager=session_summary_manager,
             add_session_summary_to_context=_enable_session_summary,
         )
+        # Per-run tool step tracking for progress events and duration metrics.
+        self._tool_step_state: dict[str, dict[str, Any]] = {}
 
     def _build_system_prompt(
         self,
@@ -812,6 +857,253 @@ class AgentHarness:
             return call_id
         return None
 
+    @staticmethod
+    def _truncate_text(value: str, *, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return f"{value[: limit - 1].rstrip()}…"
+
+    @staticmethod
+    def _normalize_error_message(value: Any) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+            text = text[1:-1].strip()
+        return text
+
+    @staticmethod
+    def _status_is_error(value: Any) -> bool:
+        return _run_output_is_error(value)
+
+    @staticmethod
+    def _extract_error_signal_from_run_output(run_output: Any) -> dict[str, Any]:
+        status = _run_output_status_value(run_output)
+        raw_message = getattr(run_output, "content", None)
+        message = AgentHarness._normalize_error_message(raw_message)
+        signal: dict[str, Any] = {
+            "status": status,
+            "message": message,
+            "error_type": None,
+            "error_id": None,
+            "additional_data": {},
+            "source": "run_output",
+        }
+
+        events = getattr(run_output, "events", None)
+        if isinstance(events, list):
+            for event in reversed(events):
+                event_name = str(getattr(event, "event", "")).lower()
+                if event_name not in {"runerror", "run_error"}:
+                    continue
+                signal["error_type"] = getattr(event, "error_type", None)
+                signal["error_id"] = getattr(event, "error_id", None)
+                additional = getattr(event, "additional_data", None)
+                if isinstance(additional, dict):
+                    signal["additional_data"] = dict(additional)
+                event_content = getattr(event, "content", None)
+                if event_content:
+                    signal["message"] = AgentHarness._normalize_error_message(event_content)
+                break
+
+        return signal
+
+    @staticmethod
+    def _extract_error_signal_from_stream_event(event: Any) -> dict[str, Any] | None:
+        event_name = str(getattr(event, "event", "")).lower()
+        if event_name not in {"runerror", "run_error"}:
+            return None
+        content = AgentHarness._normalize_error_message(getattr(event, "content", ""))
+        additional = getattr(event, "additional_data", None)
+        return {
+            "status": "error",
+            "message": content,
+            "error_type": getattr(event, "error_type", None),
+            "error_id": getattr(event, "error_id", None),
+            "additional_data": dict(additional) if isinstance(additional, dict) else {},
+            "source": "stream_event",
+        }
+
+    @staticmethod
+    def _classify_error_signal(signal: dict[str, Any]) -> str:
+        error_type = str(signal.get("error_type") or "").lower()
+        error_id = str(signal.get("error_id") or "").lower()
+        message = str(signal.get("message") or "").lower()
+
+        auth_markers = (
+            "model_authentication_error",
+            "authentication",
+            "auth token",
+            "auth_token",
+            "api key",
+            "api_key",
+            "unauthorized",
+            "invalid_api_key",
+            "could not resolve authentication method",
+            "anthropic_api_key",
+            "openai_api_key",
+            "access token",
+        )
+        if any(marker in error_type for marker in auth_markers) or any(
+            marker in error_id for marker in auth_markers
+        ):
+            return "auth"
+        if any(marker in message for marker in auth_markers):
+            return "auth"
+
+        config_markers = (
+            "invalid model",
+            "model not found",
+            "does not support",
+            "unknown model",
+            "unknown provider",
+            "not configured",
+            "must be set",
+            "missing required",
+            "unsupported",
+            "configuration",
+        )
+        if any(marker in message for marker in config_markers):
+            return "config"
+
+        recoverable_markers = (
+            "rate limit",
+            "429",
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "connection error",
+            "network error",
+            "try again",
+            "overloaded",
+            "retry",
+        )
+        if any(marker in message for marker in recoverable_markers):
+            return "recoverable"
+
+        return "unknown"
+
+    def _raise_if_fatal_error_signal(self, signal: dict[str, Any]) -> None:
+        if str(signal.get("status") or "").lower() != "error":
+            return
+        category = self._classify_error_signal(signal)
+        message = self._normalize_error_message(signal.get("message"))
+        if not message:
+            message = "Model invocation failed."
+        message = self._truncate_text(message, limit=_ERROR_MESSAGE_LIMIT)
+        details = {
+            "error_type": signal.get("error_type"),
+            "error_id": signal.get("error_id"),
+            "source": signal.get("source"),
+            "additional_data": signal.get("additional_data") or {},
+        }
+        if category == "auth":
+            raise AgnoAuthError(message, details=details)
+        if category == "config":
+            raise AgnoConfigError(message, details=details)
+
+    def _format_result_preview(self, value: Any) -> str:
+        if value is None:
+            return ""
+        text = " ".join(str(value).split())
+        return self._truncate_text(text, limit=_RESULT_PREVIEW_LIMIT)
+
+    def _start_tool_step(
+        self,
+        *,
+        run_id: str,
+        tool_name: str,
+        tool_call_id: str | None,
+        context: ExecutionContext,
+    ) -> dict[str, Any]:
+        state = self._tool_step_state.setdefault(run_id, {"next_index": 1, "active": {}})
+        step_index = int(state.get("next_index", 1))
+        state["next_index"] = step_index + 1
+
+        if tool_call_id:
+            step_id = tool_call_id
+        else:
+            step_id = f"{run_id}:step:{step_index}"
+        step_name = f"Running {tool_name}"
+
+        step_data = {
+            "step_id": step_id,
+            "step_name": step_name,
+            "step_index": step_index,
+            "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
+            "started_at": monotonic(),
+        }
+        state["active"][step_id] = step_data
+        self._emit_event_sync(
+            event_type="step_started",
+            run_id=run_id,
+            context=context,
+            payload={
+                "step_id": step_id,
+                "step_name": step_name,
+                "step_index": step_index,
+                "total_steps": None,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+            },
+        )
+        return step_data
+
+    def _finish_tool_step(
+        self,
+        *,
+        run_id: str,
+        tool_name: str,
+        tool_call_id: str | None,
+        context: ExecutionContext,
+    ) -> tuple[dict[str, Any], int]:
+        state = self._tool_step_state.get(run_id, {})
+        active = state.get("active", {})
+        step_data: dict[str, Any] | None = None
+
+        if isinstance(active, dict):
+            if tool_call_id and tool_call_id in active:
+                step_data = active.pop(tool_call_id, None)
+            if step_data is None and active:
+                # Fallback for missing call IDs: finish earliest active step.
+                first_key = next(iter(active.keys()))
+                step_data = active.pop(first_key)
+
+        if step_data is None:
+            state = self._tool_step_state.setdefault(run_id, {"next_index": 1, "active": {}})
+            step_index = int(state.get("next_index", 1))
+            state["next_index"] = step_index + 1
+            step_data = {
+                "step_id": tool_call_id or f"{run_id}:step:{step_index}",
+                "step_name": f"Running {tool_name}",
+                "step_index": step_index,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "started_at": monotonic(),
+            }
+
+        started_at = float(step_data.get("started_at") or monotonic())
+        duration_ms = max(0, int((monotonic() - started_at) * 1000))
+        self._emit_event_sync(
+            event_type="step_completed",
+            run_id=run_id,
+            context=context,
+            payload={
+                "step_id": step_data.get("step_id"),
+                "step_name": step_data.get("step_name"),
+                "step_index": step_data.get("step_index"),
+                "total_steps": None,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "duration_ms": duration_ms,
+            },
+        )
+        return step_data, duration_ms
+
+    def _cleanup_tool_step_state(self, run_id: str) -> None:
+        self._tool_step_state.pop(run_id, None)
+
     def _raise_agent_run_exception(self, error: HarnessError) -> None:
         raise AgentRunException(error, user_message=error.message)
 
@@ -833,12 +1125,19 @@ class AgentHarness:
             run_id = self._run_id_from_tool_hook(run_context=run_context, fc=fc)
             context = self._context_from_run_context(run_context)
             tool_name = getattr(fc.function, "name", "unknown_tool")
+            tool_call_id = self._tool_call_id(fc)
             arguments = dict(getattr(fc, "arguments", None) or {})
+            step = self._start_tool_step(
+                run_id=run_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                context=context,
+            )
             request = ToolCallRequest(
                 run_id=run_id,
                 tool_name=tool_name,
                 arguments=arguments,
-                metadata={"tool_call_id": self._tool_call_id(fc)},
+                metadata={"tool_call_id": tool_call_id},
             )
 
             self._emit_event_sync(
@@ -847,7 +1146,10 @@ class AgentHarness:
                 context=context,
                 payload={
                     "tool_name": tool_name,
-                    "tool_call_id": self._tool_call_id(fc),
+                    "tool_call_id": tool_call_id,
+                    "step_id": step["step_id"],
+                    "step_name": step["step_name"],
+                    "step_index": step["step_index"],
                     "argument_keys": sorted(arguments.keys()),
                 },
             )
@@ -922,13 +1224,14 @@ class AgentHarness:
             run_id = self._run_id_from_tool_hook(run_context=run_context, fc=fc)
             context = self._context_from_run_context(run_context)
             tool_name = getattr(fc.function, "name", "unknown_tool")
+            tool_call_id = self._tool_call_id(fc)
             result = ToolCallResult(
                 run_id=run_id,
                 tool_name=tool_name,
                 arguments=dict(getattr(fc, "arguments", None) or {}),
                 output=getattr(fc, "result", None),
                 error=getattr(fc, "error", None),
-                metadata={"tool_call_id": self._tool_call_id(fc)},
+                metadata={"tool_call_id": tool_call_id},
             )
 
             decision = self._run_policy_sync(
@@ -947,11 +1250,23 @@ class AgentHarness:
             if decision.action == PolicyAction.ALLOW_WITH_REDACTION and hasattr(fc, "result"):
                 fc.result = self._apply_redactions_to_object(fc.result, decision.redactions)
 
+            step, duration_ms = self._finish_tool_step(
+                run_id=run_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                context=context,
+            )
+            result_preview = self._format_result_preview(getattr(fc, "result", None))
             event_type = "tool.call.failed" if getattr(fc, "error", None) else "tool.call.completed"
             payload = {
                 "tool_name": tool_name,
-                "tool_call_id": self._tool_call_id(fc),
+                "tool_call_id": tool_call_id,
+                "step_id": step.get("step_id"),
+                "step_name": step.get("step_name"),
+                "step_index": step.get("step_index"),
                 "error": getattr(fc, "error", None),
+                "duration_ms": duration_ms,
+                "result_preview": result_preview,
                 "result_chars": (
                     len(str(getattr(fc, "result", "")))
                     if getattr(fc, "result", None) is not None
@@ -1384,11 +1699,57 @@ class AgentHarness:
         return ""
 
     @staticmethod
-    def _map_agno_event_type(event: Any) -> str | None:
+    def _event_name(event: Any) -> str:
+        if event is None:
+            return ""
         raw_event = getattr(event, "event", None)
         if raw_event is None and isinstance(event, dict):
             raw_event = event.get("event")
-        if raw_event is None:
+        return str(raw_event or "")
+
+    @staticmethod
+    def _event_attr(event: Any, key: str, default: Any = None) -> Any:
+        if isinstance(event, dict):
+            return event.get(key, default)
+        return getattr(event, key, default)
+
+    @staticmethod
+    def _extract_thinking_content(event: Any) -> str:
+        reasoning_content = AgentHarness._event_attr(event, "reasoning_content", None)
+        if reasoning_content:
+            return str(reasoning_content)
+
+        if AgentHarness._event_name(event) == "ReasoningStep":
+            content = AgentHarness._event_attr(event, "content", None)
+            if content is None:
+                return ""
+            if isinstance(content, str):
+                return content
+            summary = getattr(content, "summary", None)
+            title = getattr(content, "title", None)
+            reasoning = getattr(content, "reasoning", None)
+            for value in (summary, title, reasoning):
+                if value:
+                    return str(value)
+            return str(content)
+
+        return ""
+
+    @staticmethod
+    def _thinking_phase(event: Any) -> str:
+        event_name = AgentHarness._event_name(event)
+        if event_name == "ReasoningStarted":
+            return "planning"
+        if event_name in {"ReasoningStep", "ReasoningContentDelta"}:
+            return "analyzing"
+        if event_name == "ReasoningCompleted":
+            return "evaluating"
+        return "analyzing"
+
+    @staticmethod
+    def _map_agno_event_type(event: Any) -> str | None:
+        raw_event = AgentHarness._event_name(event)
+        if not raw_event:
             return None
         mapping = {
             "ToolCallStarted": "tool.call.started",
@@ -1396,6 +1757,7 @@ class AgentHarness:
             "ToolCallError": "tool.call.failed",
             "ReasoningStarted": "reasoning.started",
             "ReasoningStep": "reasoning.step",
+            "ReasoningContentDelta": "reasoning.delta",
             "ReasoningCompleted": "reasoning.completed",
             "MemoryUpdateStarted": "memory.write.started",
             "MemoryUpdateCompleted": "memory.write.completed",
@@ -1438,6 +1800,7 @@ class AgentHarness:
             metadata=dict(metadata or {}),
         )
         base_prompt = self._agent.system_message
+        stream_cleanup_deferred = False
 
         self._emit_event_sync(
             event_type="run.started",
@@ -1608,26 +1971,81 @@ class AgentHarness:
 
                 def _wrapped_stream() -> Iterator[RunOutputEvent]:
                     collected: list[str] = []
+                    cumulative = ""
+                    stream_error_signal: dict[str, Any] | None = None
                     try:
                         for event in result:
                             mapped_event = self._map_agno_event_type(event)
                             if mapped_event:
+                                source_event = self._event_name(event) or None
+                                payload: dict[str, Any] = {"source_event": source_event}
+                                for key in ("step_id", "step_name", "step_index", "tool_name", "tool_call_id"):
+                                    value = self._event_attr(event, key, None)
+                                    if value is not None:
+                                        payload[key] = value
+                                tool_obj = self._event_attr(event, "tool", None)
+                                if tool_obj is not None:
+                                    tool_name = getattr(tool_obj, "tool_name", None) or getattr(tool_obj, "name", None)
+                                    tool_call_id = getattr(tool_obj, "tool_call_id", None)
+                                    if tool_name and "tool_name" not in payload:
+                                        payload["tool_name"] = tool_name
+                                    if tool_call_id and "tool_call_id" not in payload:
+                                        payload["tool_call_id"] = tool_call_id
                                 self._emit_event_sync(
                                     event_type=mapped_event,
                                     run_id=run_id,
                                     context=ctx,
-                                    payload={"source_event": getattr(event, "event", None)},
+                                    payload=payload,
                                 )
+
+                            thinking = self._extract_thinking_content(event)
+                            if thinking:
+                                self._emit_event_sync(
+                                    event_type="thinking",
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={
+                                        "content": thinking,
+                                        "phase": self._thinking_phase(event),
+                                        "source_event": self._event_name(event),
+                                    },
+                                )
+
+                            error_signal = self._extract_error_signal_from_stream_event(event)
+                            if error_signal is not None and stream_error_signal is None:
+                                stream_error_signal = error_signal
+
                             text = self._extract_event_content(event)
                             if text:
                                 collected.append(text)
+                                cumulative += text
                                 self._emit_event_sync(
                                     event_type="run.content",
                                     run_id=run_id,
                                     context=ctx,
                                     payload={"chars": len(text)},
                                 )
+                                self._emit_event_sync(
+                                    event_type="response_chunk",
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={
+                                        "content": text,
+                                        "cumulative": cumulative,
+                                        "is_final": False,
+                                    },
+                                )
                             yield event
+                        self._emit_event_sync(
+                            event_type="response_chunk",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={
+                                "content": "",
+                                "cumulative": cumulative,
+                                "is_final": True,
+                            },
+                        )
                         post_result = RunResultEnvelope(
                             run_id=run_id,
                             content="".join(collected),
@@ -1640,6 +2058,27 @@ class AgentHarness:
                             context=ctx,
                         )
                         output_text = str(post_result.content) if post_result.content is not None else ""
+                        if stream_error_signal is not None:
+                            self._raise_if_fatal_error_signal(stream_error_signal)
+                            error_message = (
+                                self._normalize_error_message(stream_error_signal.get("message"))
+                                or "Model invocation failed."
+                            )
+                            error_message = self._truncate_text(error_message, limit=_ERROR_MESSAGE_LIMIT)
+                            code = stream_error_signal.get("error_id") or stream_error_signal.get("error_type")
+                            self._emit_event_sync(
+                                event_type="model.request.failed",
+                                run_id=run_id,
+                                context=ctx,
+                                payload={"error": error_message, "code": code, "output_chars": len(output_text)},
+                            )
+                            self._emit_event_sync(
+                                event_type="run.failed",
+                                run_id=run_id,
+                                context=ctx,
+                                payload={"error": error_message, "code": code},
+                            )
+                            return
                         self._emit_event_sync(
                             event_type="model.request.completed",
                             run_id=run_id,
@@ -1665,7 +2104,10 @@ class AgentHarness:
                         if harness_error is not None:
                             raise harness_error from exc
                         raise
+                    finally:
+                        self._cleanup_tool_step_state(run_id)
 
+                stream_cleanup_deferred = True
                 return _wrapped_stream()
 
             post_result = RunResultEnvelope(
@@ -1680,6 +2122,27 @@ class AgentHarness:
                 context=ctx,
             )
             output_text = str(post_result.content) if post_result.content is not None else ""
+            resolved_output = post_result.raw_output if post_result.raw_output is not None else result
+            signal = self._extract_error_signal_from_run_output(resolved_output)
+            if self._status_is_error(resolved_output):
+                self._raise_if_fatal_error_signal(signal)
+                error_message = self._normalize_error_message(signal.get("message")) or "Model invocation failed."
+                error_message = self._truncate_text(error_message, limit=_ERROR_MESSAGE_LIMIT)
+                code = signal.get("error_id") or signal.get("error_type")
+                self._emit_event_sync(
+                    event_type="model.request.failed",
+                    run_id=run_id,
+                    context=ctx,
+                    payload={"error": error_message, "code": code, "output_chars": len(output_text)},
+                )
+                self._emit_event_sync(
+                    event_type="run.failed",
+                    run_id=run_id,
+                    context=ctx,
+                    payload={"error": error_message, "code": code},
+                )
+                return resolved_output
+
             self._emit_event_sync(
                 event_type="model.request.completed",
                 run_id=run_id,
@@ -1693,7 +2156,7 @@ class AgentHarness:
                 payload={"output_chars": len(output_text)},
             )
             self._maybe_optimize_memories()
-            return post_result.raw_output if post_result.raw_output is not None else result
+            return resolved_output
         except Exception as exc:
             if self._agent.system_message != base_prompt:
                 self._agent.system_message = base_prompt
@@ -1713,6 +2176,9 @@ class AgentHarness:
                 message=str(exc),
                 retryable=True,
             ) from exc
+        finally:
+            if not stream_cleanup_deferred:
+                self._cleanup_tool_step_state(run_id)
 
     async def arun(
         self,
@@ -1748,6 +2214,7 @@ class AgentHarness:
             metadata=dict(metadata or {}),
         )
         base_prompt = self._agent.system_message
+        stream_cleanup_deferred = False
 
         await self._emit_event_async(
             event_type="run.started",
@@ -1884,26 +2351,81 @@ class AgentHarness:
 
                 async def _wrapped_stream() -> AsyncIterator[RunOutputEvent]:
                     collected: list[str] = []
+                    cumulative = ""
+                    stream_error_signal: dict[str, Any] | None = None
                     try:
                         async for event in result:
                             mapped_event = self._map_agno_event_type(event)
                             if mapped_event:
+                                source_event = self._event_name(event) or None
+                                payload: dict[str, Any] = {"source_event": source_event}
+                                for key in ("step_id", "step_name", "step_index", "tool_name", "tool_call_id"):
+                                    value = self._event_attr(event, key, None)
+                                    if value is not None:
+                                        payload[key] = value
+                                tool_obj = self._event_attr(event, "tool", None)
+                                if tool_obj is not None:
+                                    tool_name = getattr(tool_obj, "tool_name", None) or getattr(tool_obj, "name", None)
+                                    tool_call_id = getattr(tool_obj, "tool_call_id", None)
+                                    if tool_name and "tool_name" not in payload:
+                                        payload["tool_name"] = tool_name
+                                    if tool_call_id and "tool_call_id" not in payload:
+                                        payload["tool_call_id"] = tool_call_id
                                 await self._emit_event_async(
                                     event_type=mapped_event,
                                     run_id=run_id,
                                     context=ctx,
-                                    payload={"source_event": getattr(event, "event", None)},
+                                    payload=payload,
                                 )
+
+                            thinking = self._extract_thinking_content(event)
+                            if thinking:
+                                await self._emit_event_async(
+                                    event_type="thinking",
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={
+                                        "content": thinking,
+                                        "phase": self._thinking_phase(event),
+                                        "source_event": self._event_name(event),
+                                    },
+                                )
+
+                            error_signal = self._extract_error_signal_from_stream_event(event)
+                            if error_signal is not None and stream_error_signal is None:
+                                stream_error_signal = error_signal
+
                             text = self._extract_event_content(event)
                             if text:
                                 collected.append(text)
+                                cumulative += text
                                 await self._emit_event_async(
                                     event_type="run.content",
                                     run_id=run_id,
                                     context=ctx,
                                     payload={"chars": len(text)},
                                 )
+                                await self._emit_event_async(
+                                    event_type="response_chunk",
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={
+                                        "content": text,
+                                        "cumulative": cumulative,
+                                        "is_final": False,
+                                    },
+                                )
                             yield event
+                        await self._emit_event_async(
+                            event_type="response_chunk",
+                            run_id=run_id,
+                            context=ctx,
+                            payload={
+                                "content": "",
+                                "cumulative": cumulative,
+                                "is_final": True,
+                            },
+                        )
                         post_result = RunResultEnvelope(
                             run_id=run_id,
                             content="".join(collected),
@@ -1916,6 +2438,27 @@ class AgentHarness:
                             context=ctx,
                         )
                         output_text = str(post_result.content) if post_result.content is not None else ""
+                        if stream_error_signal is not None:
+                            self._raise_if_fatal_error_signal(stream_error_signal)
+                            error_message = (
+                                self._normalize_error_message(stream_error_signal.get("message"))
+                                or "Model invocation failed."
+                            )
+                            error_message = self._truncate_text(error_message, limit=_ERROR_MESSAGE_LIMIT)
+                            code = stream_error_signal.get("error_id") or stream_error_signal.get("error_type")
+                            await self._emit_event_async(
+                                event_type="model.request.failed",
+                                run_id=run_id,
+                                context=ctx,
+                                payload={"error": error_message, "code": code, "output_chars": len(output_text)},
+                            )
+                            await self._emit_event_async(
+                                event_type="run.failed",
+                                run_id=run_id,
+                                context=ctx,
+                                payload={"error": error_message, "code": code},
+                            )
+                            return
                         await self._emit_event_async(
                             event_type="model.request.completed",
                             run_id=run_id,
@@ -1941,7 +2484,10 @@ class AgentHarness:
                         if harness_error is not None:
                             raise harness_error from exc
                         raise
+                    finally:
+                        self._cleanup_tool_step_state(run_id)
 
+                stream_cleanup_deferred = True
                 return _wrapped_stream()
 
             post_result = RunResultEnvelope(
@@ -1956,6 +2502,27 @@ class AgentHarness:
                 context=ctx,
             )
             output_text = str(post_result.content) if post_result.content is not None else ""
+            resolved_output = post_result.raw_output if post_result.raw_output is not None else result
+            signal = self._extract_error_signal_from_run_output(resolved_output)
+            if self._status_is_error(resolved_output):
+                self._raise_if_fatal_error_signal(signal)
+                error_message = self._normalize_error_message(signal.get("message")) or "Model invocation failed."
+                error_message = self._truncate_text(error_message, limit=_ERROR_MESSAGE_LIMIT)
+                code = signal.get("error_id") or signal.get("error_type")
+                await self._emit_event_async(
+                    event_type="model.request.failed",
+                    run_id=run_id,
+                    context=ctx,
+                    payload={"error": error_message, "code": code, "output_chars": len(output_text)},
+                )
+                await self._emit_event_async(
+                    event_type="run.failed",
+                    run_id=run_id,
+                    context=ctx,
+                    payload={"error": error_message, "code": code},
+                )
+                return resolved_output
+
             await self._emit_event_async(
                 event_type="model.request.completed",
                 run_id=run_id,
@@ -1969,7 +2536,7 @@ class AgentHarness:
                 payload={"output_chars": len(output_text)},
             )
             self._maybe_optimize_memories()
-            return post_result.raw_output if post_result.raw_output is not None else result
+            return resolved_output
         except Exception as exc:
             if self._agent.system_message != base_prompt:
                 self._agent.system_message = base_prompt
@@ -1989,6 +2556,9 @@ class AgentHarness:
                 message=str(exc),
                 retryable=True,
             ) from exc
+        finally:
+            if not stream_cleanup_deferred:
+                self._cleanup_tool_step_state(run_id)
 
     def print_response(self, message: str, *, stream: bool = True, skill: str | None = None, **kwargs) -> None:
         """
