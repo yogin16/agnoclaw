@@ -1750,6 +1750,7 @@ class AgentHarness:
         *,
         stream: bool = False,
         stream_events: bool = False,
+        max_turns: int | None = None,
         skill: str | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
@@ -1777,6 +1778,8 @@ class AgentHarness:
             stream_events=stream_events,
             metadata=dict(metadata or {}),
         )
+        if max_turns is not None:
+            run_input.metadata.setdefault("max_turns", int(max_turns))
         base_prompt = self._agent.system_message
         stream_cleanup_deferred = False
 
@@ -1788,6 +1791,7 @@ class AgentHarness:
                 "stream": stream,
                 "stream_events": stream_events,
                 "skill": skill,
+                "max_turns": max_turns,
             },
         )
 
@@ -1924,6 +1928,8 @@ class AgentHarness:
             call_kwargs.pop("run_id", None)
             if output_schema is not None:
                 call_kwargs["output_schema"] = output_schema
+            if max_turns is not None:
+                call_kwargs["max_turns"] = int(max_turns)
             agent_metadata = self._build_agent_run_metadata(
                 context=ctx,
                 run_input=run_input,
@@ -2164,6 +2170,7 @@ class AgentHarness:
         *,
         stream: bool = False,
         stream_events: bool = False,
+        max_turns: int | None = None,
         skill: str | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
@@ -2191,6 +2198,8 @@ class AgentHarness:
             stream_events=stream_events,
             metadata=dict(metadata or {}),
         )
+        if max_turns is not None:
+            run_input.metadata.setdefault("max_turns", int(max_turns))
         base_prompt = self._agent.system_message
         stream_cleanup_deferred = False
 
@@ -2202,6 +2211,7 @@ class AgentHarness:
                 "stream": stream,
                 "stream_events": stream_events,
                 "skill": skill,
+                "max_turns": max_turns,
             },
         )
 
@@ -2297,6 +2307,8 @@ class AgentHarness:
             call_kwargs.pop("run_id", None)
             if output_schema is not None:
                 call_kwargs["output_schema"] = output_schema
+            if max_turns is not None:
+                call_kwargs["max_turns"] = int(max_turns)
             agent_metadata = self._build_agent_run_metadata(
                 context=ctx,
                 run_input=run_input,
@@ -2599,6 +2611,150 @@ class AgentHarness:
         """Return the chat history for the current session."""
         active_session = self.session_id or getattr(self._agent, "session_id", "")
         return self._agent.get_chat_history(active_session or "")
+
+    def get_session_messages(self, session_id: str | None = None) -> list:
+        """
+        Return chat history for a specific session ID.
+
+        Falls back to the currently active session when not provided.
+        """
+        target_session = session_id or self.session_id or getattr(self._agent, "session_id", "")
+        if not target_session:
+            return []
+        messages = self._agent.get_chat_history(target_session)
+        return list(messages or [])
+
+    @staticmethod
+    def _normalize_session_record(record: Any) -> dict[str, Any]:
+        if isinstance(record, dict):
+            data = dict(record)
+        else:
+            data = {}
+
+        keys = (
+            "session_id",
+            "id",
+            "user_id",
+            "created_at",
+            "updated_at",
+            "summary",
+            "run_count",
+            "title",
+        )
+        for key in keys:
+            if key in data:
+                continue
+            value = getattr(record, key, None)
+            if value is not None:
+                data[key] = value
+
+        if "session_id" not in data and "id" in data and data["id"] is not None:
+            data["session_id"] = str(data["id"])
+        return data
+
+    def list_sessions(self, *, user_id: str | None = None, limit: int | None = 50) -> list[dict[str, Any]]:
+        """
+        List known sessions from the configured storage backend.
+
+        This is a best-effort adapter over storage backends with different
+        method names/signatures.
+        """
+        db = getattr(self._agent, "db", None)
+        if db is None:
+            return []
+
+        effective_user = user_id or self.user_id
+        method_names = (
+            "list_sessions",
+            "get_sessions",
+            "get_all_sessions",
+        )
+
+        raw = None
+        for method_name in method_names:
+            method = getattr(db, method_name, None)
+            if not callable(method):
+                continue
+
+            attempts = []
+            kwargs: dict[str, Any] = {}
+            if effective_user is not None:
+                kwargs["user_id"] = effective_user
+            if limit is not None:
+                kwargs["limit"] = int(limit)
+            if kwargs:
+                attempts.append(kwargs)
+            attempts.append({})
+
+            for call_kwargs in attempts:
+                try:
+                    raw = method(**call_kwargs)
+                    break
+                except TypeError:
+                    continue
+            if raw is not None:
+                break
+
+        if raw is None:
+            return []
+
+        if isinstance(raw, dict):
+            if isinstance(raw.get("sessions"), list):
+                records = raw["sessions"]
+            elif isinstance(raw.get("items"), list):
+                records = raw["items"]
+            else:
+                records = [raw]
+        elif isinstance(raw, list | tuple):
+            records = list(raw)
+        else:
+            records = [raw]
+
+        normalized = [self._normalize_session_record(item) for item in records]
+        normalized = [item for item in normalized if item.get("session_id")]
+
+        if effective_user is not None:
+            filtered: list[dict[str, Any]] = []
+            for item in normalized:
+                if item.get("user_id") in {None, effective_user}:
+                    filtered.append(item)
+            normalized = filtered
+
+        if limit is not None and limit >= 0:
+            normalized = normalized[: int(limit)]
+        return normalized
+
+    def _session_exists(self, session_id: str) -> bool:
+        getter = getattr(self._agent, "get_session", None)
+        if callable(getter):
+            try:
+                if getter(session_id):
+                    return True
+            except TypeError:
+                pass
+        return bool(self.get_session_messages(session_id))
+
+    def resume_session(self, session_id: str, *, verify_exists: bool = False) -> str:
+        """
+        Activate an existing session ID for subsequent runs.
+        """
+        target = str(session_id or "").strip()
+        if not target:
+            raise ValueError("session_id is required")
+        if verify_exists and not self._session_exists(target):
+            raise HarnessError(
+                code="SESSION_NOT_FOUND",
+                category="session",
+                message=f"Session not found: {target}",
+                retryable=False,
+                details={"session_id": target},
+            )
+
+        self.session_id = target
+        if hasattr(self._agent, "session_id"):
+            self._agent.session_id = target
+        self._set_system_prompt(session_id=target)
+        return target
 
     def clear_session_context(self, new_session_id: str | None = None) -> str:
         """
