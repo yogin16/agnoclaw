@@ -176,28 +176,6 @@ def _run_output_is_error(value: Any) -> bool:
     return _run_output_status_value(value) == "error"
 
 
-def _patch_run_output_string_behavior() -> None:
-    """Make str(RunOutput) return user-facing content instead of dataclass repr."""
-    if getattr(RunOutput, "_agnoclaw_str_patched", False):
-        return
-
-    def _run_output_str(self) -> str:
-        content = getattr(self, "content", None)
-        if content is None:
-            return ""
-        return content if isinstance(content, str) else str(content)
-
-    RunOutput.__str__ = _run_output_str  # type: ignore[assignment]
-
-    if not hasattr(RunOutput, "is_error"):
-        RunOutput.is_error = property(_run_output_is_error)  # type: ignore[attr-defined]
-
-    RunOutput._agnoclaw_str_patched = True  # type: ignore[attr-defined]
-
-
-_patch_run_output_string_behavior()
-
-
 def _resolve_model(model: str | None, provider: str | None, config: HarnessConfig) -> str:
     """
     Return an Agno-compatible 'provider:model_id' string.

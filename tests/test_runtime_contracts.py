@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from agno.exceptions import AgentRunException
-from agno.run.agent import RunOutput
 
 from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
@@ -83,11 +82,6 @@ def test_run_emits_lifecycle_events(tmp_path):
     payload = first_event.to_dict()
     assert first_event.event_version == "0.2"
     assert payload["context"]["workspace_id"] == str(harness.workspace.path)
-
-
-def test_run_output_str_returns_content():
-    output = RunOutput(content="hello world")
-    assert str(output) == "hello world"
 
 
 def test_run_raises_auth_error_for_auth_failures(tmp_path):
