@@ -371,30 +371,39 @@ _TYPE_INSTRUCTIONS = {
 }
 
 
-def _build_subagent_tools(tool_names: Optional[list[str]]) -> list:
+def _build_subagent_tools(
+    tool_names: Optional[list[str]],
+    workspace_dir: str | Path | None = None,
+) -> list:
     """Build tool instances for a subagent from tool name list."""
     agent_tools = []
     names = tool_names or ["all"]
+    resolved_workspace = (
+        Path(workspace_dir).expanduser().resolve()
+        if workspace_dir is not None
+        else None
+    )
     if "all" in names or "web" in names:
         from agnoclaw.tools.web import WebToolkit
         agent_tools.append(WebToolkit())
     if "all" in names or "files" in names:
         from agnoclaw.tools.files import FilesToolkit
-        agent_tools.append(FilesToolkit())
+        agent_tools.append(FilesToolkit(workspace_dir=resolved_workspace))
     if "all" in names or "bash" in names:
         from agnoclaw.tools.bash import make_bash_tool
-        agent_tools.append(make_bash_tool())
+        agent_tools.append(make_bash_tool(workspace_dir=resolved_workspace))
     return agent_tools
 
 
-def _resolve_subagent_model(model_id: str):
+def _resolve_subagent_model(model_id: str, config=None):
     """Resolve a subagent model string to an Agno Model object."""
     from agno.models.utils import get_model
 
     from agnoclaw.agent import _resolve_model
     from agnoclaw.config import get_config
 
-    model_ref = _resolve_model(model_id, None, get_config())
+    cfg = config or get_config()
+    model_ref = _resolve_model(model_id, None, cfg)
     return get_model(model_ref)
 
 
@@ -403,17 +412,20 @@ def _run_subagent(
     instructions: str,
     model_id: str,
     tool_names: Optional[list[str]] = None,
+    workspace_dir: str | Path | None = None,
+    config=None,
 ) -> str:
     """Create and run an isolated subagent synchronously. Returns result string."""
-    from agno.agent import Agent
+    from agnoclaw.agent import AgentHarness
 
-    subagent = Agent(
-        model=_resolve_subagent_model(model_id),
+    subagent = AgentHarness(
+        model=model_id,
+        config=config,
+        workspace_dir=workspace_dir,
+        include_default_tools=False,
+        tools=_build_subagent_tools(tool_names, workspace_dir=workspace_dir),
         instructions=instructions,
-        tools=_build_subagent_tools(tool_names),
-        markdown=True,
     )
-
     response = subagent.run(task)
     content = response.content if response else "[no response]"
 
@@ -429,15 +441,19 @@ async def _arun_subagent(
     instructions: str,
     model_id: str,
     tool_names: Optional[list[str]] = None,
+    workspace_dir: str | Path | None = None,
+    config=None,
 ) -> str:
     """Create and run an isolated subagent asynchronously. Returns result string."""
-    from agno.agent import Agent
+    from agnoclaw.agent import AgentHarness
 
-    subagent = Agent(
-        model=_resolve_subagent_model(model_id),
+    subagent = AgentHarness(
+        model=model_id,
+        config=config,
+        workspace_dir=workspace_dir,
+        include_default_tools=False,
+        tools=_build_subagent_tools(tool_names, workspace_dir=workspace_dir),
         instructions=instructions,
-        tools=_build_subagent_tools(tool_names),
-        markdown=True,
     )
 
     response = await subagent.arun(task)
@@ -452,6 +468,8 @@ async def _arun_subagent(
 def make_subagent_tool(
     default_model: Optional[str] = None,
     subagents: Optional[dict[str, SubagentDefinition]] = None,
+    workspace_dir: str | Path | None = None,
+    config=None,
 ):
     """
     Returns a SubagentTool function for spawning isolated sub-agents.
@@ -463,6 +481,8 @@ def make_subagent_tool(
         default_model: Default model for ad-hoc subagents.
         subagents: Named subagent definitions. When provided, the model can
                    invoke them by name via the `agent_name` parameter.
+        workspace_dir: Workspace root propagated to spawned files/bash tools.
+        config: HarnessConfig propagated for model/provider and runtime settings.
     """
     _subagents = subagents or {}
     _default_model = default_model or "anthropic:claude-haiku-4-5-20251001"
@@ -523,9 +543,16 @@ def make_subagent_tool(
                 model_id = model or _default_model
                 tool_names = tools
 
-            return _run_subagent(task, instructions, model_id, tool_names)
+            return _run_subagent(
+                task,
+                instructions,
+                model_id,
+                tool_names,
+                workspace_dir=workspace_dir,
+                config=config,
+            )
 
         except Exception as e:
-            return f"[error] Subagent failed: {e}"
+            raise RuntimeError(f"Subagent failed: {e}") from e
 
     return spawn_subagent

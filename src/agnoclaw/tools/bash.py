@@ -22,6 +22,10 @@ from agno.tools.toolkit import Toolkit
 logger = logging.getLogger("agnoclaw.tools.bash")
 
 
+class BashToolError(RuntimeError):
+    """Raised when a bash tool call fails before producing a command result."""
+
+
 @dataclass
 class _BackgroundTask:
     task_id: str
@@ -40,12 +44,16 @@ class BashToolkit(Toolkit):
     def __init__(
         self,
         timeout: int = 120,
-        workspace_dir: Optional[str] = None,
+        workspace_dir: Optional[str | Path] = None,
         max_background_tasks: int = 16,
     ):
         super().__init__(name="bash")
         self.timeout = timeout
-        self.workspace_dir = workspace_dir
+        self.workspace_dir = (
+            str(Path(workspace_dir).expanduser().resolve())
+            if workspace_dir is not None
+            else None
+        )
         self.max_background_tasks = max_background_tasks
         self._tasks: dict[str, _BackgroundTask] = {}
         self._tasks_dir = Path.home() / ".agnoclaw" / "tmp" / "bash_tasks"
@@ -57,7 +65,10 @@ class BashToolkit(Toolkit):
         self.register(self.bash_kill)
 
     def _resolve_cwd(self, working_dir: Optional[str]) -> Optional[str]:
-        return working_dir or self.workspace_dir
+        candidate = working_dir or self.workspace_dir
+        if candidate is None:
+            return None
+        return str(Path(candidate).expanduser().resolve())
 
     def _task_status(self, task: _BackgroundTask) -> tuple[str, Optional[int]]:
         code = task.process.poll()
@@ -132,9 +143,9 @@ class BashToolkit(Toolkit):
                 output += f"\n[exit code: {result.returncode}]"
             return output.strip() if output.strip() else "[no output]"
         except subprocess.TimeoutExpired:
-            return f"[error] Command timed out after {timeout} seconds: {command}"
+            raise BashToolError(f"Command timed out after {timeout} seconds: {command}") from None
         except Exception as e:
-            return f"[error] Failed to execute command: {e}"
+            raise BashToolError(f"Failed to execute command: {e}") from e
 
     @tool(
         name="bash_start",
@@ -153,7 +164,7 @@ class BashToolkit(Toolkit):
         """Start a background command and return task metadata."""
         self._prune_finished_tasks()
         if len(self._tasks) >= self.max_background_tasks:
-            return (
+            raise BashToolError(
                 f"[error] Too many background tasks ({len(self._tasks)}). "
                 "Use bash_kill or wait for tasks to finish."
             )
@@ -161,6 +172,7 @@ class BashToolkit(Toolkit):
         task_id = f"task_{uuid4().hex[:12]}"
         output_path = self._tasks_dir / f"{task_id}.log"
         cwd = self._resolve_cwd(working_dir)
+        output_file = None
         try:
             output_file = output_path.open("w", encoding="utf-8")
             process = subprocess.Popen(
@@ -174,7 +186,9 @@ class BashToolkit(Toolkit):
             # NOTE: output_file must stay open while the process runs.
             # It is closed in _cleanup_task() when the process exits.
         except Exception as e:
-            return f"[error] Failed to start background command: {e}"
+            if output_file is not None and not output_file.closed:
+                output_file.close()
+            raise BashToolError(f"Failed to start background command: {e}") from e
 
         task = _BackgroundTask(
             task_id=task_id,
@@ -208,7 +222,7 @@ class BashToolkit(Toolkit):
         """Read output for a background task."""
         task = self._tasks.get(task_id)
         if task is None:
-            return f"[error] Unknown task id: {task_id}"
+            raise BashToolError(f"Unknown task id: {task_id}")
 
         status, code = self._task_status(task)
         if code is not None:
@@ -236,7 +250,7 @@ class BashToolkit(Toolkit):
         """Terminate a background task."""
         task = self._tasks.get(task_id)
         if task is None:
-            return f"[error] Unknown task id: {task_id}"
+            raise BashToolError(f"Unknown task id: {task_id}")
 
         code = task.process.poll()
         if code is not None:
@@ -256,10 +270,10 @@ class BashToolkit(Toolkit):
             self._cleanup_task(task)
             return f"Killed task {task_id} (exit code {code})."
         except Exception as e:
-            return f"[error] Failed to kill task {task_id}: {e}"
+            raise BashToolError(f"Failed to kill task {task_id}: {e}") from e
 
 
-def make_bash_tool(timeout: int = 120, workspace_dir: Optional[str] = None):
+def make_bash_tool(timeout: int = 120, workspace_dir: Optional[str | Path] = None):
     """
     Backward-compatible helper returning only the `bash` function tool.
 

@@ -1,5 +1,7 @@
 """Tests for AgentHarness and related utilities."""
 
+from pathlib import Path
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -277,6 +279,39 @@ def test_agent_harness_tools_param():
     import inspect
     sig = inspect.signature(AgentHarness.__init__)
     assert "tools" in sig.parameters
+
+
+def test_agent_harness_default_tools_use_constructor_workspace(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools.files import FilesToolkit
+    from agnoclaw.tools.tasks import ProgressToolkit
+
+    captured_tools = []
+    mock_agent = MagicMock()
+
+    def _agent_ctor(*args, **kwargs):
+        captured_tools[:] = kwargs.get("tools", [])
+        mock_agent.system_message = kwargs.get("system_message")
+        mock_agent.session_id = kwargs.get("session_id")
+        return mock_agent
+
+    config_workspace = tmp_path / "config-workspace"
+    harness_workspace = tmp_path / "constructor-workspace"
+    cfg = HarnessConfig(workspace_dir=str(config_workspace))
+
+    with patch("agnoclaw.agent.Agent", side_effect=_agent_ctor):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            AgentHarness(
+                workspace_dir=harness_workspace,
+                config=cfg,
+            )
+
+    files = next(t for t in captured_tools if isinstance(t, FilesToolkit))
+    progress = next(t for t in captured_tools if isinstance(t, ProgressToolkit))
+
+    assert files.workspace_dir == Path(harness_workspace).resolve()
+    assert Path(progress._project_dir) == Path(harness_workspace).resolve()
 
 
 def test_agent_harness_instructions_param():

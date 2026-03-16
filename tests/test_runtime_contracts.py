@@ -26,6 +26,7 @@ from agnoclaw.runtime import (
 def _make_harness(
     tmp_path,
     *,
+    config=None,
     event_sink=None,
     policy_engine=None,
     pre_run_hooks=None,
@@ -43,7 +44,7 @@ def _make_harness(
         with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
             harness = AgentHarness(
                 workspace_dir=tmp_path,
-                config=HarnessConfig(),
+                config=config or HarnessConfig(),
                 event_sink=event_sink,
                 policy_engine=policy_engine,
                 pre_run_hooks=pre_run_hooks,
@@ -555,6 +556,31 @@ def test_tool_events_include_step_progress_and_result_preview(tmp_path):
     assert completed.payload["result_preview"] == "line one line two"
 
 
+def test_tool_events_emit_failed_for_tool_errors(tmp_path):
+    sink = InMemoryEventSink()
+    harness, _ = _make_harness(tmp_path, event_sink=sink)
+    run_context = _tool_run_context(harness)
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="bash"),
+        arguments={"command": "pwd"},
+        result=None,
+        error="Failed to execute command: cwd missing",
+        call_id="tc-step-failed-1",
+    )
+
+    harness._handle_tool_pre_hook(fc=fc, run_context=run_context)
+    harness._handle_tool_post_hook(fc=fc, run_context=run_context)
+
+    event_types = [e.event_type for e in sink.events]
+    assert "tool.call.failed" in event_types
+    assert "tool.call.completed" not in event_types
+
+    failed = [e for e in sink.events if e.event_type == "tool.call.failed"][-1]
+    assert failed.payload["step_id"] == "tc-step-failed-1"
+    assert failed.payload["error"] == "Failed to execute command: cwd missing"
+    assert failed.payload["result_chars"] == 0
+
+
 def test_guardrails_block_path_outside_workspace(tmp_path):
     harness, _ = _make_harness(tmp_path)
     fc = SimpleNamespace(
@@ -581,6 +607,24 @@ def test_guardrails_block_private_network_host(tmp_path):
         result=None,
         error=None,
         call_id="tc-4",
+    )
+
+    with pytest.raises(AgentRunException) as exc:
+        harness._handle_tool_pre_hook(fc=fc, run_context=_tool_run_context(harness))
+
+    inner = exc.value.args[0]
+    assert isinstance(inner, HarnessError)
+    assert inner.code == "GUARDRAIL_DENIED"
+
+
+def test_guardrails_block_browser_when_network_disabled(tmp_path):
+    harness, _ = _make_harness(tmp_path, config=HarnessConfig(network_enabled=False))
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="browser_navigate"),
+        arguments={"url": "https://example.com"},
+        result=None,
+        error=None,
+        call_id="tc-browser-1",
     )
 
     with pytest.raises(AgentRunException) as exc:

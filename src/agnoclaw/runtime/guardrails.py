@@ -13,6 +13,17 @@ from .hooks import ToolCallRequest
 
 _PATH_ARG_KEYS = frozenset({"path", "base_dir", "working_dir", "directory", "dir", "cwd"})
 _NETWORK_TOOL_NAMES = frozenset({"web_search", "web_fetch"})
+_BROWSER_TOOL_NAMES = frozenset(
+    {
+        "browser_navigate",
+        "browser_click",
+        "browser_type",
+        "browser_screenshot",
+        "browser_snapshot",
+        "browser_scroll",
+        "browser_fill_form",
+    }
+)
 _BASH_NETWORK_COMMAND_RE = re.compile(
     r"\b(curl|wget|http|https|ftp|scp|ssh|sftp|nc|ncat|telnet|dig|nslookup)\b",
     re.IGNORECASE,
@@ -118,7 +129,7 @@ class RuntimeGuardrails:
         tool_name = request.tool_name
         arguments = request.arguments
 
-        if tool_name in _NETWORK_TOOL_NAMES and not self.network_enabled:
+        if (tool_name in _NETWORK_TOOL_NAMES or tool_name in _BROWSER_TOOL_NAMES) and not self.network_enabled:
             violations.append(
                 GuardrailViolation(
                     code="NETWORK_DISABLED",
@@ -128,6 +139,11 @@ class RuntimeGuardrails:
             )
 
         if tool_name == "web_fetch":
+            url = arguments.get("url")
+            if isinstance(url, str):
+                violations.extend(self._validate_url(url=url, tool_name=tool_name, arg_key="url"))
+
+        if tool_name == "browser_navigate":
             url = arguments.get("url")
             if isinstance(url, str):
                 violations.extend(self._validate_url(url=url, tool_name=tool_name, arg_key="url"))
