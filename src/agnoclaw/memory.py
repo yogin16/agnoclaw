@@ -190,6 +190,7 @@ def build_learning_machine(
         EntityMemoryConfig,
         LearnedKnowledgeConfig,
     )
+    from agno.models.utils import get_model
 
     from .agent import _resolve_model
     from .config import get_config
@@ -221,7 +222,8 @@ def build_learning_machine(
         db_path.parent.mkdir(parents=True, exist_ok=True)
         db = SqliteDb(db_file=str(db_path))
 
-    model = _resolve_model(model_id, provider, get_config())
+    model_ref = _resolve_model(model_id, provider, get_config())
+    model = get_model(model_ref)
 
     # ── Per-store configs ──────────────────────────────────────────────────
     # entity_memory: tracks named entities with configurable mode

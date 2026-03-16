@@ -213,9 +213,11 @@ def test_stream_emits_response_and_thinking_events_and_marks_failed(tmp_path):
         ]
     )
 
-    list(harness.run("hello", stream=True, stream_events=True))
+    with pytest.raises(HarnessError) as exc:
+        list(harness.run("hello", stream=True, stream_events=True))
 
     event_types = [e.event_type for e in sink.events]
+    assert exc.value.code == "MODEL_STREAM_FAILED"
     assert "thinking" in event_types
     assert "response_chunk" in event_types
     assert "run.failed" in event_types
@@ -224,6 +226,58 @@ def test_stream_emits_response_and_thinking_events_and_marks_failed(tmp_path):
     chunks = [e.payload for e in sink.events if e.event_type == "response_chunk"]
     assert chunks[0]["content"] == "A"
     assert chunks[-1]["is_final"] is True
+
+
+@pytest.mark.asyncio
+async def test_arun_stream_raises_on_stream_error_and_marks_failed(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+
+    async def _stream():
+        yield SimpleNamespace(event="RunContent", content="A")
+        yield SimpleNamespace(
+            event="RunError",
+            content="Rate limit exceeded",
+            error_id="model_rate_limit_error",
+            error_type="model_provider_error",
+            additional_data={},
+        )
+
+    mock_agent.arun = AsyncMock(return_value=_stream())
+
+    stream = await harness.arun("hello", stream=True, stream_events=True)
+    with pytest.raises(HarnessError) as exc:
+        async for _ in stream:
+            pass
+
+    assert exc.value.code == "MODEL_STREAM_FAILED"
+    event_types = [e.event_type for e in sink.events]
+    assert "model.request.failed" in event_types
+    assert "run.failed" in event_types
+    assert "run.completed" not in event_types
+
+
+def test_skill_fork_resolves_model_using_active_provider(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path, model="openai:gpt-4o")
+    harness.skills.load_skill = MagicMock(return_value="skill instructions")
+    harness.skills._get_skill = MagicMock(
+        return_value=SimpleNamespace(
+            meta=SimpleNamespace(
+                context="fork",
+                model="gpt-4",
+                allowed_tools=None,
+                command_dispatch=None,
+                command_tool=None,
+            )
+        )
+    )
+
+    with patch("agnoclaw.tools.tasks._run_subagent", return_value="fork ok") as mock_run:
+        result = harness.run("hello", skill="forked-skill")
+
+    assert result == "fork ok"
+    assert mock_run.call_args[1]["model_id"] == "openai:gpt-4"
+    mock_agent.run.assert_not_called()
 
 
 def test_context_override_propagates_to_model_call(tmp_path):
@@ -685,6 +739,24 @@ async def test_on_compaction_not_called_when_no_summary(tmp_path):
     assert received == []
 
 
+@pytest.mark.asyncio
+async def test_on_compaction_callback_exception_is_swallowed(tmp_path):
+    """compact_session should not raise when on_compaction callback fails."""
+
+    async def on_compaction(summary: str) -> None:
+        del summary
+        raise RuntimeError("callback failed")
+
+    harness, mock_agent = _make_harness(tmp_path, on_compaction=on_compaction)
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="flushed"))
+    mock_ssm = MagicMock()
+    mock_ssm.create_session_summary.return_value = "Session summary text"
+    mock_agent.session_summary_manager = mock_ssm
+    mock_agent.get_session.return_value = SimpleNamespace(session_id="s-1")
+
+    await harness.compact_session()
+
+
 # ── end_session + on_session_end callback ─────────────────────────────
 
 
@@ -743,6 +815,25 @@ async def test_end_session_no_callback_still_returns_summary(tmp_path):
     mock_agent.arun = AsyncMock(
         return_value=SimpleNamespace(content="summary")
     )
+
+    result = await harness.end_session()
+
+    assert result == "summary"
+
+
+@pytest.mark.asyncio
+async def test_end_session_callback_exception_is_swallowed(tmp_path):
+    """end_session should still return summary when callback raises."""
+
+    async def on_session_end(summary: str) -> None:
+        del summary
+        raise RuntimeError("callback failed")
+
+    harness, mock_agent = _make_harness(tmp_path, on_session_end=on_session_end)
+    mock_agent.get_chat_history.return_value = [
+        SimpleNamespace(role="user", content="hi"),
+    ]
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="summary"))
 
     result = await harness.end_session()
 
