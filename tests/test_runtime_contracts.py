@@ -257,6 +257,31 @@ async def test_arun_stream_raises_on_stream_error_and_marks_failed(tmp_path):
     assert "run.completed" not in event_types
 
 
+@pytest.mark.asyncio
+async def test_arun_stream_emits_single_response_chunk_per_text_delta(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+
+    async def _stream():
+        yield SimpleNamespace(event="RunContent", content="Hello!")
+
+    mock_agent.arun = AsyncMock(return_value=_stream())
+
+    stream = await harness.arun("hello", stream=True, stream_events=True)
+    async for _ in stream:
+        pass
+
+    chunks = [e.payload for e in sink.events if e.event_type == "response_chunk"]
+    assert chunks == [
+        {"content": "Hello!", "cumulative": "Hello!", "is_final": False},
+        {"content": "", "cumulative": "Hello!", "is_final": True},
+    ]
+
+    run_content_events = [e for e in sink.events if e.event_type == "run.content"]
+    assert len(run_content_events) == 1
+    assert run_content_events[0].payload["chars"] == len("Hello!")
+
+
 def test_skill_fork_resolves_model_using_active_provider(tmp_path):
     harness, mock_agent = _make_harness(tmp_path, model="openai:gpt-4o")
     harness.skills.load_skill = MagicMock(return_value="skill instructions")
