@@ -387,6 +387,17 @@ def _build_subagent_tools(tool_names: Optional[list[str]]) -> list:
     return agent_tools
 
 
+def _resolve_subagent_model(model_id: str):
+    """Resolve a subagent model string to an Agno Model object."""
+    from agno.models.utils import get_model
+
+    from agnoclaw.agent import _resolve_model
+    from agnoclaw.config import get_config
+
+    model_ref = _resolve_model(model_id, None, get_config())
+    return get_model(model_ref)
+
+
 def _run_subagent(
     task: str,
     instructions: str,
@@ -397,7 +408,7 @@ def _run_subagent(
     from agno.agent import Agent
 
     subagent = Agent(
-        model=model_id,
+        model=_resolve_subagent_model(model_id),
         instructions=instructions,
         tools=_build_subagent_tools(tool_names),
         markdown=True,
@@ -423,7 +434,7 @@ async def _arun_subagent(
     from agno.agent import Agent
 
     subagent = Agent(
-        model=model_id,
+        model=_resolve_subagent_model(model_id),
         instructions=instructions,
         tools=_build_subagent_tools(tool_names),
         markdown=True,

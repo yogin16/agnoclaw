@@ -860,13 +860,33 @@ def test_run_subagent_truncates_long_output():
     mock_response = MagicMock()
     mock_response.content = "x" * 10000
 
-    with patch("agno.agent.Agent") as mock_agent_cls:
+    with patch("agnoclaw.tools.tasks._resolve_subagent_model", return_value="resolved-model"), \
+         patch("agno.agent.Agent") as mock_agent_cls:
         mock_agent = MagicMock()
         mock_agent.run.return_value = mock_response
         mock_agent_cls.return_value = mock_agent
         result = _run_subagent("task", "instructions", "model")
         assert len(result) < 10000
         assert "truncated" in result
+
+
+def test_run_subagent_resolves_model_before_agent_creation():
+    from agnoclaw.tools.tasks import _run_subagent
+
+    mock_response = MagicMock()
+    mock_response.content = "ok"
+
+    with patch("agnoclaw.tools.tasks._resolve_subagent_model", return_value="resolved-model") as mock_resolve, \
+         patch("agno.agent.Agent") as mock_agent_cls:
+        mock_agent = MagicMock()
+        mock_agent.run.return_value = mock_response
+        mock_agent_cls.return_value = mock_agent
+
+        result = _run_subagent("task", "instructions", "gpt-4")
+
+        assert result == "ok"
+        mock_resolve.assert_called_once_with("gpt-4")
+        assert mock_agent_cls.call_args[1]["model"] == "resolved-model"
 
 
 # ── get_default_tools subagent passthrough test ──────────────────────────

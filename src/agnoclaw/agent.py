@@ -980,6 +980,28 @@ class AgentHarness:
         if category == "config":
             raise AgnoConfigError(message, details=details)
 
+    def _raise_stream_error_signal(self, signal: dict[str, Any]) -> None:
+        """Raise a typed error for stream failures after run.failed emission."""
+        self._raise_if_fatal_error_signal(signal)
+        category = self._classify_error_signal(signal)
+        message = self._normalize_error_message(signal.get("message"))
+        if not message:
+            message = "Model invocation failed."
+        message = self._truncate_text(message, limit=_ERROR_MESSAGE_LIMIT)
+        details = {
+            "error_type": signal.get("error_type"),
+            "error_id": signal.get("error_id"),
+            "source": signal.get("source"),
+            "additional_data": signal.get("additional_data") or {},
+        }
+        raise HarnessError(
+            code="MODEL_STREAM_FAILED",
+            category="model",
+            message=message,
+            retryable=(category == "recoverable"),
+            details=details,
+        )
+
     def _format_result_preview(self, value: Any) -> str:
         if value is None:
             return ""
@@ -1848,10 +1870,16 @@ class AgentHarness:
                     skill_obj = self.skills._get_skill(run_input.skill)
                     if skill_obj and skill_obj.meta.context == "fork":
                         from .tools.tasks import _run_subagent
+                        active_provider = self._model.split(":", 1)[0] if ":" in self._model else None
+                        subagent_model = _resolve_model(
+                            skill_obj.meta.model or self._model,
+                            active_provider,
+                            self.config,
+                        )
                         fork_result = _run_subagent(
                             task=run_input.message,
                             instructions=skill_content,
-                            model_id=skill_obj.meta.model or self._model,
+                            model_id=subagent_model,
                             tool_names=skill_obj.meta.allowed_tools or None,
                         )
                         self._emit_event_sync(
@@ -1957,6 +1985,7 @@ class AgentHarness:
                     collected: list[str] = []
                     cumulative = ""
                     stream_error_signal: dict[str, Any] | None = None
+                    run_failed_emitted = False
                     try:
                         for event in result:
                             mapped_event = self._map_agno_event_type(event)
@@ -2043,7 +2072,6 @@ class AgentHarness:
                         )
                         output_text = str(post_result.content) if post_result.content is not None else ""
                         if stream_error_signal is not None:
-                            self._raise_if_fatal_error_signal(stream_error_signal)
                             error_message = (
                                 self._normalize_error_message(stream_error_signal.get("message"))
                                 or "Model invocation failed."
@@ -2062,7 +2090,8 @@ class AgentHarness:
                                 context=ctx,
                                 payload={"error": error_message, "code": code},
                             )
-                            return
+                            run_failed_emitted = True
+                            self._raise_stream_error_signal(stream_error_signal)
                         self._emit_event_sync(
                             event_type="model.request.completed",
                             run_id=run_id,
@@ -2079,12 +2108,13 @@ class AgentHarness:
                     except Exception as exc:
                         harness_error = self._extract_harness_error(exc)
                         error_code = harness_error.code if harness_error is not None else None
-                        self._emit_event_sync(
-                            event_type="run.failed",
-                            run_id=run_id,
-                            context=ctx,
-                            payload={"error": str(exc), "code": error_code},
-                        )
+                        if not run_failed_emitted:
+                            self._emit_event_sync(
+                                event_type="run.failed",
+                                run_id=run_id,
+                                context=ctx,
+                                payload={"error": str(exc), "code": error_code},
+                            )
                         if harness_error is not None:
                             raise harness_error from exc
                         raise
@@ -2343,6 +2373,7 @@ class AgentHarness:
                     collected: list[str] = []
                     cumulative = ""
                     stream_error_signal: dict[str, Any] | None = None
+                    run_failed_emitted = False
                     try:
                         async for event in result:
                             mapped_event = self._map_agno_event_type(event)
@@ -2429,7 +2460,6 @@ class AgentHarness:
                         )
                         output_text = str(post_result.content) if post_result.content is not None else ""
                         if stream_error_signal is not None:
-                            self._raise_if_fatal_error_signal(stream_error_signal)
                             error_message = (
                                 self._normalize_error_message(stream_error_signal.get("message"))
                                 or "Model invocation failed."
@@ -2448,7 +2478,8 @@ class AgentHarness:
                                 context=ctx,
                                 payload={"error": error_message, "code": code},
                             )
-                            return
+                            run_failed_emitted = True
+                            self._raise_stream_error_signal(stream_error_signal)
                         await self._emit_event_async(
                             event_type="model.request.completed",
                             run_id=run_id,
@@ -2465,12 +2496,13 @@ class AgentHarness:
                     except Exception as exc:
                         harness_error = self._extract_harness_error(exc)
                         error_code = harness_error.code if harness_error is not None else None
-                        await self._emit_event_async(
-                            event_type="run.failed",
-                            run_id=run_id,
-                            context=ctx,
-                            payload={"error": str(exc), "code": error_code},
-                        )
+                        if not run_failed_emitted:
+                            await self._emit_event_async(
+                                event_type="run.failed",
+                                run_id=run_id,
+                                context=ctx,
+                                payload={"error": str(exc), "code": error_code},
+                            )
                         if harness_error is not None:
                             raise harness_error from exc
                         raise
@@ -2883,7 +2915,10 @@ class AgentHarness:
 
         # Step 3: Fire compaction callback so platform can persist the summary
         if self._on_compaction and summary:
-            await self._on_compaction(summary)
+            try:
+                await self._on_compaction(summary)
+            except Exception:
+                logger.exception("on_compaction callback failed")
 
     async def end_session(self, generate_summary: bool = True) -> str | None:
         """
@@ -2897,7 +2932,10 @@ class AgentHarness:
         if generate_summary:
             summary = await self._generate_session_summary()
         if self._on_session_end and summary:
-            await self._on_session_end(summary)
+            try:
+                await self._on_session_end(summary)
+            except Exception:
+                logger.exception("on_session_end callback failed")
         return summary
 
     async def _generate_session_summary(self) -> str | None:
