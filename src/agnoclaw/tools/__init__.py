@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ __all__ = [
 def get_default_tools(
     config: Optional["HarnessConfig"] = None,
     subagents: Optional[dict[str, SubagentDefinition]] = None,
+    workspace_dir: str | Path | None = None,
 ) -> list:
     """
     Build the default tool suite based on configuration.
@@ -46,23 +48,39 @@ def get_default_tools(
     Args:
         config: HarnessConfig for tool settings.
         subagents: Named subagent definitions to register with the SubagentTool.
+        workspace_dir: Explicit workspace root for filesystem/shell/project tools.
 
     Returns a list of tools and toolkits ready to pass to AgentHarness.
     """
     from agnoclaw.config import get_config
 
     cfg = config or get_config()
+    tool_workspace_dir = (
+        Path(workspace_dir).expanduser().resolve()
+        if workspace_dir is not None
+        else Path(cfg.workspace_dir).expanduser().resolve()
+    )
     tools = []
 
     # File operations (always enabled)
-    tools.append(FilesToolkit(workspace_dir=cfg.workspace_dir))
+    tools.append(FilesToolkit(workspace_dir=tool_workspace_dir))
 
     # Shell execution
     if cfg.enable_bash:
         if cfg.enable_background_bash_tools:
-            tools.append(BashToolkit(timeout=cfg.bash_timeout_seconds, workspace_dir=cfg.workspace_dir))
+            tools.append(
+                BashToolkit(
+                    timeout=cfg.bash_timeout_seconds,
+                    workspace_dir=tool_workspace_dir,
+                )
+            )
         else:
-            tools.append(make_bash_tool(timeout=cfg.bash_timeout_seconds, workspace_dir=cfg.workspace_dir))
+            tools.append(
+                make_bash_tool(
+                    timeout=cfg.bash_timeout_seconds,
+                    workspace_dir=tool_workspace_dir,
+                )
+            )
 
     # Web tools
     tools.append(
@@ -76,12 +94,14 @@ def get_default_tools(
     tools.append(TodoToolkit())
 
     # Multi-window project tracking (always enabled)
-    tools.append(ProgressToolkit(project_dir=cfg.workspace_dir))
+    tools.append(ProgressToolkit(project_dir=tool_workspace_dir))
 
     # Sub-agent spawning (with optional named agents)
     tools.append(make_subagent_tool(
         default_model=cfg.default_model,
         subagents=subagents,
+        workspace_dir=tool_workspace_dir,
+        config=cfg,
     ))
 
     # ── Optional toolkits (conditional on config + importability) ─────────

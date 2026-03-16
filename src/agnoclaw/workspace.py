@@ -13,7 +13,7 @@ Key files:
   USER.md      — user identity, timezone, communication preferences
   MEMORY.md    — long-term curated memory (cross-session)
   IDENTITY.md  — detailed agent identity, capabilities, and self-description
-  TOOLS.md     — workspace-specific tool configuration and overrides
+  TOOLS.md     — workspace-specific tool guidance and preferences
   HEARTBEAT.md — heartbeat checklist (what to check on each heartbeat)
   BOOT.md      — startup sequence: commands to run and checks to perform
   skills/      — workspace-specific skill overrides (highest priority)

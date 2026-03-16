@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 
 # ── FilesToolkit tests ────────────────────────────────────────────────────
 
@@ -246,6 +248,22 @@ def test_bash_tool_exit_code_on_failure():
     assert "42" in result or "exit code" in result.lower()
 
 
+def test_bash_tool_expands_workspace_home():
+    from agnoclaw.tools.bash import make_bash_tool
+
+    bash = make_bash_tool(timeout=10, workspace_dir="~")
+    result = bash.entrypoint("pwd")
+    assert result.strip() == str(Path.home())
+
+
+def test_bash_tool_raises_for_invalid_working_dir():
+    from agnoclaw.tools.bash import BashToolError, make_bash_tool
+
+    bash = make_bash_tool(timeout=10)
+    with pytest.raises(BashToolError, match="Failed to execute command"):
+        bash.entrypoint("pwd", working_dir="/definitely/not/a/real/agnoclaw-dir")
+
+
 def test_bash_toolkit_registers_background_functions():
     from agnoclaw.tools.bash import BashToolkit
 
@@ -281,6 +299,16 @@ def test_bash_toolkit_background_lifecycle():
 
     out_after = bash_output(task_id=task_id)
     assert "status=exited" in out_after
+
+
+def test_bash_toolkit_background_start_raises_for_invalid_working_dir():
+    from agnoclaw.tools.bash import BashToolError, BashToolkit
+
+    toolkit = BashToolkit(timeout=10)
+    bash_start = toolkit.functions["bash_start"].entrypoint
+
+    with pytest.raises(BashToolError, match="Failed to start background command"):
+        bash_start(command="pwd", working_dir="/definitely/not/a/real/agnoclaw-dir")
 
 
 # ── WebToolkit tests ─────────────────────────────────────────────────────
@@ -510,6 +538,22 @@ def test_get_default_tools_count_without_bash():
     tools_with = get_default_tools(cfg_with)
     tools_without = get_default_tools(cfg_without)
     assert len(tools_with) > len(tools_without)
+
+
+def test_get_default_tools_workspace_override_applies_to_files_and_progress(tmp_path):
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+    from agnoclaw.tools.tasks import ProgressToolkit
+    from agnoclaw.config import HarnessConfig
+
+    cfg = HarnessConfig(workspace_dir="~/.agnoclaw/workspace")
+    tools = get_default_tools(cfg, workspace_dir=tmp_path / "embedder-ws")
+
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+    progress = next(t for t in tools if isinstance(t, ProgressToolkit))
+
+    assert files.workspace_dir == (tmp_path / "embedder-ws").resolve()
+    assert Path(progress._project_dir) == (tmp_path / "embedder-ws").resolve()
 
 
 def test_web_toolkit_both_enabled_by_default():
@@ -811,16 +855,30 @@ def test_make_subagent_tool_custom_prompt_overrides_type():
         assert instructions == "Custom instructions here"
 
 
+def test_make_subagent_tool_passes_workspace_and_config(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools.tasks import make_subagent_tool
+
+    cfg = HarnessConfig(default_provider="openai")
+    workspace_dir = tmp_path / "subagent-ws"
+    tool = make_subagent_tool(workspace_dir=workspace_dir, config=cfg)
+
+    with patch("agnoclaw.tools.tasks._run_subagent") as mock_run:
+        mock_run.return_value = "done"
+        tool.entrypoint("Do X")
+        assert mock_run.call_args.kwargs["workspace_dir"] == workspace_dir
+        assert mock_run.call_args.kwargs["config"] is cfg
+
+
 def test_make_subagent_tool_handles_errors():
-    """spawn_subagent should return error string on failure, not raise."""
+    """spawn_subagent should raise so the harness can emit a failed tool call."""
     from agnoclaw.tools.tasks import make_subagent_tool
 
     tool = make_subagent_tool()
 
     with patch("agnoclaw.tools.tasks._run_subagent", side_effect=RuntimeError("boom")):
-        result = tool.entrypoint("fail task")
-        assert "[error]" in result
-        assert "boom" in result
+        with pytest.raises(RuntimeError, match="Subagent failed: boom"):
+            tool.entrypoint("fail task")
 
 
 # ── _run_subagent / _build_subagent_tools tests ─────────────────────────
@@ -853,6 +911,21 @@ def test_build_subagent_tools_none_defaults_to_all():
     assert len(tools) == 3
 
 
+def test_build_subagent_tools_workspace_override_applies_to_files_and_bash(tmp_path):
+    """Subagent tools should inherit an explicit workspace root."""
+    from agnoclaw.tools.files import FilesToolkit
+    from agnoclaw.tools.tasks import _build_subagent_tools
+
+    workspace_dir = tmp_path / "subagent-workspace"
+    tools = _build_subagent_tools(["files", "bash"], workspace_dir=workspace_dir)
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+    bash_toolkit = bash.entrypoint.__closure__[1].cell_contents
+
+    assert files.workspace_dir == workspace_dir.resolve()
+    assert Path(bash_toolkit.workspace_dir) == workspace_dir.resolve()
+
+
 def test_run_subagent_truncates_long_output():
     """_run_subagent should truncate responses over 8000 chars."""
     from agnoclaw.tools.tasks import _run_subagent
@@ -860,8 +933,8 @@ def test_run_subagent_truncates_long_output():
     mock_response = MagicMock()
     mock_response.content = "x" * 10000
 
-    with patch("agnoclaw.tools.tasks._resolve_subagent_model", return_value="resolved-model"), \
-         patch("agno.agent.Agent") as mock_agent_cls:
+    with patch("agnoclaw.agent.Agent") as mock_agent_cls, \
+         patch("agnoclaw.agent._make_db", return_value=MagicMock()):
         mock_agent = MagicMock()
         mock_agent.run.return_value = mock_response
         mock_agent_cls.return_value = mock_agent
@@ -876,17 +949,47 @@ def test_run_subagent_resolves_model_before_agent_creation():
     mock_response = MagicMock()
     mock_response.content = "ok"
 
-    with patch("agnoclaw.tools.tasks._resolve_subagent_model", return_value="resolved-model") as mock_resolve, \
-         patch("agno.agent.Agent") as mock_agent_cls:
+    with patch("agnoclaw.agent.Agent") as mock_agent_cls, \
+         patch("agnoclaw.agent._make_db", return_value=MagicMock()):
         mock_agent = MagicMock()
         mock_agent.run.return_value = mock_response
         mock_agent_cls.return_value = mock_agent
 
-        result = _run_subagent("task", "instructions", "gpt-4")
+        cfg = MagicMock()
+        cfg.default_provider = "openai"
+        cfg.default_model = "gpt-4o"
+        cfg.workspace_dir = "/tmp/ws"
+        cfg.global_workspace_dir = "~/.agnoclaw/global"
+        cfg.project_workspace_dir = ".agnoclaw"
+        cfg.enable_plugins = False
+        cfg.enable_learning = False
+        cfg.learning_mode = "agentic"
+        cfg.enable_compression = False
+        cfg.compress_token_limit = None
+        cfg.enable_session_summary = False
+        cfg.session_history_runs = 10
+        cfg.guardrails_enabled = True
+        cfg.path_guardrails_enabled = True
+        cfg.path_allowed_roots = []
+        cfg.path_blocked_roots = []
+        cfg.network_enabled = True
+        cfg.network_enforce_https = True
+        cfg.network_allowed_hosts = []
+        cfg.network_blocked_hosts = []
+        cfg.network_block_private_hosts = True
+        cfg.network_block_in_bash = True
+        cfg.event_sink_mode = "best_effort"
+        cfg.policy_fail_open = False
+        cfg.permission_mode = "bypass"
+        cfg.permission_require_approver = False
+        cfg.permission_preapproved_tools = []
+        cfg.permission_preapproved_categories = []
+        cfg.debug = False
+
+        result = _run_subagent("task", "instructions", "gpt-4", config=cfg)
 
         assert result == "ok"
-        mock_resolve.assert_called_once_with("gpt-4")
-        assert mock_agent_cls.call_args[1]["model"] == "resolved-model"
+        assert mock_agent_cls.call_args[1]["model"] == "openai:gpt-4"
 
 
 # ── get_default_tools subagent passthrough test ──────────────────────────
@@ -909,3 +1012,16 @@ def test_get_default_tools_passes_subagents():
         mock_make.assert_called_once()
         call_kwargs = mock_make.call_args[1]
         assert call_kwargs["subagents"] is subagents
+
+
+def test_get_default_tools_passes_config_to_subagent_tool():
+    """get_default_tools should propagate config to make_subagent_tool."""
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+
+    cfg = HarnessConfig(default_provider="openai")
+
+    with patch("agnoclaw.tools.make_subagent_tool") as mock_make:
+        mock_make.return_value = MagicMock()
+        get_default_tools(cfg)
+        assert mock_make.call_args[1]["config"] is cfg

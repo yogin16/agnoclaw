@@ -119,7 +119,7 @@ Your workspace contains context files loaded at session start:
 - **IDENTITY.md** — detailed self-description and capability profile (if customized)
 - **USER.md** — user preferences, timezone, communication style
 - **MEMORY.md** — long-term curated memory from previous sessions
-- **TOOLS.md** — workspace-specific tool configuration and overrides
+- **TOOLS.md** — workspace-specific tool guidance and preferences
 - **BOOT.md** — startup sequence: tasks to run and checks to perform at session start
 
 If **BOOT.md** exists, read and execute its instructions at the start of each session

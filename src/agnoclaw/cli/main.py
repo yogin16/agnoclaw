@@ -27,7 +27,7 @@ try:
     from rich.table import Table
 except ImportError as e:
     raise ImportError(
-        "CLI dependencies not installed. Install with: pip install agnoclaw[cli]"
+        "CLI dependencies not installed. Install with: pip install 'agnoclaw[cli]'"
     ) from e
 
 console = Console()
@@ -144,18 +144,22 @@ def init(workspace):
             f"# Identity\n\n{identity_input.strip()}\n",
         )
 
-    # Write a minimal config hint to TOOLS.md
-    tools_lines = ["# Tools\n"]
-    tools_lines.append(f"default_model: {model_input.strip()}")
-    if not enable_bash:
-        tools_lines.append("disable: bash")
+    # TOOLS.md is prompt context, not executable config.
+    tools_lines = [
+        "# Tool Preferences",
+        "",
+        f"- Preferred model for this workspace: `{model_input.strip()}`",
+        f"- Shell usage preference: `{'enabled' if enable_bash else 'avoid unless explicitly needed'}`",
+        "- Note: this file is advisory workspace context for the agent.",
+        "- Actual runtime configuration comes from constructor args, environment variables, or `.agnoclaw.toml`.",
+    ]
     ws.write_file("tools", "\n".join(tools_lines) + "\n")
 
     console.print(f"\n[green]Workspace initialized at: {ws.path}[/green]")
     console.print(
         f"  SOUL.md, USER.md, IDENTITY.md, TOOLS.md written\n"
-        f"  Default model: [cyan]{model_input.strip()}[/cyan]\n"
-        f"  Bash tool: [cyan]{'enabled' if enable_bash else 'disabled'}[/cyan]\n"
+        f"  Preferred model recorded: [cyan]{model_input.strip()}[/cyan]\n"
+        f"  Shell preference recorded: [cyan]{'enabled' if enable_bash else 'avoid unless needed'}[/cyan]\n"
         f"\nRun [bold]agnoclaw chat[/bold] to start."
     )
 

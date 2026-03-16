@@ -75,7 +75,7 @@ def test_init_writes_identity_md(runner, tmp_workspace):
 
 
 def test_init_writes_tools_md(runner, tmp_workspace):
-    """init should always write TOOLS.md with the chosen model."""
+    """init should always write advisory TOOLS.md guidance with the chosen model."""
     runner.invoke(
         cli,
         ["init", "--workspace", tmp_workspace],
@@ -84,6 +84,8 @@ def test_init_writes_tools_md(runner, tmp_workspace):
     tools_path = Path(tmp_workspace) / "TOOLS.md"
     assert tools_path.exists()
     assert "claude-haiku-4-5-20251001" in tools_path.read_text()
+    assert "advisory workspace context" in tools_path.read_text()
+    assert "default_model:" not in tools_path.read_text()
 
 
 def test_init_soul_appended(runner, tmp_workspace):

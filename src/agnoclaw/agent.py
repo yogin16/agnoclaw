@@ -254,9 +254,11 @@ class AgentHarness:
         session_id: Session ID for persistence. Auto-generated if not provided.
         user_id: User identifier for per-user memory.
         workspace_dir: Workspace path override. Defaults to ~/.agnoclaw/workspace.
+        include_default_tools: Whether to include the built-in default tool suite.
         tools: Additional tools to add alongside the defaults.
         instructions: Additional instructions appended to the system prompt.
         config: HarnessConfig override. Loaded from env/TOML if not provided.
+        db: Optional prebuilt Agno DB backend to share across harnesses/teams.
         name: Agent name (cosmetic).
         agent_id: Stable agent ID (cosmetic, used in logs).
         debug: Enable debug mode (show tool calls, verbose output).
@@ -289,9 +291,11 @@ class AgentHarness:
         session_id: str | None = None,
         user_id: str | None = None,
         workspace_dir: str | Path | None = None,
+        include_default_tools: bool = True,
         tools: list | None = None,
         instructions: str | None = None,
         config: HarnessConfig | None = None,
+        db=None,
         name: str = "agnoclaw",
         agent_id: str | None = None,
         debug: bool = False,
@@ -460,7 +464,13 @@ class AgentHarness:
         self._optimize_every_n_runs = 10  # trigger Curator every N runs
 
         # Build tool list (pass through named subagent definitions)
-        _all_tools = get_default_tools(self.config, subagents=subagents)
+        _all_tools = []
+        if include_default_tools:
+            _all_tools = get_default_tools(
+                self.config,
+                subagents=subagents,
+                workspace_dir=self.workspace.path,
+            )
         if _tools:
             _all_tools.extend(_tools)
 
@@ -499,7 +509,7 @@ class AgentHarness:
         system_prompt = self._build_system_prompt(session_id=session_id)
 
         # Storage backend
-        db = _make_db(self.config)
+        db = db or _make_db(self.config)
 
         # ── Memory: LearningMachine (unified per-user + institutional) ──────
         # LearningMachine handles both per-user memory (user_profile,

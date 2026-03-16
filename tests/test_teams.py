@@ -1,5 +1,7 @@
 """Tests for pre-built team factories."""
 
+from pathlib import Path
+
 import pytest
 
 from agnoclaw.config import HarnessConfig
@@ -150,3 +152,44 @@ def test_team_defaults_to_config_model(cfg):
 
     team = research_team(config=cfg)
     assert team.model.id == cfg.default_model
+
+
+def test_code_team_uses_config_workspace_for_file_and_bash_tools(tmp_path):
+    from agnoclaw.teams import code_team
+    from agnoclaw.tools.files import FilesToolkit
+
+    workspace_dir = tmp_path / "team-workspace"
+    team = code_team(config=HarnessConfig(workspace_dir=str(workspace_dir)))
+
+    architect_files = next(t for t in team.members[0].tools if isinstance(t, FilesToolkit))
+    implementer_files = next(t for t in team.members[1].tools if isinstance(t, FilesToolkit))
+    implementer_bash = team.members[1].tools[1]
+    bash_toolkit = implementer_bash.entrypoint.__closure__[1].cell_contents
+
+    assert architect_files.workspace_dir == workspace_dir.resolve()
+    assert implementer_files.workspace_dir == workspace_dir.resolve()
+    assert Path(bash_toolkit.workspace_dir) == workspace_dir.resolve()
+    assert implementer_bash.pre_hook is not None
+    assert architect_files.functions["read_file"].pre_hook is not None
+
+
+def test_data_team_uses_config_workspace_for_file_and_bash_tools(tmp_path):
+    from agnoclaw.teams import data_team
+    from agnoclaw.tools.files import FilesToolkit
+
+    workspace_dir = tmp_path / "data-workspace"
+    team = data_team(config=HarnessConfig(workspace_dir=str(workspace_dir)))
+
+    fetcher_files = next(t for t in team.members[0].tools if isinstance(t, FilesToolkit))
+    analyst_files = next(t for t in team.members[1].tools if isinstance(t, FilesToolkit))
+    fetcher_bash = team.members[0].tools[2]
+    analyst_bash = team.members[1].tools[1]
+    fetcher_bash_toolkit = fetcher_bash.entrypoint.__closure__[1].cell_contents
+    analyst_bash_toolkit = analyst_bash.entrypoint.__closure__[1].cell_contents
+
+    assert fetcher_files.workspace_dir == workspace_dir.resolve()
+    assert analyst_files.workspace_dir == workspace_dir.resolve()
+    assert Path(fetcher_bash_toolkit.workspace_dir) == workspace_dir.resolve()
+    assert Path(analyst_bash_toolkit.workspace_dir) == workspace_dir.resolve()
+    assert fetcher_bash.pre_hook is not None
+    assert fetcher_files.functions["read_file"].pre_hook is not None

@@ -18,13 +18,48 @@ Usage:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from agno.team import Team, TeamMode
 
-from .agent import _resolve_model, _make_db
+from .agent import AgentHarness, _resolve_model, _make_db
 from .config import HarnessConfig, get_config
 from .tools import FilesToolkit, WebToolkit, make_bash_tool, TodoToolkit
+
+
+def _tool_workspace_dir(cfg: HarnessConfig) -> Path:
+    return Path(cfg.workspace_dir).expanduser().resolve()
+
+
+def _build_member_agent(
+    *,
+    name: str,
+    role: str,
+    model: str,
+    cfg: HarnessConfig,
+    db,
+    tools: list,
+    learning=None,
+    enable_learning: bool = False,
+):
+    harness = AgentHarness(
+        model=model,
+        config=cfg,
+        db=db,
+        workspace_dir=_tool_workspace_dir(cfg),
+        include_default_tools=False,
+        tools=tools,
+        name=name,
+        instructions=role,
+        enable_learning=enable_learning,
+        debug=cfg.debug,
+    )
+    harness._agent.role = role
+    if learning is not None:
+        harness._agent.learning = learning
+        harness._agent.add_learnings_to_context = enable_learning
+    return harness._agent
 
 
 def research_team(
@@ -42,8 +77,6 @@ def research_team(
 
     TeamMode: coordinate (leader delegates, synthesizes final output)
     """
-    from agno.agent import Agent
-
     cfg = config or get_config()
     model_id = model_id or cfg.default_model
     provider = provider or cfg.default_provider
@@ -58,18 +91,18 @@ def research_team(
         from .memory import build_learning_machine
         _learning = build_learning_machine(db=db, namespace="research-team")
 
-    researcher = Agent(
+    researcher = _build_member_agent(
         name="Researcher",
         role="Find factual information from multiple sources. Search broadly, read deeply. Always cite URLs.",
         model=model,
         tools=[web, TodoToolkit()],
         db=db,
-        markdown=True,
+        cfg=cfg,
         learning=_learning,
-        add_learnings_to_context=enable_learning,
+        enable_learning=enable_learning,
     )
 
-    analyst = Agent(
+    analyst = _build_member_agent(
         name="Analyst",
         role=(
             "Critically evaluate research findings. Identify consensus vs. contested claims. "
@@ -78,12 +111,12 @@ def research_team(
         model=model,
         tools=[TodoToolkit()],
         db=db,
-        markdown=True,
+        cfg=cfg,
         learning=_learning,
-        add_learnings_to_context=enable_learning,
+        enable_learning=enable_learning,
     )
 
-    writer = Agent(
+    writer = _build_member_agent(
         name="Writer",
         role=(
             "Produce clear, structured, well-cited reports from analysis. "
@@ -91,10 +124,11 @@ def research_team(
             "Write for an expert audience — no fluff."
         ),
         model=model,
+        tools=[],
         db=db,
-        markdown=True,
+        cfg=cfg,
         learning=_learning,
-        add_learnings_to_context=enable_learning,
+        enable_learning=enable_learning,
     )
 
     return Team(
@@ -132,16 +166,15 @@ def code_team(
 
     TeamMode: coordinate
     """
-    from agno.agent import Agent
-
     cfg = config or get_config()
     model_id = model_id or cfg.default_model
     provider = provider or cfg.default_provider
     db = _make_db(cfg)
 
     model = _resolve_model(model_id, provider, cfg)
-    files = FilesToolkit()
-    bash = make_bash_tool(timeout=cfg.bash_timeout_seconds)
+    workspace_dir = _tool_workspace_dir(cfg)
+    files = FilesToolkit(workspace_dir=workspace_dir)
+    bash = make_bash_tool(timeout=cfg.bash_timeout_seconds, workspace_dir=workspace_dir)
 
     # Learning for code patterns — namespaced separately from research
     _learning = None
@@ -149,7 +182,7 @@ def code_team(
         from .memory import build_learning_machine
         _learning = build_learning_machine(db=db, namespace="code-team")
 
-    architect = Agent(
+    architect = _build_member_agent(
         name="Architect",
         role=(
             "Design software solutions. Define interfaces, data models, module structure. "
@@ -159,12 +192,12 @@ def code_team(
         model=model,
         tools=[files, TodoToolkit()],
         db=db,
-        markdown=True,
+        cfg=cfg,
         learning=_learning,
-        add_learnings_to_context=enable_learning,
+        enable_learning=enable_learning,
     )
 
-    implementer = Agent(
+    implementer = _build_member_agent(
         name="Implementer",
         role=(
             "Write clean, correct, idiomatic code following the architect's spec. "
@@ -174,12 +207,12 @@ def code_team(
         model=model,
         tools=[files, bash, TodoToolkit()],
         db=db,
-        markdown=True,
+        cfg=cfg,
         learning=_learning,
-        add_learnings_to_context=enable_learning,
+        enable_learning=enable_learning,
     )
 
-    reviewer = Agent(
+    reviewer = _build_member_agent(
         name="Reviewer",
         role=(
             "Review code for bugs, security issues, performance problems, and style. "
@@ -190,9 +223,9 @@ def code_team(
         model=model,
         tools=[files, bash],
         db=db,
-        markdown=True,
+        cfg=cfg,
         learning=_learning,
-        add_learnings_to_context=enable_learning,
+        enable_learning=enable_learning,
     )
 
     return Team(
@@ -228,16 +261,15 @@ def data_team(
 
     TeamMode: coordinate
     """
-    from agno.agent import Agent
-
     cfg = config or get_config()
     model_id = model_id or cfg.default_model
     provider = provider or cfg.default_provider
     db = _make_db(cfg)
 
     model = _resolve_model(model_id, provider, cfg)
+    workspace_dir = _tool_workspace_dir(cfg)
 
-    fetcher = Agent(
+    fetcher = _build_member_agent(
         name="DataFetcher",
         role=(
             "Acquire, clean, and prepare data. "
@@ -245,12 +277,16 @@ def data_team(
             "Describe the data structure clearly for the analyst."
         ),
         model=model,
-        tools=[WebToolkit(), FilesToolkit(), make_bash_tool()],
+        tools=[
+            WebToolkit(),
+            FilesToolkit(workspace_dir=workspace_dir),
+            make_bash_tool(timeout=cfg.bash_timeout_seconds, workspace_dir=workspace_dir),
+        ],
         db=db,
-        markdown=True,
+        cfg=cfg,
     )
 
-    analyst = Agent(
+    analyst = _build_member_agent(
         name="DataAnalyst",
         role=(
             "Analyze prepared data to find patterns, trends, and insights. "
@@ -258,9 +294,12 @@ def data_team(
             "Present findings clearly with supporting numbers."
         ),
         model=model,
-        tools=[FilesToolkit(), make_bash_tool()],
+        tools=[
+            FilesToolkit(workspace_dir=workspace_dir),
+            make_bash_tool(timeout=cfg.bash_timeout_seconds, workspace_dir=workspace_dir),
+        ],
         db=db,
-        markdown=True,
+        cfg=cfg,
     )
 
     return Team(
