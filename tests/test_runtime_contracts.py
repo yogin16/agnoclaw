@@ -192,9 +192,16 @@ def test_stream_run_emits_content_events(tmp_path):
 
     event_types = [e.event_type for e in sink.events]
     assert event_types.count("run.content") == 2
-    assert "tool.call.started" in event_types
-    assert "tool.call.completed" in event_types
+    assert "agno.event" in event_types
     assert "run.completed" in event_types
+
+    agno_events = [e.payload for e in sink.events if e.event_type == "agno.event"]
+    assert [payload["source_event"] for payload in agno_events[:4]] == [
+        "ToolCallStarted",
+        "RunContent",
+        "ToolCallCompleted",
+        "RunContent",
+    ]
 
 
 def test_stream_emits_response_and_thinking_events_and_marks_failed(tmp_path):
@@ -281,6 +288,173 @@ async def test_arun_stream_emits_single_response_chunk_per_text_delta(tmp_path):
     run_content_events = [e for e in sink.events if e.event_type == "run.content"]
     assert len(run_content_events) == 1
     assert run_content_events[0].payload["chars"] == len("Hello!")
+
+
+def test_stream_tool_lifecycle_events_do_not_duplicate_hook_events(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    run_context = _tool_run_context(harness)
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="bash"),
+        arguments={"command": "pwd"},
+        result="/tmp/workspace",
+        error=None,
+        call_id="tc-stream-1",
+    )
+
+    def _stream():
+        harness._handle_tool_pre_hook(fc=fc, run_context=run_context)
+        yield SimpleNamespace(
+            event="ToolCallStarted",
+            tool=SimpleNamespace(tool_name="bash", tool_call_id="tc-stream-1"),
+            content="",
+        )
+        harness._handle_tool_post_hook(fc=fc, run_context=run_context)
+        yield SimpleNamespace(
+            event="ToolCallCompleted",
+            tool=SimpleNamespace(tool_name="bash", tool_call_id="tc-stream-1"),
+            content="/tmp/workspace",
+        )
+        yield SimpleNamespace(event="RunContent", content="Done.")
+
+    mock_agent.run.return_value = _stream()
+
+    list(harness.run("hello", stream=True, stream_events=True))
+
+    event_types = [e.event_type for e in sink.events]
+    assert event_types.count("tool.call.started") == 1
+    assert event_types.count("tool.call.completed") == 1
+
+    agno_events = [e.payload for e in sink.events if e.event_type == "agno.event"]
+    tool_events = [payload for payload in agno_events if payload["source_event"].startswith("ToolCall")]
+    assert [payload["source_event"] for payload in tool_events] == [
+        "ToolCallStarted",
+        "ToolCallCompleted",
+    ]
+
+
+def test_stream_response_chunk_excludes_tool_output_but_keeps_raw_agno_detail(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    mock_agent.run.return_value = iter(
+        [
+            SimpleNamespace(
+                event="ToolCallCompleted",
+                content="Ahmedabad Gujarat IN 23.0258,72.5873",
+                tool=SimpleNamespace(tool_name="bash", tool_call_id="tc-weather-1"),
+            ),
+            SimpleNamespace(event="RunContent", content="The current weather is warm and clear."),
+        ]
+    )
+
+    list(harness.run("hello", stream=True, stream_events=True))
+
+    chunks = [e.payload for e in sink.events if e.event_type == "response_chunk"]
+    assert chunks == [
+        {
+            "content": "The current weather is warm and clear.",
+            "cumulative": "The current weather is warm and clear.",
+            "is_final": False,
+        },
+        {
+            "content": "",
+            "cumulative": "The current weather is warm and clear.",
+            "is_final": True,
+        },
+    ]
+
+    agno_events = [e.payload for e in sink.events if e.event_type == "agno.event"]
+    tool_event = next(payload for payload in agno_events if payload["source_event"] == "ToolCallCompleted")
+    assert tool_event["tool_name"] == "bash"
+    assert tool_event["tool_call_id"] == "tc-weather-1"
+    assert tool_event["details"]["content"] == "Ahmedabad Gujarat IN 23.0258,72.5873"
+
+
+def test_subagent_events_flow_to_parent_sink_with_parent_child_linkage(tmp_path):
+    from agnoclaw.tools.tasks import _run_subagent
+
+    sink = InMemoryEventSink()
+    parent_harness, _ = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        session_metadata={"client": "tests"},
+    )
+    parent_run_context = _tool_run_context(parent_harness)
+    parent_fc = SimpleNamespace(
+        function=SimpleNamespace(name="spawn_subagent"),
+        arguments={"task": "child task"},
+        result=None,
+        error=None,
+        call_id="tc-parent-subagent-1",
+    )
+    parent_harness._handle_tool_pre_hook(fc=parent_fc, run_context=parent_run_context)
+    parent_harness._set_active_tool_runtime(parent_fc, parent_fc._agnoclaw_tool_runtime)
+
+    class FakeChildAgent:
+        def __init__(self, **kwargs):
+            self.system_message = kwargs.get("system_message")
+            self.session_id = kwargs.get("session_id")
+            self.tools = kwargs.get("tools") or []
+
+        def run(self, message, **kwargs):
+            del message
+            bash = next(tool for tool in self.tools if getattr(tool, "name", None) == "bash")
+            child_fc = SimpleNamespace(
+                function=SimpleNamespace(name="bash"),
+                arguments={"command": "pwd"},
+                result=str(tmp_path),
+                error=None,
+                call_id="tc-child-bash-1",
+            )
+            child_run_context = SimpleNamespace(
+                run_id=kwargs["run_id"],
+                session_id=kwargs["session_id"],
+                user_id=kwargs["user_id"],
+                metadata=kwargs["metadata"],
+            )
+            bash.pre_hook(run_context=child_run_context, fc=child_fc)
+            bash.post_hook(run_context=child_run_context, fc=child_fc)
+            return SimpleNamespace(content="child ok")
+
+    with (
+        patch("agnoclaw.agent.Agent", side_effect=lambda *args, **kwargs: FakeChildAgent(**kwargs)),
+        patch("agnoclaw.agent._make_db", return_value=MagicMock()),
+    ):
+        result = _run_subagent(
+            "child task",
+            "Follow instructions",
+            "anthropic:test-model",
+            tool_names=["bash"],
+            workspace_dir=tmp_path,
+        )
+
+    parent_harness._handle_tool_post_hook(fc=parent_fc, run_context=parent_run_context)
+    parent_harness._clear_active_tool_runtime(parent_fc)
+
+    assert result == "child ok"
+
+    child_events = [
+        event
+        for event in sink.events
+        if event.payload.get("parent_tool_call_id") == "tc-parent-subagent-1"
+    ]
+    assert child_events
+
+    child_run_ids = {event.run_id for event in child_events if event.run_id != "run_tool_123"}
+    assert len(child_run_ids) == 1
+
+    child_event_types = [event.event_type for event in child_events]
+    assert "run.started" in child_event_types
+    assert "tool.call.started" in child_event_types
+    assert "tool.call.completed" in child_event_types
+    assert "run.completed" in child_event_types
+
+    for event in child_events:
+        assert event.payload["parent_run_id"] == "run_tool_123"
+        assert event.payload["parent_tool_name"] == "spawn_subagent"
+        assert event.payload["subagent_depth"] == 1
+        assert event.payload["subagent_root_run_id"] == "run_tool_123"
+        assert event.payload["client"] == "tests"
 
 
 def test_skill_fork_resolves_model_using_active_provider(tmp_path):

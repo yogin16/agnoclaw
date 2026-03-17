@@ -416,7 +416,13 @@ def _run_subagent(
     config=None,
 ) -> str:
     """Create and run an isolated subagent synchronously. Returns result string."""
-    from agnoclaw.agent import AgentHarness
+    from agnoclaw.agent import AgentHarness, get_current_tool_runtime
+
+    parent_runtime = get_current_tool_runtime()
+    subagent_context = AgentHarness._build_subagent_execution_context(
+        parent_runtime,
+        workspace_id=str(Path(workspace_dir).resolve()) if workspace_dir is not None else None,
+    )
 
     subagent = AgentHarness(
         model=model_id,
@@ -425,8 +431,23 @@ def _run_subagent(
         include_default_tools=False,
         tools=_build_subagent_tools(tool_names, workspace_dir=workspace_dir),
         instructions=instructions,
+        event_sink=(
+            parent_runtime.get("event_sink")
+            if isinstance(parent_runtime, dict)
+            else None
+        ),
+        event_sink_mode=(
+            parent_runtime.get("event_sink_mode")
+            if isinstance(parent_runtime, dict)
+            else None
+        ),
+        session_metadata=(
+            parent_runtime.get("session_metadata")
+            if isinstance(parent_runtime, dict)
+            else None
+        ),
     )
-    response = subagent.run(task)
+    response = subagent.run(task, context=subagent_context)
     content = response.content if response else "[no response]"
 
     # Truncate very long responses to protect parent context
@@ -445,7 +466,13 @@ async def _arun_subagent(
     config=None,
 ) -> str:
     """Create and run an isolated subagent asynchronously. Returns result string."""
-    from agnoclaw.agent import AgentHarness
+    from agnoclaw.agent import AgentHarness, get_current_tool_runtime
+
+    parent_runtime = get_current_tool_runtime()
+    subagent_context = AgentHarness._build_subagent_execution_context(
+        parent_runtime,
+        workspace_id=str(Path(workspace_dir).resolve()) if workspace_dir is not None else None,
+    )
 
     subagent = AgentHarness(
         model=model_id,
@@ -454,9 +481,24 @@ async def _arun_subagent(
         include_default_tools=False,
         tools=_build_subagent_tools(tool_names, workspace_dir=workspace_dir),
         instructions=instructions,
+        event_sink=(
+            parent_runtime.get("event_sink")
+            if isinstance(parent_runtime, dict)
+            else None
+        ),
+        event_sink_mode=(
+            parent_runtime.get("event_sink_mode")
+            if isinstance(parent_runtime, dict)
+            else None
+        ),
+        session_metadata=(
+            parent_runtime.get("session_metadata")
+            if isinstance(parent_runtime, dict)
+            else None
+        ),
     )
 
-    response = await subagent.arun(task)
+    response = await subagent.arun(task, context=subagent_context)
     content = response.content if response else "[no response]"
 
     if isinstance(content, str) and len(content) > 8000:

@@ -58,6 +58,7 @@ import inspect
 import logging
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -107,6 +108,15 @@ logger = logging.getLogger("agnoclaw.agent")
 
 _ERROR_MESSAGE_LIMIT = 500
 _RESULT_PREVIEW_LIMIT = 240
+_TRACE_METADATA_KEY = "_agnoclaw_trace"
+_ASSISTANT_STREAM_EVENTS = frozenset({"RunContent"})
+_TOOL_LIFECYCLE_EVENT_TYPES = frozenset(
+    {"tool.call.started", "tool.call.completed", "tool.call.failed"}
+)
+_CURRENT_TOOL_RUNTIME: ContextVar[dict[str, Any] | None] = ContextVar(
+    "agnoclaw_current_tool_runtime",
+    default=None,
+)
 
 # Provider name aliases → Agno's canonical provider names
 _PROVIDER_ALIASES: dict[str, str] = {
@@ -159,6 +169,14 @@ _KNOWN_PROVIDERS: set[str] = {
     "vllm",
     "xai",
 }
+
+
+def get_current_tool_runtime() -> dict[str, Any] | None:
+    """Return the currently executing tool runtime context, if any."""
+    runtime = _CURRENT_TOOL_RUNTIME.get()
+    if runtime is None:
+        return None
+    return dict(runtime)
 
 
 def _run_output_status_value(value: Any) -> str | None:
@@ -711,20 +729,26 @@ class AgentHarness:
                 except HarnessError as exc:
                     self._raise_agent_run_exception(exc)
             self._handle_tool_pre_hook(fc=fc, run_context=run_context)
+            runtime = getattr(fc, "_agnoclaw_tool_runtime", None)
+            if isinstance(runtime, dict):
+                self._set_active_tool_runtime(fc, runtime)
 
         def runtime_post_hook(agent=None, team=None, run_context=None, fc=None):
-            if original_post_hook is not None:
-                try:
-                    self._invoke_original_tool_hook(
-                        original_post_hook,
-                        agent=agent,
-                        team=team,
-                        run_context=run_context,
-                        fc=fc,
-                    )
-                except HarnessError as exc:
-                    self._raise_agent_run_exception(exc)
-            self._handle_tool_post_hook(fc=fc, run_context=run_context)
+            try:
+                if original_post_hook is not None:
+                    try:
+                        self._invoke_original_tool_hook(
+                            original_post_hook,
+                            agent=agent,
+                            team=team,
+                            run_context=run_context,
+                            fc=fc,
+                        )
+                    except HarnessError as exc:
+                        self._raise_agent_run_exception(exc)
+                self._handle_tool_post_hook(fc=fc, run_context=run_context)
+            finally:
+                self._clear_active_tool_runtime(fc)
 
         runtime_pre_hook._agnoclaw_runtime_pre = True  # type: ignore[attr-defined]
         runtime_post_hook._agnoclaw_runtime_post = True  # type: ignore[attr-defined]
@@ -774,6 +798,22 @@ class AgentHarness:
         return value
 
     @staticmethod
+    def _set_active_tool_runtime(fc, runtime: dict[str, Any]) -> None:
+        token = _CURRENT_TOOL_RUNTIME.set(dict(runtime))
+        if fc is not None:
+            fc._agnoclaw_tool_runtime_token = token
+
+    @staticmethod
+    def _clear_active_tool_runtime(fc) -> None:
+        if fc is None:
+            return
+        token = getattr(fc, "_agnoclaw_tool_runtime_token", None)
+        if token is None:
+            return
+        _CURRENT_TOOL_RUNTIME.reset(token)
+        delattr(fc, "_agnoclaw_tool_runtime_token")
+
+    @staticmethod
     def _context_to_metadata(context: ExecutionContext) -> dict[str, Any]:
         return {
             "tenant_id": context.tenant_id,
@@ -798,6 +838,75 @@ class AgentHarness:
         payload = dict(run_input.metadata)
         payload["_agnoclaw_context"] = self._context_to_metadata(context)
         return payload
+
+    @staticmethod
+    def _trace_payload_from_context(context: ExecutionContext) -> dict[str, Any]:
+        metadata = getattr(context, "metadata", None) or {}
+        trace = metadata.get(_TRACE_METADATA_KEY)
+        if not isinstance(trace, dict):
+            return {}
+        payload: dict[str, Any] = {}
+        for key in (
+            "parent_run_id",
+            "parent_tool_call_id",
+            "parent_step_id",
+            "parent_tool_name",
+            "subagent_depth",
+            "subagent_root_run_id",
+        ):
+            value = trace.get(key)
+            if value is not None:
+                payload[key] = value
+        return payload
+
+    @staticmethod
+    def _build_subagent_execution_context(
+        runtime: dict[str, Any] | None,
+        *,
+        workspace_id: str | None,
+    ) -> ExecutionContext | None:
+        if not runtime:
+            return None
+
+        parent_context = runtime.get("context")
+        if not isinstance(parent_context, ExecutionContext):
+            return None
+
+        metadata = dict(parent_context.metadata)
+        existing_trace = metadata.get(_TRACE_METADATA_KEY)
+        if not isinstance(existing_trace, dict):
+            existing_trace = {}
+
+        root_run_id = (
+            existing_trace.get("subagent_root_run_id")
+            or existing_trace.get("parent_run_id")
+            or runtime.get("parent_run_id")
+        )
+        trace = {
+            "parent_run_id": runtime.get("parent_run_id"),
+            "parent_tool_call_id": runtime.get("parent_tool_call_id"),
+            "parent_step_id": runtime.get("parent_step_id"),
+            "parent_tool_name": runtime.get("parent_tool_name"),
+            "subagent_depth": int(existing_trace.get("subagent_depth") or 0) + 1,
+            "subagent_root_run_id": root_run_id,
+        }
+        metadata[_TRACE_METADATA_KEY] = {
+            key: value for key, value in trace.items() if value is not None
+        }
+
+        return ExecutionContext.create(
+            user_id=parent_context.user_id,
+            session_id=None,
+            workspace_id=workspace_id or parent_context.workspace_id,
+            tenant_id=parent_context.tenant_id,
+            org_id=parent_context.org_id,
+            team_id=parent_context.team_id,
+            roles=parent_context.roles,
+            scopes=parent_context.scopes,
+            request_id=parent_context.request_id,
+            trace_id=parent_context.trace_id,
+            metadata=metadata,
+        )
 
     def _context_from_run_context(self, run_context) -> ExecutionContext:
         payload = {}
@@ -1223,6 +1332,17 @@ class AgentHarness:
 
             if decision.action == PolicyAction.ALLOW_WITH_REDACTION and getattr(fc, "arguments", None):
                 fc.arguments = self._apply_redactions_to_object(dict(fc.arguments), decision.redactions)
+
+            fc._agnoclaw_tool_runtime = {
+                "context": context,
+                "event_sink": self._event_sink,
+                "event_sink_mode": self._event_sink_mode.value,
+                "session_metadata": dict(self._session_metadata),
+                "parent_run_id": run_id,
+                "parent_tool_name": tool_name,
+                "parent_tool_call_id": tool_call_id,
+                "parent_step_id": step["step_id"],
+            }
         except HarnessError as exc:
             self._raise_agent_run_exception(exc)
 
@@ -1330,7 +1450,11 @@ class AgentHarness:
         context: ExecutionContext,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        merged_payload = {**self._session_metadata, **(payload or {})}
+        merged_payload = {
+            **self._session_metadata,
+            **self._trace_payload_from_context(context),
+            **(payload or {}),
+        }
         event = build_event(
             event_type=event_type,
             run_id=run_id,
@@ -1385,7 +1509,11 @@ class AgentHarness:
         context: ExecutionContext,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        merged_payload = {**self._session_metadata, **(payload or {})}
+        merged_payload = {
+            **self._session_metadata,
+            **self._trace_payload_from_context(context),
+            **(payload or {}),
+        }
         event = build_event(
             event_type=event_type,
             run_id=run_id,
@@ -1701,6 +1829,9 @@ class AgentHarness:
             return ""
         if isinstance(event, str):
             return event
+        event_name = AgentHarness._event_name(event)
+        if event_name and event_name not in _ASSISTANT_STREAM_EVENTS:
+            return ""
         content = getattr(event, "content", None)
         if content is not None:
             return str(content)
@@ -1722,6 +1853,91 @@ class AgentHarness:
         if isinstance(event, dict):
             return event.get(key, default)
         return getattr(event, key, default)
+
+    @staticmethod
+    def _serialize_event_value(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {
+                str(key): AgentHarness._serialize_event_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [AgentHarness._serialize_event_value(item) for item in value]
+
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            try:
+                return AgentHarness._serialize_event_value(to_dict())
+            except Exception:
+                pass
+
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            try:
+                return AgentHarness._serialize_event_value(model_dump())
+            except Exception:
+                pass
+
+        if hasattr(value, "__dict__"):
+            return {
+                str(key): AgentHarness._serialize_event_value(item)
+                for key, item in vars(value).items()
+                if not key.startswith("_")
+            }
+
+        return str(value)
+
+    @staticmethod
+    def _stream_event_details(event: Any) -> dict[str, Any]:
+        if event is None:
+            return {}
+        if isinstance(event, dict):
+            details = AgentHarness._serialize_event_value(event)
+        else:
+            to_dict = getattr(event, "to_dict", None)
+            if callable(to_dict):
+                try:
+                    details = AgentHarness._serialize_event_value(to_dict())
+                except Exception:
+                    details = AgentHarness._serialize_event_value(vars(event))
+            elif hasattr(event, "__dict__"):
+                details = AgentHarness._serialize_event_value(vars(event))
+            else:
+                details = {"value": AgentHarness._serialize_event_value(event)}
+
+        if not isinstance(details, dict):
+            details = {"value": details}
+        event_name = AgentHarness._event_name(event)
+        if event_name and "event" not in details:
+            details["event"] = event_name
+        return details
+
+    @staticmethod
+    def _stream_event_summary(event: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        for key in (
+            "parent_run_id",
+            "step_id",
+            "step_name",
+            "step_index",
+            "tool_name",
+            "tool_call_id",
+        ):
+            value = AgentHarness._event_attr(event, key, None)
+            if value is not None:
+                payload[key] = value
+
+        tool_obj = AgentHarness._event_attr(event, "tool", None)
+        if tool_obj is not None:
+            tool_name = getattr(tool_obj, "tool_name", None) or getattr(tool_obj, "name", None)
+            tool_call_id = getattr(tool_obj, "tool_call_id", None)
+            if tool_name and "tool_name" not in payload:
+                payload["tool_name"] = tool_name
+            if tool_call_id and "tool_call_id" not in payload:
+                payload["tool_call_id"] = tool_call_id
+        return payload
 
     @staticmethod
     def _extract_thinking_content(event: Any) -> str:
@@ -1998,27 +2214,32 @@ class AgentHarness:
                     run_failed_emitted = False
                     try:
                         for event in result:
+                            source_event = self._event_name(event) or None
+                            stream_summary = self._stream_event_summary(event)
+                            stream_details = self._stream_event_details(event)
+                            if source_event:
+                                self._emit_event_sync(
+                                    event_type="agno.event",
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={
+                                        "source_event": source_event,
+                                        **stream_summary,
+                                        "details": stream_details,
+                                    },
+                                )
+
                             mapped_event = self._map_agno_event_type(event)
-                            if mapped_event:
-                                source_event = self._event_name(event) or None
-                                payload: dict[str, Any] = {"source_event": source_event}
-                                for key in ("step_id", "step_name", "step_index", "tool_name", "tool_call_id"):
-                                    value = self._event_attr(event, key, None)
-                                    if value is not None:
-                                        payload[key] = value
-                                tool_obj = self._event_attr(event, "tool", None)
-                                if tool_obj is not None:
-                                    tool_name = getattr(tool_obj, "tool_name", None) or getattr(tool_obj, "name", None)
-                                    tool_call_id = getattr(tool_obj, "tool_call_id", None)
-                                    if tool_name and "tool_name" not in payload:
-                                        payload["tool_name"] = tool_name
-                                    if tool_call_id and "tool_call_id" not in payload:
-                                        payload["tool_call_id"] = tool_call_id
+                            if mapped_event and mapped_event not in _TOOL_LIFECYCLE_EVENT_TYPES:
                                 self._emit_event_sync(
                                     event_type=mapped_event,
                                     run_id=run_id,
                                     context=ctx,
-                                    payload=payload,
+                                    payload={
+                                        "source_event": source_event,
+                                        **stream_summary,
+                                        "details": stream_details,
+                                    },
                                 )
 
                             thinking = self._extract_thinking_content(event)
@@ -2386,27 +2607,32 @@ class AgentHarness:
                     run_failed_emitted = False
                     try:
                         async for event in result:
+                            source_event = self._event_name(event) or None
+                            stream_summary = self._stream_event_summary(event)
+                            stream_details = self._stream_event_details(event)
+                            if source_event:
+                                await self._emit_event_async(
+                                    event_type="agno.event",
+                                    run_id=run_id,
+                                    context=ctx,
+                                    payload={
+                                        "source_event": source_event,
+                                        **stream_summary,
+                                        "details": stream_details,
+                                    },
+                                )
+
                             mapped_event = self._map_agno_event_type(event)
-                            if mapped_event:
-                                source_event = self._event_name(event) or None
-                                payload: dict[str, Any] = {"source_event": source_event}
-                                for key in ("step_id", "step_name", "step_index", "tool_name", "tool_call_id"):
-                                    value = self._event_attr(event, key, None)
-                                    if value is not None:
-                                        payload[key] = value
-                                tool_obj = self._event_attr(event, "tool", None)
-                                if tool_obj is not None:
-                                    tool_name = getattr(tool_obj, "tool_name", None) or getattr(tool_obj, "name", None)
-                                    tool_call_id = getattr(tool_obj, "tool_call_id", None)
-                                    if tool_name and "tool_name" not in payload:
-                                        payload["tool_name"] = tool_name
-                                    if tool_call_id and "tool_call_id" not in payload:
-                                        payload["tool_call_id"] = tool_call_id
+                            if mapped_event and mapped_event not in _TOOL_LIFECYCLE_EVENT_TYPES:
                                 await self._emit_event_async(
                                     event_type=mapped_event,
                                     run_id=run_id,
                                     context=ctx,
-                                    payload=payload,
+                                    payload={
+                                        "source_event": source_event,
+                                        **stream_summary,
+                                        "details": stream_details,
+                                    },
                                 )
 
                             thinking = self._extract_thinking_content(event)
