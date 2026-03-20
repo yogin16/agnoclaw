@@ -372,8 +372,10 @@ _TYPE_INSTRUCTIONS = {
 
 
 def _build_subagent_tools(
-    tool_names: Optional[list[str]],
+    tool_names: list[str] | None,
     workspace_dir: str | Path | None = None,
+    command_executor=None,
+    workspace_adapter=None,
 ) -> list:
     """Build tool instances for a subagent from tool name list."""
     agent_tools = []
@@ -388,10 +390,20 @@ def _build_subagent_tools(
         agent_tools.append(WebToolkit())
     if "all" in names or "files" in names:
         from agnoclaw.tools.files import FilesToolkit
-        agent_tools.append(FilesToolkit(workspace_dir=resolved_workspace))
+        agent_tools.append(
+            FilesToolkit(
+                workspace_dir=resolved_workspace,
+                adapter=workspace_adapter,
+            )
+        )
     if "all" in names or "bash" in names:
         from agnoclaw.tools.bash import make_bash_tool
-        agent_tools.append(make_bash_tool(workspace_dir=resolved_workspace))
+        agent_tools.append(
+            make_bash_tool(
+                workspace_dir=resolved_workspace,
+                executor=command_executor,
+            )
+        )
     return agent_tools
 
 
@@ -411,9 +423,11 @@ def _run_subagent(
     task: str,
     instructions: str,
     model_id: str,
-    tool_names: Optional[list[str]] = None,
+    tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     config=None,
+    command_executor=None,
+    workspace_adapter=None,
 ) -> str:
     """Create and run an isolated subagent synchronously. Returns result string."""
     from agnoclaw.agent import AgentHarness, get_current_tool_runtime
@@ -429,7 +443,12 @@ def _run_subagent(
         config=config,
         workspace_dir=workspace_dir,
         include_default_tools=False,
-        tools=_build_subagent_tools(tool_names, workspace_dir=workspace_dir),
+        tools=_build_subagent_tools(
+            tool_names,
+            workspace_dir=workspace_dir,
+            command_executor=command_executor,
+            workspace_adapter=workspace_adapter,
+        ),
         instructions=instructions,
         event_sink=(
             parent_runtime.get("event_sink")
@@ -461,9 +480,11 @@ async def _arun_subagent(
     task: str,
     instructions: str,
     model_id: str,
-    tool_names: Optional[list[str]] = None,
+    tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     config=None,
+    command_executor=None,
+    workspace_adapter=None,
 ) -> str:
     """Create and run an isolated subagent asynchronously. Returns result string."""
     from agnoclaw.agent import AgentHarness, get_current_tool_runtime
@@ -479,7 +500,12 @@ async def _arun_subagent(
         config=config,
         workspace_dir=workspace_dir,
         include_default_tools=False,
-        tools=_build_subagent_tools(tool_names, workspace_dir=workspace_dir),
+        tools=_build_subagent_tools(
+            tool_names,
+            workspace_dir=workspace_dir,
+            command_executor=command_executor,
+            workspace_adapter=workspace_adapter,
+        ),
         instructions=instructions,
         event_sink=(
             parent_runtime.get("event_sink")
@@ -508,10 +534,12 @@ async def _arun_subagent(
 
 
 def make_subagent_tool(
-    default_model: Optional[str] = None,
-    subagents: Optional[dict[str, SubagentDefinition]] = None,
+    default_model: str | None = None,
+    subagents: dict[str, SubagentDefinition] | None = None,
     workspace_dir: str | Path | None = None,
     config=None,
+    command_executor=None,
+    workspace_adapter=None,
 ):
     """
     Returns a SubagentTool function for spawning isolated sub-agents.
@@ -547,11 +575,11 @@ def make_subagent_tool(
     @tool(name="spawn_subagent", description=base_desc)
     def spawn_subagent(
         task: str,
-        agent_name: Optional[str] = None,
+        agent_name: str | None = None,
         agent_type: str = "general",
-        prompt: Optional[str] = None,
-        tools: Optional[list[str]] = None,
-        model: Optional[str] = None,
+        prompt: str | None = None,
+        tools: list[str] | None = None,
+        model: str | None = None,
     ) -> str:
         """
         Spawn a sub-agent to handle a specific task in an isolated context.
@@ -592,6 +620,8 @@ def make_subagent_tool(
                 tool_names,
                 workspace_dir=workspace_dir,
                 config=config,
+                command_executor=command_executor,
+                workspace_adapter=workspace_adapter,
             )
 
         except Exception as e:

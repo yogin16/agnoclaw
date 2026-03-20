@@ -4,7 +4,7 @@ Unified comparison of `agnoclaw` harness core against:
 - Claude Code (v2.1.50 patterns)
 - OpenClaw (docs/repo patterns, February 2026)
 
-Last updated: 2026-03-03
+Last updated: 2026-03-20
 
 ---
 
@@ -47,6 +47,7 @@ Deferred by design:
 - Skill `command-dispatch: tool` enforcement (bypasses LLM, invokes tool directly)
 - ClawHub integration (search, inspect, install community skills)
 - Auto-skill selection (skill catalog injected into system prompt)
+- Pluggable built-in workspace backends (`CommandExecutor`, `WorkspaceAdapter`)
 
 ---
 
@@ -61,6 +62,7 @@ Deferred by design:
 | Elevated execution path | Bypass/elevation semantics | Elevated mode (`!`) | **Missing** | High | Harness |
 | Tool boundary policy interception | Pre/post tool controls | Hooks around command/tool lifecycle | **Implemented** | Low | Harness |
 | Runtime guardrails | Permission/sandbox controls | Sandboxing/security controls | **Implemented (path/network)** | Low | Harness |
+| Built-in workspace backend abstraction | Tool family can target alternate runtime plane | Exec/files tools can bind to sandbox/container workspace | **Implemented** (`CommandExecutor`, `WorkspaceAdapter`) | ~~High~~ Done | Harness |
 | Sandbox provider abstraction | Multiple runtime permission/sandbox modes | Sandboxing modes (`workspace-write/read-only/full`) | **Partial** (policy + guardrails, no provider backends) | High | Harness |
 | Hook breadth and packaging | 17 events + multiple hook types | Plugin hook packs + lifecycle events | **Partial** (run + tool path) | High | Harness |
 | Scheduler | None | Heartbeat + Cron | **Implemented** | Low | Harness |
@@ -94,6 +96,7 @@ Newly closed or reduced gaps (v0.3):
 8. **Skill `command-dispatch: tool` enforcement** — Bypasses LLM, invokes the specified tool directly.
 9. **ClawHub integration** — HTTP client for community skill registry (search, inspect, download, install).
 10. **Auto-skill selection** — Skill catalog injected into system prompt so model can self-select relevant skills.
+11. **Pluggable workspace tool backends** — Built-in bash/files tools now accept injected execution/filesystem backends, with propagation into subagents and team presets.
 
 Previously closed:
 1. Runtime permission modes are now implemented in the harness core.
@@ -116,8 +119,8 @@ Still open in this area:
 2. Hook-pack system + broader lifecycle coverage
 - Add workspace/project hook discovery and more checkpoints (session/message/compact/worktree equivalents).
 
-3. Sandbox backend abstraction
-- Keep current guardrails; add pluggable runtime sandbox providers.
+3. Sandbox provider abstraction beyond tool backends
+- Keep current guardrails and injected exec/files backends; add full runtime sandbox providers and mode semantics.
 
 ### Medium
 

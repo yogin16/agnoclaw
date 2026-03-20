@@ -5,6 +5,66 @@ from pathlib import Path
 import pytest
 
 from agnoclaw.config import HarnessConfig
+from agnoclaw.tools.backends import CommandResult
+
+
+class FakeWorkspaceAdapter:
+    def __init__(self, workspace_dir: str | Path | None = None):
+        self.workspace_dir = (
+            Path(workspace_dir).expanduser().resolve()
+            if workspace_dir is not None
+            else Path.cwd().resolve()
+        )
+
+    def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
+        return f"team-adapter-read:{path}:{offset}:{limit}"
+
+    def write_file(self, path: str, content: str) -> str:
+        return f"team-adapter-write:{path}:{content}"
+
+    def edit_file(self, path: str, old_string: str, new_string: str) -> str:
+        return f"team-adapter-edit:{path}:{old_string}->{new_string}"
+
+    def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str:
+        return f"team-adapter-multi:{path}:{len(edits)}"
+
+    def glob_files(self, pattern: str, base_dir: str | None = None, path: str | None = None) -> str:
+        return f"team-adapter-glob:{pattern}:{base_dir}:{path}"
+
+    def grep_files(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        case_insensitive: bool = False,
+        context_lines: int = 0,
+        max_results: int = 50,
+    ) -> str:
+        return f"team-adapter-grep:{pattern}:{path}:{glob}:{case_insensitive}:{context_lines}:{max_results}"
+
+    def list_dir(self, path: str | None = None) -> str:
+        return f"team-adapter-list:{path}"
+
+
+class FakeCommandExecutor:
+    def __init__(self, workspace_dir: str | Path | None = None):
+        self.workspace_dir = (
+            str(Path(workspace_dir).expanduser().resolve())
+            if workspace_dir is not None
+            else None
+        )
+
+    def run(self, *, command: str, workdir: str | None, timeout_seconds: int | None) -> CommandResult:
+        return CommandResult(stdout=f"team-executor-run:{command}:{workdir}:{timeout_seconds}")
+
+    def start(self, *, command: str, workdir: str | None, description: str | None = None):
+        raise NotImplementedError
+
+    def output(self, *, task_id: str, max_chars: int = 8000, tail: bool = True):
+        raise NotImplementedError
+
+    def kill(self, *, task_id: str, force: bool = False) -> str:
+        raise NotImplementedError
 
 
 @pytest.fixture
@@ -159,16 +219,16 @@ def test_code_team_uses_config_workspace_for_file_and_bash_tools(tmp_path):
     from agnoclaw.tools.files import FilesToolkit
 
     workspace_dir = tmp_path / "team-workspace"
+    workspace_dir.mkdir()
     team = code_team(config=HarnessConfig(workspace_dir=str(workspace_dir)))
 
     architect_files = next(t for t in team.members[0].tools if isinstance(t, FilesToolkit))
     implementer_files = next(t for t in team.members[1].tools if isinstance(t, FilesToolkit))
     implementer_bash = team.members[1].tools[1]
-    bash_toolkit = implementer_bash.entrypoint.__closure__[1].cell_contents
 
     assert architect_files.workspace_dir == workspace_dir.resolve()
     assert implementer_files.workspace_dir == workspace_dir.resolve()
-    assert Path(bash_toolkit.workspace_dir) == workspace_dir.resolve()
+    assert implementer_bash.entrypoint("pwd").strip() == str(workspace_dir.resolve())
     assert implementer_bash.pre_hook is not None
     assert architect_files.functions["read_file"].pre_hook is not None
 
@@ -178,18 +238,56 @@ def test_data_team_uses_config_workspace_for_file_and_bash_tools(tmp_path):
     from agnoclaw.tools.files import FilesToolkit
 
     workspace_dir = tmp_path / "data-workspace"
+    workspace_dir.mkdir()
     team = data_team(config=HarnessConfig(workspace_dir=str(workspace_dir)))
 
     fetcher_files = next(t for t in team.members[0].tools if isinstance(t, FilesToolkit))
     analyst_files = next(t for t in team.members[1].tools if isinstance(t, FilesToolkit))
     fetcher_bash = team.members[0].tools[2]
     analyst_bash = team.members[1].tools[1]
-    fetcher_bash_toolkit = fetcher_bash.entrypoint.__closure__[1].cell_contents
-    analyst_bash_toolkit = analyst_bash.entrypoint.__closure__[1].cell_contents
 
     assert fetcher_files.workspace_dir == workspace_dir.resolve()
     assert analyst_files.workspace_dir == workspace_dir.resolve()
-    assert Path(fetcher_bash_toolkit.workspace_dir) == workspace_dir.resolve()
-    assert Path(analyst_bash_toolkit.workspace_dir) == workspace_dir.resolve()
+    assert fetcher_bash.entrypoint("pwd").strip() == str(workspace_dir.resolve())
+    assert analyst_bash.entrypoint("pwd").strip() == str(workspace_dir.resolve())
     assert fetcher_bash.pre_hook is not None
     assert fetcher_files.functions["read_file"].pre_hook is not None
+
+
+def test_code_team_uses_custom_backends(tmp_path):
+    from agnoclaw.teams import code_team
+    from agnoclaw.tools.files import FilesToolkit
+
+    adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
+    executor = FakeCommandExecutor(workspace_dir=tmp_path)
+    team = code_team(
+        config=HarnessConfig(workspace_dir=str(tmp_path)),
+        workspace_adapter=adapter,
+        command_executor=executor,
+    )
+
+    implementer_files = next(t for t in team.members[1].tools if isinstance(t, FilesToolkit))
+    implementer_bash = team.members[1].tools[1]
+
+    assert implementer_files.adapter is adapter
+    assert implementer_files.read_file("/tmp/demo.txt") == "team-adapter-read:/tmp/demo.txt:0:2000"
+    assert implementer_bash.entrypoint("echo hi") == "team-executor-run:echo hi:None:120"
+
+
+def test_data_team_uses_custom_backends(tmp_path):
+    from agnoclaw.teams import data_team
+    from agnoclaw.tools.files import FilesToolkit
+
+    adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
+    executor = FakeCommandExecutor(workspace_dir=tmp_path)
+    team = data_team(
+        config=HarnessConfig(workspace_dir=str(tmp_path)),
+        workspace_adapter=adapter,
+        command_executor=executor,
+    )
+
+    fetcher_files = next(t for t in team.members[0].tools if isinstance(t, FilesToolkit))
+    fetcher_bash = team.members[0].tools[2]
+
+    assert fetcher_files.adapter is adapter
+    assert fetcher_bash.entrypoint("echo hi") == "team-executor-run:echo hi:None:120"

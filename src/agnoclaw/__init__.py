@@ -42,6 +42,12 @@ from .runtime import (
     PolicyDecision,
     RuntimeGuardrails,
 )
+from .tools import (
+    CommandExecutor,
+    LocalCommandExecutor,
+    LocalWorkspaceAdapter,
+    WorkspaceAdapter,
+)
 from .tools.tasks import SubagentDefinition
 from .workspace import Workspace
 
@@ -59,6 +65,9 @@ __all__ = [
     "HarnessConfig",
     "HarnessError",
     "InMemoryEventSink",
+    "CommandExecutor",
+    "LocalCommandExecutor",
+    "LocalWorkspaceAdapter",
     "PermissionController",
     "PermissionMode",
     "PolicyAction",
@@ -66,7 +75,8 @@ __all__ = [
     "RuntimeGuardrails",
     "get_config",
     "SubagentDefinition",
+    "WorkspaceAdapter",
     "Workspace",
 ]
 
-__version__ = "0.6.3"
+__version__ = "0.7.0"

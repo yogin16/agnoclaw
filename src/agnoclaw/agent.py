@@ -299,6 +299,8 @@ class AgentHarness:
                          "bypass", "default", "accept_edits", "plan", "dont_ask".
         permission_approver: Optional approval callback used in non-bypass modes.
         permission_require_approver: If True, deny approval-required calls when no approver exists.
+        command_executor: Optional backend override for built-in bash tools.
+        workspace_adapter: Optional backend override for built-in file tools.
     """
 
     def __init__(
@@ -342,6 +344,8 @@ class AgentHarness:
         permission_require_approver: bool | None = None,
         permission_preapproved_tools: list[str] | tuple[str, ...] | None = None,
         permission_preapproved_categories: list[str] | tuple[str, ...] | None = None,
+        command_executor=None,
+        workspace_adapter=None,
         pre_run_hooks: list[PreRunHook] | None = None,
         post_run_hooks: list[PostRunHook] | None = None,
         tenant_id: str | None = None,
@@ -488,6 +492,8 @@ class AgentHarness:
                 self.config,
                 subagents=subagents,
                 workspace_dir=self.workspace.path,
+                command_executor=command_executor,
+                workspace_adapter=workspace_adapter,
             )
         if _tools:
             _all_tools.extend(_tools)
