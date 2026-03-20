@@ -53,12 +53,13 @@ from __future__ import annotations
 
 import logging
 import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import frontmatter
+
+from .backends import LocalSkillRuntimeBackend, SkillRuntimeBackend
 
 logger = logging.getLogger("agnoclaw.skills")
 
@@ -117,14 +118,21 @@ class Skill:
     def description(self) -> str:
         return self.meta.description
 
-    def render(self, arguments: str = "", *, allow_exec: bool = False) -> str:
+    def render(
+        self,
+        arguments: str = "",
+        *,
+        allow_exec: bool = False,
+        runtime_backend: SkillRuntimeBackend | None = None,
+        working_dir: str | Path | None = None,
+    ) -> str:
         """
         Render the skill content with argument substitution.
 
         Substitutes:
           $ARGUMENTS    → full arguments string
           $ARGUMENTS[N] → nth space-split argument
-          !`cmd`        → output of shell command (only if allow_exec=True)
+          !`cmd`        → output of shell command (only if allow_exec=True or backend provided)
 
         Security: Inline shell execution (!`cmd`) is disabled by default.
         Pass allow_exec=True only for trusted (builtin/local) skills.
@@ -132,8 +140,10 @@ class Skill:
 
         Args:
             arguments: Arguments to substitute into $ARGUMENTS placeholders.
-            allow_exec: If True, execute !`cmd` inline shell commands.
-                        If False (default), leave !`cmd` as literal text.
+            allow_exec: If True, execute !`cmd` inline shell commands using a local backend
+                        when no runtime backend is supplied.
+            runtime_backend: Optional backend for inline command execution.
+            working_dir: Optional working directory for inline command execution.
         """
         content = self.content
 
@@ -148,17 +158,23 @@ class Skill:
         content = content.replace("$ARGUMENTS", arguments)
 
         # Execute inline shell commands: !`cmd` — only if explicitly allowed
-        if allow_exec:
+        inline_backend = runtime_backend
+        if inline_backend is None and allow_exec:
+            inline_backend = LocalSkillRuntimeBackend(working_dir=working_dir)
+
+        if inline_backend is not None:
             def run_inline(m: re.Match) -> str:
                 cmd = m.group(1)
                 logger.debug("Skill '%s': executing inline command: %s", self.name, cmd)
-                try:
-                    result = subprocess.run(
-                        cmd, shell=True, capture_output=True, text=True, timeout=10
-                    )
-                    return result.stdout.strip()
-                except Exception as e:
-                    return f"[error running `{cmd}`: {e}]"
+                return inline_backend.run_inline_command(
+                    command=cmd,
+                    timeout_seconds=10,
+                    working_dir=(
+                        str(Path(working_dir).expanduser().resolve())
+                        if working_dir is not None
+                        else None
+                    ),
+                )
 
             content = re.sub(r"!`([^`]+)`", run_inline, content)
         else:

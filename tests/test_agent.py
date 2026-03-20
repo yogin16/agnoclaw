@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
 
+from agnoclaw.backends import RuntimeBackend
+
 
 # ── _resolve_model tests ─────────────────────────────────────────────────────
 
@@ -314,12 +316,11 @@ def test_agent_harness_default_tools_use_constructor_workspace(tmp_path):
     assert Path(progress._project_dir) == Path(harness_workspace).resolve()
 
 
-def test_agent_harness_passes_custom_backends_to_default_tools(tmp_path):
+def test_agent_harness_passes_backend_to_default_tools(tmp_path):
     from agnoclaw.agent import AgentHarness
     from agnoclaw.config import HarnessConfig
 
-    executor = object()
-    adapter = object()
+    backend = RuntimeBackend(command_executor=object(), workspace_adapter=object())
 
     with patch("agnoclaw.agent.Agent", return_value=MagicMock()):
         with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
@@ -327,12 +328,15 @@ def test_agent_harness_passes_custom_backends_to_default_tools(tmp_path):
                 AgentHarness(
                     workspace_dir=tmp_path,
                     config=HarnessConfig(),
-                    command_executor=executor,
-                    workspace_adapter=adapter,
+                    backend=backend,
                 )
 
-    assert mock_tools.call_args[1]["command_executor"] is executor
-    assert mock_tools.call_args[1]["workspace_adapter"] is adapter
+    assert mock_tools.call_args[1]["backend"] is backend
+
+
+def test_runtime_backend_requires_command_and_workspace_together():
+    with pytest.raises(ValueError, match="both command_executor and workspace_adapter"):
+        RuntimeBackend(command_executor=object())
 
 
 def test_agent_harness_instructions_param():

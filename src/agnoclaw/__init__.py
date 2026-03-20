@@ -24,13 +24,14 @@ With skills:
 """
 
 from .agent import AgentHarness, HarnessAgent  # HarnessAgent = backward compat alias
+from .backends import RuntimeBackend
 from .config import HarnessConfig, get_config
 from .runtime import (
-    AllowAllPolicyEngine,
-    AgnoAuthError,
-    AgnoConfigError,
     AgentOSClaimKeys,
     AgentOSContextAdapter,
+    AgnoAuthError,
+    AgnoConfigError,
+    AllowAllPolicyEngine,
     EventSinkMode,
     ExecutionContext,
     GuardrailViolation,
@@ -42,9 +43,12 @@ from .runtime import (
     PolicyDecision,
     RuntimeGuardrails,
 )
+from .skills import AutoApproveSkillInstallApprover, InteractiveSkillInstallApprover
 from .tools import (
+    BrowserBackend,
     CommandExecutor,
     LocalCommandExecutor,
+    LocalPlaywrightBrowserBackend,
     LocalWorkspaceAdapter,
     WorkspaceAdapter,
 )
@@ -58,6 +62,8 @@ __all__ = [
     "AgentOSClaimKeys",
     "AgentOSContextAdapter",
     "AgentHarness",
+    "AutoApproveSkillInstallApprover",
+    "BrowserBackend",
     "EventSinkMode",
     "ExecutionContext",
     "GuardrailViolation",
@@ -65,13 +71,16 @@ __all__ = [
     "HarnessConfig",
     "HarnessError",
     "InMemoryEventSink",
+    "InteractiveSkillInstallApprover",
     "CommandExecutor",
     "LocalCommandExecutor",
+    "LocalPlaywrightBrowserBackend",
     "LocalWorkspaceAdapter",
     "PermissionController",
     "PermissionMode",
     "PolicyAction",
     "PolicyDecision",
+    "RuntimeBackend",
     "RuntimeGuardrails",
     "get_config",
     "SubagentDefinition",
@@ -79,4 +88,4 @@ __all__ = [
     "Workspace",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"

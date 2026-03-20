@@ -189,22 +189,57 @@ For the unified Claude Code + OpenClaw gap status (implemented/remaining roadmap
 
 ## Sandboxed Backends
 
-The built-in workspace tool family is now backend-swappable. `agnoclaw` still owns prompts, sessions, hooks, policy, permissions, and guardrails, but you can replace the runtime plane behind:
+`agnoclaw` now exposes one coherent runtime override: `backend=...`.
+
+The harness still owns prompts, sessions, hooks, policy, permissions, and guardrails. The backend owns the execution plane behind:
 
 - `bash` / `bash_start` / `bash_output` / `bash_kill`
 - `read_file` / `write_file` / `edit_file` / `multi_edit_file` / `glob_files` / `grep_files` / `list_dir`
+- skill inline commands, dependency probes, and installs
+- browser tools, when enabled
 
-Inject custom backends with `AgentHarness(command_executor=..., workspace_adapter=...)` or `get_default_tools(...)`. The same backend pair is also propagated into built-in subagents and team presets so tool behavior stays coherent across nested runs.
+The same backend object is propagated into built-in subagents and team presets so nested runs stay on one runtime plane.
 
 ```python
-from agnoclaw import AgentHarness
+from agnoclaw import AgentHarness, RuntimeBackend
+
+
+class MySandboxBackend(RuntimeBackend):
+    def __init__(self, sandbox):
+        super().__init__(
+            command_executor=SandboxExecutor(sandbox),
+            workspace_adapter=SandboxWorkspace(sandbox),
+            browser_backend=SandboxBrowser(sandbox),
+        )
 
 agent = AgentHarness(
     workspace_dir="/srv/workspace",
-    command_executor=my_sandbox_executor,
-    workspace_adapter=my_sandbox_workspace,
+    backend=MySandboxBackend(sandbox),
 )
 ```
+
+Host mode remains the default: if you do not pass `backend=...`, `agnoclaw` uses local host implementations for shell, files, skills, and browser.
+
+Optional first-party `llm-sandbox` integration is available as `agnoclaw[llm-sandbox]`.
+
+```python
+from agnoclaw import AgentHarness
+from agnoclaw.integrations import LLMSandboxBackend
+
+backend = LLMSandboxBackend(
+    sync_paths=["workspace/inputs"],
+)
+
+agent = AgentHarness(
+    workspace_dir="/srv/workspace",
+    backend=backend,
+)
+
+# Pull back only the files you want from the sandbox.
+backend.sync_from_runtime("workspace/outputs")
+```
+
+`LLMSandboxBackend` is Docker-first, keeps the same absolute workspace paths inside the sandbox, and does not silently copy the whole workspace. Consumers decide what to `sync_to_runtime()` and `sync_from_runtime()`. Browser tools still require a separate browser backend.
 
 More detail: [`docs/embedding/workspace-backends.md`](docs/embedding/workspace-backends.md)
 

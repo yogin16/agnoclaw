@@ -5,6 +5,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from agnoclaw.backends import RuntimeBackend
+from agnoclaw.skills.backends import SkillInstallResult
 from agnoclaw.tools.backends import (
     BackgroundCommandHandle,
     BackgroundCommandOutput,
@@ -100,6 +102,82 @@ class FakeCommandExecutor:
     def kill(self, *, task_id: str, force: bool = False) -> str:
         self.calls.append(("kill", task_id, force))
         return f"executor-kill:{task_id}:{force}"
+
+
+class FakeSkillRuntimeBackend:
+    def __init__(self):
+        self.calls = []
+
+    def run_inline_command(self, *, command: str, timeout_seconds: int = 10, working_dir: str | None = None) -> str:
+        self.calls.append(("inline", command, timeout_seconds, working_dir))
+        return f"skill-inline:{command}"
+
+    def has_binary(self, name: str) -> bool:
+        self.calls.append(("binary", name))
+        return True
+
+    def has_env_var(self, name: str) -> bool:
+        self.calls.append(("env", name))
+        return True
+
+    def has_python_distribution(self, name: str) -> bool:
+        self.calls.append(("dist", name))
+        return True
+
+    def run_install(self, *, installer_type: str, package_spec: str, timeout_seconds: int = 120) -> SkillInstallResult:
+        self.calls.append(("install", installer_type, package_spec, timeout_seconds))
+        return SkillInstallResult(success=True, exit_code=0)
+
+
+class FakeBrowserBackend:
+    def navigate(self, *, url: str, wait_until: str = "domcontentloaded") -> str:
+        return f"browser:{url}:{wait_until}"
+
+    def click(self, *, selector: str) -> str:
+        return f"click:{selector}"
+
+    def type(self, *, selector: str, text: str) -> str:
+        return f"type:{selector}:{text}"
+
+    def screenshot(self, *, full_page: bool = False) -> str:
+        return f"screenshot:{full_page}"
+
+    def snapshot(self) -> str:
+        return "snapshot"
+
+    def scroll(self, *, direction: str = "down", amount: int = 500) -> str:
+        return f"scroll:{direction}:{amount}"
+
+    def fill_form(self, *, fields: str) -> str:
+        return f"fill:{fields}"
+
+    def close(self) -> str:
+        return "closed"
+
+
+class FakeRuntimeBackend(RuntimeBackend):
+    def __init__(
+        self,
+        *,
+        command_executor=None,
+        workspace_adapter=None,
+        browser_backend=None,
+        skill_runtime=None,
+    ):
+        super().__init__(
+            command_executor=command_executor,
+            workspace_adapter=workspace_adapter,
+            browser_backend=browser_backend,
+        )
+        self._skill_runtime = skill_runtime
+
+    def resolve_skill_runtime(self, *, workspace_dir: str | Path, command_executor=None):
+        if self._skill_runtime is not None:
+            return self._skill_runtime
+        return super().resolve_skill_runtime(
+            workspace_dir=workspace_dir,
+            command_executor=command_executor,
+        )
 
 
 # ── FilesToolkit tests ────────────────────────────────────────────────────
@@ -694,7 +772,7 @@ def test_get_default_tools_workspace_override_applies_to_files_and_progress(tmp_
     assert Path(progress._project_dir) == (tmp_path / "embedder-ws").resolve()
 
 
-def test_get_default_tools_uses_custom_backends(tmp_path):
+def test_get_default_tools_uses_custom_backend(tmp_path):
     from agnoclaw.config import HarnessConfig
     from agnoclaw.tools import get_default_tools
     from agnoclaw.tools.files import FilesToolkit
@@ -702,12 +780,12 @@ def test_get_default_tools_uses_custom_backends(tmp_path):
     cfg = HarnessConfig(workspace_dir="~/.agnoclaw/workspace")
     adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
     executor = FakeCommandExecutor(workspace_dir=tmp_path)
+    backend = RuntimeBackend(command_executor=executor, workspace_adapter=adapter)
 
     tools = get_default_tools(
         cfg,
         workspace_dir=tmp_path,
-        workspace_adapter=adapter,
-        command_executor=executor,
+        backend=backend,
     )
 
     files = next(t for t in tools if isinstance(t, FilesToolkit))
@@ -716,6 +794,67 @@ def test_get_default_tools_uses_custom_backends(tmp_path):
     assert files.adapter is adapter
     assert files.read_file("/tmp/demo.txt") == "adapter-read:/tmp/demo.txt:0:2000"
     assert bash.entrypoint("echo hi") == "executor-run:echo hi:None:120"
+
+
+def test_get_default_tools_uses_runtime_backend(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+
+    adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
+    executor = FakeCommandExecutor(workspace_dir=tmp_path)
+    skill_runtime = FakeSkillRuntimeBackend()
+    browser_backend = FakeBrowserBackend()
+    backend = FakeRuntimeBackend(
+        command_executor=executor,
+        workspace_adapter=adapter,
+        skill_runtime=skill_runtime,
+        browser_backend=browser_backend,
+    )
+
+    tools = get_default_tools(
+        HarnessConfig(enable_browser=True),
+        workspace_dir=tmp_path,
+        backend=backend,
+    )
+
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+    browser = next(t for t in tools if getattr(t, "name", None) == "browser")
+
+    assert files.adapter is adapter
+    assert bash.entrypoint("echo hi") == "executor-run:echo hi:None:120"
+    assert browser.browser_snapshot() == "snapshot"
+
+
+def test_runtime_backend_requires_command_and_workspace_together(tmp_path):
+    with pytest.raises(ValueError, match="both command_executor and workspace_adapter"):
+        RuntimeBackend(command_executor=FakeCommandExecutor(workspace_dir=tmp_path))
+
+
+def test_custom_runtime_backend_does_not_silently_fallback_to_host(tmp_path):
+    class IncompleteRuntimeBackend(RuntimeBackend):
+        pass
+
+    with pytest.raises(RuntimeError, match="must provide command execution"):
+        IncompleteRuntimeBackend().resolve(workspace_dir=tmp_path)
+
+
+def test_get_default_tools_rejects_custom_backend_without_browser_support(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+
+    backend = RuntimeBackend(
+        command_executor=FakeCommandExecutor(workspace_dir=tmp_path),
+        workspace_adapter=FakeWorkspaceAdapter(workspace_dir=tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="does not provide browser support"):
+        get_default_tools(
+            HarnessConfig(enable_browser=True),
+            workspace_dir=tmp_path,
+            backend=backend,
+        )
 
 
 def test_web_toolkit_both_enabled_by_default():
@@ -1094,12 +1233,12 @@ def test_build_subagent_tools_uses_custom_backends(tmp_path):
 
     adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
     executor = FakeCommandExecutor(workspace_dir=tmp_path)
+    backend = RuntimeBackend(command_executor=executor, workspace_adapter=adapter)
 
     tools = _build_subagent_tools(
         ["files", "bash"],
         workspace_dir=tmp_path,
-        workspace_adapter=adapter,
-        command_executor=executor,
+        backend=backend,
     )
     files = next(t for t in tools if isinstance(t, FilesToolkit))
     bash = next(t for t in tools if getattr(t, "name", None) == "bash")
@@ -1216,14 +1355,34 @@ def test_get_default_tools_passes_custom_backends_to_subagent_tool(tmp_path):
     cfg = HarnessConfig()
     adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
     executor = FakeCommandExecutor(workspace_dir=tmp_path)
+    backend = RuntimeBackend(command_executor=executor, workspace_adapter=adapter)
 
     with patch("agnoclaw.tools.make_subagent_tool") as mock_make:
         mock_make.return_value = MagicMock()
         get_default_tools(
             cfg,
             workspace_dir=tmp_path,
-            workspace_adapter=adapter,
-            command_executor=executor,
+            backend=backend,
         )
-        assert mock_make.call_args[1]["workspace_adapter"] is adapter
-        assert mock_make.call_args[1]["command_executor"] is executor
+        assert mock_make.call_args[1]["backend"] is backend
+
+
+def test_get_default_tools_passes_skill_runtime_backend_to_subagent_tool(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+
+    cfg = HarnessConfig()
+    backend = FakeRuntimeBackend(
+        command_executor=FakeCommandExecutor(workspace_dir=tmp_path),
+        workspace_adapter=FakeWorkspaceAdapter(workspace_dir=tmp_path),
+        skill_runtime=FakeSkillRuntimeBackend(),
+    )
+
+    with patch("agnoclaw.tools.make_subagent_tool") as mock_make:
+        mock_make.return_value = MagicMock()
+        get_default_tools(
+            cfg,
+            workspace_dir=tmp_path,
+            backend=backend,
+        )
+        assert mock_make.call_args[1]["backend"] is backend

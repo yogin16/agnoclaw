@@ -1,8 +1,34 @@
 """Tests for the browser toolkit."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+
+
+class FakeBrowserBackend:
+    def navigate(self, *, url: str, wait_until: str = "domcontentloaded") -> str:
+        return f"navigate:{url}:{wait_until}"
+
+    def click(self, *, selector: str) -> str:
+        return f"click:{selector}"
+
+    def type(self, *, selector: str, text: str) -> str:
+        return f"type:{selector}:{text}"
+
+    def screenshot(self, *, full_page: bool = False) -> str:
+        return f"screenshot:{full_page}"
+
+    def snapshot(self) -> str:
+        return "snapshot"
+
+    def scroll(self, *, direction: str = "down", amount: int = 500) -> str:
+        return f"scroll:{direction}:{amount}"
+
+    def fill_form(self, *, fields: str) -> str:
+        return f"fill:{fields}"
+
+    def close(self) -> str:
+        return "closed"
 
 
 def test_browser_toolkit_import():
@@ -44,10 +70,7 @@ def test_browser_navigate_requires_playwright():
 
     toolkit = BrowserToolkit()
     # If playwright is not installed, this should fail gracefully
-    with patch("agnoclaw.tools.browser._check_playwright", return_value=False):
-        toolkit._page = None
-        toolkit._playwright = None
-        toolkit._browser = None
+    with patch("agnoclaw.tools.browser_backends.check_playwright", return_value=False):
         with pytest.raises(ImportError, match="Playwright"):
             toolkit.browser_navigate("https://example.com")
 
@@ -61,28 +84,17 @@ def test_browser_close_when_not_initialized():
     assert "closed" in result.lower() or "Browser closed" in result
 
 
-def test_browser_scroll_values():
-    """Scroll should accept direction and amount parameters."""
+def test_browser_toolkit_delegates_to_custom_backend():
+    """BrowserToolkit should preserve tool names while delegating backend behavior."""
     from agnoclaw.tools.browser import BrowserToolkit
 
-    toolkit = BrowserToolkit()
-    # Mock the page to avoid needing a real browser
-    mock_page = MagicMock()
-    mock_page.mouse.wheel = MagicMock()
-    mock_page.evaluate.return_value = 500
-    toolkit._page = mock_page
+    toolkit = BrowserToolkit(backend=FakeBrowserBackend())
 
-    result = toolkit.browser_scroll("down", 300)
-    assert "500" in result  # scroll position
-    mock_page.mouse.wheel.assert_called_once_with(0, 300)
-
-
-def test_browser_fill_form_invalid_json():
-    """fill_form should handle invalid JSON gracefully."""
-    from agnoclaw.tools.browser import BrowserToolkit
-
-    toolkit = BrowserToolkit()
-    toolkit._page = MagicMock()
-
-    result = toolkit.browser_fill_form("not valid json")
-    assert "[error]" in result
+    assert toolkit.browser_navigate("https://example.com") == "navigate:https://example.com:domcontentloaded"
+    assert toolkit.browser_click("#submit") == "click:#submit"
+    assert toolkit.browser_type("#email", "hello") == "type:#email:hello"
+    assert toolkit.browser_screenshot(True) == "screenshot:True"
+    assert toolkit.browser_snapshot() == "snapshot"
+    assert toolkit.browser_scroll("down", 300) == "scroll:down:300"
+    assert toolkit.browser_fill_form("{\"#email\":\"a\"}") == 'fill:{"#email":"a"}'
+    assert toolkit.browser_close() == "closed"
