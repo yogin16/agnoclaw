@@ -37,15 +37,19 @@ Install support (metadata.openclaw.install):
 from __future__ import annotations
 
 import logging
-import os
 import platform
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
+from .backends import (
+    AutoApproveSkillInstallApprover,
+    InteractiveSkillInstallApprover,
+    LocalSkillRuntimeBackend,
+    SkillInstallApprover,
+    SkillRuntimeBackend,
+    build_install_command,
+)
 from .loader import Skill, SkillInstaller, load_skill_from_path
 
 logger = logging.getLogger("agnoclaw.skills")
@@ -102,12 +106,36 @@ class SkillRegistry:
         - "community": external sources — exec blocked, installs require approval + validation
     """
 
-    def __init__(self, workspace_skills_dir: Optional[Path] = None, *, auto_approve_installs: bool = False):
+    def __init__(
+        self,
+        workspace_skills_dir: Path | None = None,
+        *,
+        auto_approve_installs: bool = False,
+        runtime_backend: SkillRuntimeBackend | None = None,
+        install_approver: SkillInstallApprover | None = None,
+        working_dir: str | Path | None = None,
+    ):
         self._dirs: list[Path] = []
         self._cache: dict[str, Skill] = {}
-        self._bundled_dir: Optional[Path] = None
+        self._bundled_dir: Path | None = None
         self._local_dirs: list[Path] = []
         self._auto_approve_installs = auto_approve_installs
+        self._working_dir = (
+            Path(working_dir).expanduser().resolve()
+            if working_dir is not None
+            else None
+        )
+        self._runtime_backend = runtime_backend or LocalSkillRuntimeBackend(
+            working_dir=self._working_dir
+        )
+        self._install_approver = (
+            install_approver
+            or (
+                AutoApproveSkillInstallApprover()
+                if auto_approve_installs
+                else InteractiveSkillInstallApprover()
+            )
+        )
 
         # Build search path (highest → lowest priority)
         if workspace_skills_dir:
@@ -162,7 +190,7 @@ class SkillRegistry:
 
         return skills
 
-    def load_skill(self, name: str, arguments: str = "") -> Optional[str]:
+    def load_skill(self, name: str, arguments: str = "") -> str | None:
         """
         Load a skill by name and return its rendered content for injection.
 
@@ -190,8 +218,13 @@ class SkillRegistry:
         self._run_install(skill, trust)
 
         # Inline !`cmd` execution: only for builtin and local skills
-        allow_exec = trust in ("builtin", "local")
-        return skill.render(arguments, allow_exec=allow_exec)
+        runtime_backend = self._runtime_backend if trust in ("builtin", "local") else None
+        return skill.render(
+            arguments,
+            allow_exec=False,
+            runtime_backend=runtime_backend,
+            working_dir=self._working_dir,
+        )
 
     def list_skills(self) -> list[dict]:
         """
@@ -257,17 +290,20 @@ class SkillRegistry:
 
         # Required binaries (all must exist)
         for bin_name in skill.meta.requires_bins:
-            if not shutil.which(bin_name):
+            if not self._runtime_backend_for_call().has_binary(bin_name):
                 return False
 
         # anyBins (at least one must exist)
         if skill.meta.requires_any_bins:
-            if not any(shutil.which(b) for b in skill.meta.requires_any_bins):
+            if not any(
+                self._runtime_backend_for_call().has_binary(b)
+                for b in skill.meta.requires_any_bins
+            ):
                 return False
 
         # Required env vars
         for env_var in skill.meta.requires_env:
-            if not os.environ.get(env_var):
+            if not self._runtime_backend_for_call().has_env_var(env_var):
                 return False
 
         return True
@@ -344,7 +380,10 @@ class SkillRegistry:
 
             pkg = installer.package
             if installer.version:
-                pkg = f"{pkg}=={installer.version}" if installer.type in ("uv", "pip") else f"{pkg}@{installer.version}"
+                if installer.type in ("uv", "pip"):
+                    pkg = f"{pkg}=={installer.version}"
+                else:
+                    pkg = f"{pkg}@{installer.version}"
             pending.append((installer, pkg))
 
         if not pending:
@@ -358,51 +397,32 @@ class SkillRegistry:
 
         # Execute installs
         for installer, pkg in pending:
-            cmd = self._build_install_cmd(installer.type, pkg)
-            if cmd is None:
-                logger.warning("Skill '%s': unknown installer type '%s'", skill.name, installer.type)
-                continue
-
             logger.info("Skill '%s': installing %s (%s)", skill.name, pkg, installer.type)
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if result.returncode != 0:
-                    logger.warning(
-                        "Skill '%s': install failed (exit %d): %s",
-                        skill.name,
-                        result.returncode,
-                        result.stderr[:200],
-                    )
-            except FileNotFoundError:
+            result = self._runtime_backend_for_call().run_install(
+                installer_type=installer.type,
+                package_spec=pkg,
+                timeout_seconds=120,
+            )
+            if not result.success:
+                detail = result.message or result.stderr[:200] or result.stdout[:200]
                 logger.warning(
-                    "Skill '%s': installer '%s' not found on PATH", skill.name, installer.type
+                    "Skill '%s': install failed (%s): %s",
+                    skill.name,
+                    result.exit_code if result.exit_code is not None else "no-exit-code",
+                    detail,
                 )
-            except subprocess.TimeoutExpired:
-                logger.warning("Skill '%s': install timed out for %s", skill.name, pkg)
-            except Exception as e:
-                logger.warning("Skill '%s': install error: %s", skill.name, e)
 
-    @staticmethod
-    def _prompt_install_approval(skill: Skill, pending: list[tuple[SkillInstaller, str]]) -> bool:
+    def _prompt_install_approval(
+        self,
+        skill: Skill,
+        pending: list[tuple[SkillInstaller, str]],
+    ) -> bool:
         """
         Display pending installs and prompt the user for approval.
 
         Returns True if the user approves, False otherwise.
         """
-        print(f"\nSkill '{skill.name}' requires the following installations:")
-        for installer, pkg in pending:
-            print(f"  {installer.type}: {pkg}")
-        print()
-        try:
-            answer = input("Proceed with installation? [y/N] ").strip().lower()
-            return answer in ("y", "yes")
-        except (EOFError, KeyboardInterrupt):
-            return False
+        return self._install_approver.approve(skill, pending)
 
     def _needs_install(self, installer: SkillInstaller) -> bool:
         """
@@ -413,43 +433,21 @@ class SkillRegistry:
         pkg = installer.package
 
         if itype in ("uv", "pip"):
-            # Use importlib.metadata for accurate installed-package detection.
-            # This handles cases where import name != package name
-            # (e.g. Pillow→PIL, beautifulsoup4→bs4, python-dateutil→dateutil).
             dist_name = pkg.split("[")[0].split("==")[0].split(">=")[0].split("<=")[0]
-            try:
-                from importlib.metadata import distribution
-                distribution(dist_name)
-                return False  # already installed
-            except Exception:
-                return True
+            return not self._runtime_backend_for_call().has_python_distribution(dist_name)
 
-        elif itype == "brew":
-            return shutil.which(pkg) is None
+        if itype in ("brew", "npm"):
+            return not self._runtime_backend_for_call().has_binary(pkg)
 
-        elif itype == "npm":
-            return shutil.which(pkg) is None
-
-        elif itype == "go":
-            # Go binaries land in $GOPATH/bin or $HOME/go/bin
-            return shutil.which(pkg.split("/")[-1]) is None
+        if itype == "go":
+            return not self._runtime_backend_for_call().has_binary(pkg.split("/")[-1])
 
         return True  # unknown type — try anyway
 
     @staticmethod
-    def _build_install_cmd(itype: str, pkg: str) -> Optional[list[str]]:
+    def _build_install_cmd(itype: str, pkg: str) -> list[str] | None:
         """Build the install command for the given installer type."""
-        if itype == "uv":
-            return [sys.executable, "-m", "uv", "pip", "install", pkg]
-        elif itype == "pip":
-            return [sys.executable, "-m", "pip", "install", "--quiet", pkg]
-        elif itype == "brew":
-            return ["brew", "install", pkg]
-        elif itype == "npm":
-            return ["npm", "install", "-g", pkg]
-        elif itype == "go":
-            return ["go", "install", pkg]
-        return None
+        return build_install_command(itype, pkg)
 
     # ── ClawHub integration ──────────────────────────────────────────────────
 
@@ -458,7 +456,7 @@ class SkillRegistry:
         name: str,
         hub_url: str = "https://clawhub.ai",
         cache_dir: str = "~/.agnoclaw/cache/hub",
-    ) -> Optional[Path]:
+    ) -> Path | None:
         """
         Download and install a skill from ClawHub to the workspace skills directory.
 
@@ -498,7 +496,7 @@ class SkillRegistry:
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
-    def _get_skill(self, name: str) -> Optional[Skill]:
+    def _get_skill(self, name: str) -> Skill | None:
         """Find a skill by name, checking cache first then scanning dirs."""
         if name in self._cache:
             return self._cache[name]
@@ -518,8 +516,15 @@ class SkillRegistry:
 
         return None
 
+    def _runtime_backend_for_call(self) -> SkillRuntimeBackend:
+        backend = getattr(self, "_runtime_backend", None)
+        if backend is not None:
+            return backend
+        working_dir = getattr(self, "_working_dir", None)
+        return LocalSkillRuntimeBackend(working_dir=working_dir)
+
     @staticmethod
-    def _find_bundled_skills_dir() -> Optional[Path]:
+    def _find_bundled_skills_dir() -> Path | None:
         """Find the bundled skills/ directory shipped with the package."""
         candidates = [
             Path(__file__).parent.parent.parent.parent / "skills",  # src layout

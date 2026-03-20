@@ -19,18 +19,17 @@ Usage:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from agno.team import Team, TeamMode
 
-from .agent import AgentHarness, _resolve_model, _make_db
+from .agent import AgentHarness, _make_db, _resolve_model
+from .backends import RuntimeBackend
 from .config import HarnessConfig, get_config
+from .skills.backends import SkillInstallApprover
 from .tools import (
-    CommandExecutor,
     FilesToolkit,
     TodoToolkit,
     WebToolkit,
-    WorkspaceAdapter,
     make_bash_tool,
 )
 
@@ -47,8 +46,8 @@ def _build_member_agent(
     cfg: HarnessConfig,
     db,
     tools: list,
-    command_executor: CommandExecutor | None = None,
-    workspace_adapter: WorkspaceAdapter | None = None,
+    backend: RuntimeBackend | None = None,
+    skill_install_approver: SkillInstallApprover | None = None,
     learning=None,
     enable_learning: bool = False,
 ):
@@ -63,8 +62,8 @@ def _build_member_agent(
         instructions=role,
         enable_learning=enable_learning,
         debug=cfg.debug,
-        command_executor=command_executor,
-        workspace_adapter=workspace_adapter,
+        backend=backend,
+        skill_install_approver=skill_install_approver,
     )
     harness._agent.role = role
     if learning is not None:
@@ -74,13 +73,13 @@ def _build_member_agent(
 
 
 def research_team(
-    model_id: Optional[str] = None,
-    provider: Optional[str] = None,
-    config: Optional[HarnessConfig] = None,
-    session_id: Optional[str] = None,
+    model_id: str | None = None,
+    provider: str | None = None,
+    config: HarnessConfig | None = None,
+    session_id: str | None = None,
     enable_learning: bool = False,
-    command_executor: CommandExecutor | None = None,
-    workspace_adapter: WorkspaceAdapter | None = None,
+    backend: RuntimeBackend | None = None,
+    skill_install_approver: SkillInstallApprover | None = None,
 ) -> Team:
     """
     A three-agent research team:
@@ -106,13 +105,16 @@ def research_team(
 
     researcher = _build_member_agent(
         name="Researcher",
-        role="Find factual information from multiple sources. Search broadly, read deeply. Always cite URLs.",
+        role=(
+            "Find factual information from multiple sources. Search broadly, "
+            "read deeply. Always cite URLs."
+        ),
         model=model,
         tools=[web, TodoToolkit()],
         db=db,
         cfg=cfg,
-        command_executor=command_executor,
-        workspace_adapter=workspace_adapter,
+        backend=backend,
+        skill_install_approver=skill_install_approver,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -127,8 +129,8 @@ def research_team(
         tools=[TodoToolkit()],
         db=db,
         cfg=cfg,
-        command_executor=command_executor,
-        workspace_adapter=workspace_adapter,
+        backend=backend,
+        skill_install_approver=skill_install_approver,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -144,8 +146,8 @@ def research_team(
         tools=[],
         db=db,
         cfg=cfg,
-        command_executor=command_executor,
-        workspace_adapter=workspace_adapter,
+        backend=backend,
+        skill_install_approver=skill_install_approver,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -171,13 +173,13 @@ def research_team(
 
 
 def code_team(
-    model_id: Optional[str] = None,
-    provider: Optional[str] = None,
-    config: Optional[HarnessConfig] = None,
-    session_id: Optional[str] = None,
+    model_id: str | None = None,
+    provider: str | None = None,
+    config: HarnessConfig | None = None,
+    session_id: str | None = None,
     enable_learning: bool = False,
-    command_executor: CommandExecutor | None = None,
-    workspace_adapter: WorkspaceAdapter | None = None,
+    backend: RuntimeBackend | None = None,
+    skill_install_approver: SkillInstallApprover | None = None,
 ) -> Team:
     """
     A three-agent software development team:
@@ -194,11 +196,14 @@ def code_team(
 
     model = _resolve_model(model_id, provider, cfg)
     workspace_dir = _tool_workspace_dir(cfg)
-    files = FilesToolkit(workspace_dir=workspace_dir, adapter=workspace_adapter)
+    resolved_backend = (backend or RuntimeBackend()).resolve(workspace_dir=workspace_dir)
+    resolved_command_executor = resolved_backend.command_executor
+    resolved_workspace_adapter = resolved_backend.workspace_adapter
+    files = FilesToolkit(workspace_dir=workspace_dir, adapter=resolved_workspace_adapter)
     bash = make_bash_tool(
         timeout=cfg.bash_timeout_seconds,
         workspace_dir=workspace_dir,
-        executor=command_executor,
+        executor=resolved_command_executor,
     )
 
     # Learning for code patterns — namespaced separately from research
@@ -218,8 +223,8 @@ def code_team(
         tools=[files, TodoToolkit()],
         db=db,
         cfg=cfg,
-        command_executor=command_executor,
-        workspace_adapter=workspace_adapter,
+        backend=backend,
+        skill_install_approver=skill_install_approver,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -235,8 +240,8 @@ def code_team(
         tools=[files, bash, TodoToolkit()],
         db=db,
         cfg=cfg,
-        command_executor=command_executor,
-        workspace_adapter=workspace_adapter,
+        backend=backend,
+        skill_install_approver=skill_install_approver,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -253,8 +258,8 @@ def code_team(
         tools=[files, bash],
         db=db,
         cfg=cfg,
-        command_executor=command_executor,
-        workspace_adapter=workspace_adapter,
+        backend=backend,
+        skill_install_approver=skill_install_approver,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -280,12 +285,12 @@ def code_team(
 
 
 def data_team(
-    model_id: Optional[str] = None,
-    provider: Optional[str] = None,
-    config: Optional[HarnessConfig] = None,
-    session_id: Optional[str] = None,
-    command_executor: CommandExecutor | None = None,
-    workspace_adapter: WorkspaceAdapter | None = None,
+    model_id: str | None = None,
+    provider: str | None = None,
+    config: HarnessConfig | None = None,
+    session_id: str | None = None,
+    backend: RuntimeBackend | None = None,
+    skill_install_approver: SkillInstallApprover | None = None,
 ) -> Team:
     """
     A two-agent data analysis team:
@@ -301,6 +306,7 @@ def data_team(
 
     model = _resolve_model(model_id, provider, cfg)
     workspace_dir = _tool_workspace_dir(cfg)
+    resolved_backend = (backend or RuntimeBackend()).resolve(workspace_dir=workspace_dir)
 
     fetcher = _build_member_agent(
         name="DataFetcher",
@@ -312,17 +318,20 @@ def data_team(
         model=model,
         tools=[
             WebToolkit(),
-            FilesToolkit(workspace_dir=workspace_dir, adapter=workspace_adapter),
+            FilesToolkit(
+                workspace_dir=workspace_dir,
+                adapter=resolved_backend.workspace_adapter,
+            ),
             make_bash_tool(
                 timeout=cfg.bash_timeout_seconds,
                 workspace_dir=workspace_dir,
-                executor=command_executor,
+                executor=resolved_backend.command_executor,
             ),
         ],
         db=db,
         cfg=cfg,
-        command_executor=command_executor,
-        workspace_adapter=workspace_adapter,
+        backend=backend,
+        skill_install_approver=skill_install_approver,
     )
 
     analyst = _build_member_agent(
@@ -334,17 +343,20 @@ def data_team(
         ),
         model=model,
         tools=[
-            FilesToolkit(workspace_dir=workspace_dir, adapter=workspace_adapter),
+            FilesToolkit(
+                workspace_dir=workspace_dir,
+                adapter=resolved_backend.workspace_adapter,
+            ),
             make_bash_tool(
                 timeout=cfg.bash_timeout_seconds,
                 workspace_dir=workspace_dir,
-                executor=command_executor,
+                executor=resolved_backend.command_executor,
             ),
         ],
         db=db,
         cfg=cfg,
-        command_executor=command_executor,
-        workspace_adapter=workspace_adapter,
+        backend=backend,
+        skill_install_approver=skill_install_approver,
     )
 
     return Team(

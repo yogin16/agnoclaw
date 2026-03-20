@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from agnoclaw.backends import RuntimeBackend
 from agnoclaw.config import HarnessConfig
 from agnoclaw.tools.backends import CommandResult
 
@@ -254,16 +255,16 @@ def test_data_team_uses_config_workspace_for_file_and_bash_tools(tmp_path):
     assert fetcher_files.functions["read_file"].pre_hook is not None
 
 
-def test_code_team_uses_custom_backends(tmp_path):
+def test_code_team_uses_backend(tmp_path):
     from agnoclaw.teams import code_team
     from agnoclaw.tools.files import FilesToolkit
 
     adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
     executor = FakeCommandExecutor(workspace_dir=tmp_path)
+    backend = RuntimeBackend(command_executor=executor, workspace_adapter=adapter)
     team = code_team(
         config=HarnessConfig(workspace_dir=str(tmp_path)),
-        workspace_adapter=adapter,
-        command_executor=executor,
+        backend=backend,
     )
 
     implementer_files = next(t for t in team.members[1].tools if isinstance(t, FilesToolkit))
@@ -274,16 +275,16 @@ def test_code_team_uses_custom_backends(tmp_path):
     assert implementer_bash.entrypoint("echo hi") == "team-executor-run:echo hi:None:120"
 
 
-def test_data_team_uses_custom_backends(tmp_path):
+def test_data_team_uses_backend(tmp_path):
     from agnoclaw.teams import data_team
     from agnoclaw.tools.files import FilesToolkit
 
     adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
     executor = FakeCommandExecutor(workspace_dir=tmp_path)
+    backend = RuntimeBackend(command_executor=executor, workspace_adapter=adapter)
     team = data_team(
         config=HarnessConfig(workspace_dir=str(tmp_path)),
-        workspace_adapter=adapter,
-        command_executor=executor,
+        backend=backend,
     )
 
     fetcher_files = next(t for t in team.members[0].tools if isinstance(t, FilesToolkit))
@@ -291,3 +292,23 @@ def test_data_team_uses_custom_backends(tmp_path):
 
     assert fetcher_files.adapter is adapter
     assert fetcher_bash.entrypoint("echo hi") == "team-executor-run:echo hi:None:120"
+
+
+def test_code_team_uses_runtime_backend(tmp_path):
+    from agnoclaw.teams import code_team
+    from agnoclaw.tools.files import FilesToolkit
+
+    backend = RuntimeBackend(
+        command_executor=FakeCommandExecutor(workspace_dir=tmp_path),
+        workspace_adapter=FakeWorkspaceAdapter(workspace_dir=tmp_path),
+    )
+    team = code_team(
+        config=HarnessConfig(workspace_dir=str(tmp_path)),
+        backend=backend,
+    )
+
+    implementer_files = next(t for t in team.members[1].tools if isinstance(t, FilesToolkit))
+    implementer_bash = team.members[1].tools[1]
+
+    assert implementer_files.adapter is backend.resolve(workspace_dir=tmp_path).workspace_adapter
+    assert implementer_bash.entrypoint("echo hi") == "team-executor-run:echo hi:None:120"

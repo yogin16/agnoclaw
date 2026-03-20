@@ -70,12 +70,13 @@ from agno.run.agent import RunOutput, RunOutputEvent
 from agno.tools.function import Function
 from agno.tools.toolkit import Toolkit
 
+from .backends import RuntimeBackend
 from .config import HarnessConfig, get_config
 from .prompts.system import SystemPromptBuilder
 from .runtime import (
-    AllowAllPolicyEngine,
     AgnoAuthError,
     AgnoConfigError,
+    AllowAllPolicyEngine,
     EventSink,
     EventSinkMode,
     ExecutionContext,
@@ -100,6 +101,7 @@ from .runtime import (
     build_event,
     normalize_permission_mode,
 )
+from .skills.backends import SkillInstallApprover
 from .skills.registry import SkillRegistry
 from .tools import get_default_tools
 from .workspace import Workspace
@@ -299,8 +301,8 @@ class AgentHarness:
                          "bypass", "default", "accept_edits", "plan", "dont_ask".
         permission_approver: Optional approval callback used in non-bypass modes.
         permission_require_approver: If True, deny approval-required calls when no approver exists.
-        command_executor: Optional backend override for built-in bash tools.
-        workspace_adapter: Optional backend override for built-in file tools.
+        backend: Optional coherent runtime backend for tools/skills/browser.
+        skill_install_approver: Optional approval backend for skill dependency installs.
     """
 
     def __init__(
@@ -344,8 +346,8 @@ class AgentHarness:
         permission_require_approver: bool | None = None,
         permission_preapproved_tools: list[str] | tuple[str, ...] | None = None,
         permission_preapproved_categories: list[str] | tuple[str, ...] | None = None,
-        command_executor=None,
-        workspace_adapter=None,
+        backend: RuntimeBackend | None = None,
+        skill_install_approver: SkillInstallApprover | None = None,
         pre_run_hooks: list[PreRunHook] | None = None,
         post_run_hooks: list[PostRunHook] | None = None,
         tenant_id: str | None = None,
@@ -455,6 +457,9 @@ class AgentHarness:
             project_dir=self.config.project_workspace_dir,
         )
         self.workspace.initialize()
+        effective_backend = backend or RuntimeBackend()
+        resolved_backend = effective_backend.resolve(workspace_dir=self.workspace.path)
+        resolved_skill_runtime_backend = resolved_backend.skill_runtime
         self._guardrails = RuntimeGuardrails(
             workspace_dir=self.workspace.path,
             enabled=self.config.guardrails_enabled,
@@ -470,7 +475,12 @@ class AgentHarness:
         )
 
         # Skills registry
-        self.skills = SkillRegistry(self.workspace.skills_dir())
+        self.skills = SkillRegistry(
+            self.workspace.skills_dir(),
+            runtime_backend=resolved_skill_runtime_backend,
+            install_approver=skill_install_approver,
+            working_dir=self.workspace.path,
+        )
         if skills_dirs:
             for path, trust in skills_dirs:
                 self.skills.add_directory(path, trust=trust)
@@ -492,8 +502,7 @@ class AgentHarness:
                 self.config,
                 subagents=subagents,
                 workspace_dir=self.workspace.path,
-                command_executor=command_executor,
-                workspace_adapter=workspace_adapter,
+                backend=effective_backend,
             )
         if _tools:
             _all_tools.extend(_tools)
@@ -516,12 +525,20 @@ class AgentHarness:
             self._post_run_hooks.extend(self._plugin_loader.get_all_post_run_hooks())
 
             if manifests:
-                logger.info("Loaded %d plugin(s): %s", len(manifests), ", ".join(m.name for m in manifests))
+                logger.info(
+                    "Loaded %d plugin(s): %s",
+                    len(manifests),
+                    ", ".join(m.name for m in manifests),
+                )
 
         self._attach_tool_runtime_hooks(_all_tools)
 
         # Resolve learning flags before building system prompt
-        _enable_learning = enable_learning if enable_learning is not None else self.config.enable_learning
+        _enable_learning = (
+            enable_learning
+            if enable_learning is not None
+            else self.config.enable_learning
+        )
         _learning_mode = learning_mode or self.config.learning_mode
 
         # Persist prompt options so per-run skill injection can be one-shot

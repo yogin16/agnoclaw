@@ -28,10 +28,13 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from agno.tools import tool
 from agno.tools.toolkit import Toolkit
+
+if TYPE_CHECKING:
+    from agnoclaw.backends import RuntimeBackend
 
 logger = logging.getLogger("agnoclaw.tools")
 
@@ -109,7 +112,7 @@ class TodoToolkit(Toolkit):
         subject = self._todos[todo_id]["subject"]
         return f"Todo #{todo_id} '{subject}' → {status}"
 
-    def list_todos(self, filter_status: Optional[str] = None) -> str:
+    def list_todos(self, filter_status: str | None = None) -> str:
         """
         List all todos, optionally filtered by status.
 
@@ -359,23 +362,31 @@ class SubagentDefinition:
     description: str
     prompt: str = ""
     tools: list[str] = field(default_factory=lambda: ["all"])
-    model: Optional[str] = None
+    model: str | None = None
 
 
 # Default agent type instructions (used for ad-hoc agent_type= invocations)
 _TYPE_INSTRUCTIONS = {
-    "research": "You are a research specialist. Search the web, read URLs, and synthesize findings into a clear summary.",
+    "research": (
+        "You are a research specialist. Search the web, read URLs, and "
+        "synthesize findings into a clear summary."
+    ),
     "code": "You are a code specialist. Write clean, efficient code following best practices.",
-    "data": "You are a data analysis specialist. Analyze data, identify patterns, and present insights clearly.",
-    "general": "You are a capable assistant. Complete the assigned task thoroughly and efficiently.",
+    "data": (
+        "You are a data analysis specialist. Analyze data, identify patterns, "
+        "and present insights clearly."
+    ),
+    "general": (
+        "You are a capable assistant. Complete the assigned task thoroughly "
+        "and efficiently."
+    ),
 }
 
 
 def _build_subagent_tools(
     tool_names: list[str] | None,
     workspace_dir: str | Path | None = None,
-    command_executor=None,
-    workspace_adapter=None,
+    backend: RuntimeBackend | None = None,
 ) -> list:
     """Build tool instances for a subagent from tool name list."""
     agent_tools = []
@@ -383,6 +394,11 @@ def _build_subagent_tools(
     resolved_workspace = (
         Path(workspace_dir).expanduser().resolve()
         if workspace_dir is not None
+        else None
+    )
+    resolved_backend = (
+        backend.resolve(workspace_dir=resolved_workspace)
+        if backend is not None and resolved_workspace is not None
         else None
     )
     if "all" in names or "web" in names:
@@ -393,7 +409,11 @@ def _build_subagent_tools(
         agent_tools.append(
             FilesToolkit(
                 workspace_dir=resolved_workspace,
-                adapter=workspace_adapter,
+                adapter=(
+                    resolved_backend.workspace_adapter
+                    if resolved_backend is not None
+                    else None
+                ),
             )
         )
     if "all" in names or "bash" in names:
@@ -401,7 +421,11 @@ def _build_subagent_tools(
         agent_tools.append(
             make_bash_tool(
                 workspace_dir=resolved_workspace,
-                executor=command_executor,
+                executor=(
+                    resolved_backend.command_executor
+                    if resolved_backend is not None
+                    else None
+                ),
             )
         )
     return agent_tools
@@ -426,8 +450,7 @@ def _run_subagent(
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     config=None,
-    command_executor=None,
-    workspace_adapter=None,
+    backend: RuntimeBackend | None = None,
 ) -> str:
     """Create and run an isolated subagent synchronously. Returns result string."""
     from agnoclaw.agent import AgentHarness, get_current_tool_runtime
@@ -446,8 +469,7 @@ def _run_subagent(
         tools=_build_subagent_tools(
             tool_names,
             workspace_dir=workspace_dir,
-            command_executor=command_executor,
-            workspace_adapter=workspace_adapter,
+            backend=backend,
         ),
         instructions=instructions,
         event_sink=(
@@ -465,6 +487,7 @@ def _run_subagent(
             if isinstance(parent_runtime, dict)
             else None
         ),
+        backend=backend,
     )
     response = subagent.run(task, context=subagent_context)
     content = response.content if response else "[no response]"
@@ -483,8 +506,7 @@ async def _arun_subagent(
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     config=None,
-    command_executor=None,
-    workspace_adapter=None,
+    backend: RuntimeBackend | None = None,
 ) -> str:
     """Create and run an isolated subagent asynchronously. Returns result string."""
     from agnoclaw.agent import AgentHarness, get_current_tool_runtime
@@ -503,8 +525,7 @@ async def _arun_subagent(
         tools=_build_subagent_tools(
             tool_names,
             workspace_dir=workspace_dir,
-            command_executor=command_executor,
-            workspace_adapter=workspace_adapter,
+            backend=backend,
         ),
         instructions=instructions,
         event_sink=(
@@ -522,6 +543,7 @@ async def _arun_subagent(
             if isinstance(parent_runtime, dict)
             else None
         ),
+        backend=backend,
     )
 
     response = await subagent.arun(task, context=subagent_context)
@@ -538,8 +560,7 @@ def make_subagent_tool(
     subagents: dict[str, SubagentDefinition] | None = None,
     workspace_dir: str | Path | None = None,
     config=None,
-    command_executor=None,
-    workspace_adapter=None,
+    backend: RuntimeBackend | None = None,
 ):
     """
     Returns a SubagentTool function for spawning isolated sub-agents.
@@ -620,8 +641,7 @@ def make_subagent_tool(
                 tool_names,
                 workspace_dir=workspace_dir,
                 config=config,
-                command_executor=command_executor,
-                workspace_adapter=workspace_adapter,
+                backend=backend,
             )
 
         except Exception as e:

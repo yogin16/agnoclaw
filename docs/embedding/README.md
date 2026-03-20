@@ -9,7 +9,8 @@ This folder documents how to embed the harness core inside another service.
 - Policy checkpoints across run and tool boundaries.
 - Structured events via pluggable event sinks.
 - Runtime path/network guardrails.
-- Backend injection for built-in workspace tools.
+- Single-backend runtime injection for built-in tools, skills, and browser.
+- Optional first-party `LLMSandboxBackend` for Docker-first sandbox execution.
 - Optional AgentOS claim-to-context adapter.
 
 ## Minimal embedding pattern
@@ -41,12 +42,12 @@ print(result.content)
 - Harness emits lifecycle events for run/prompt/model/policy/tool checkpoints.
 - Policy denials return typed `HarnessError` values.
 - Tool calls are checked by guardrails before execution.
-- Built-in `bash` and `files` tools can target a custom execution/filesystem backend.
+- Built-in tools and skill installs can target one coherent custom backend.
 - Run metadata includes normalized execution context for downstream tooling.
 
 ## Related docs
 
 - [Policy and Guardrails](./policy-and-guardrails.md)
-- [Workspace Backends](./workspace-backends.md)
+- [Runtime Backends](./workspace-backends.md)
 - [AgentOS Adapter](./agentos-adapter.md)
 - [v0.2 Spec](../../spec/v0.2-harness-core.md)

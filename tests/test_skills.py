@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 
+from agnoclaw.skills.backends import SkillInstallResult
 from agnoclaw.skills.loader import load_skill_from_path
 from agnoclaw.skills.registry import SkillRegistry, _validate_package_name
 
@@ -22,6 +23,41 @@ This is a test skill. Arguments: $ARGUMENTS
 
 First arg: $ARGUMENTS[0]
 """
+
+
+class FakeSkillRuntimeBackend:
+    def __init__(self):
+        self.calls = []
+
+    def run_inline_command(self, *, command: str, timeout_seconds: int = 10, working_dir: str | None = None) -> str:
+        self.calls.append(("inline", command, timeout_seconds, working_dir))
+        return f"inline:{command}:{working_dir}"
+
+    def has_binary(self, name: str) -> bool:
+        self.calls.append(("binary", name))
+        return name == "git"
+
+    def has_env_var(self, name: str) -> bool:
+        self.calls.append(("env", name))
+        return name == "MY_API_KEY"
+
+    def has_python_distribution(self, name: str) -> bool:
+        self.calls.append(("dist", name))
+        return name == "httpx"
+
+    def run_install(self, *, installer_type: str, package_spec: str, timeout_seconds: int = 120) -> SkillInstallResult:
+        self.calls.append(("install", installer_type, package_spec, timeout_seconds))
+        return SkillInstallResult(success=True, exit_code=0, stdout="ok")
+
+
+class FakeApprover:
+    def __init__(self, decision: bool = True):
+        self.decision = decision
+        self.calls = []
+
+    def approve(self, skill, pending):
+        self.calls.append((skill.name, pending))
+        return self.decision
 
 
 @pytest.fixture
@@ -79,6 +115,18 @@ def test_skill_registry_load(skill_dir):
     assert content is not None
     assert "Test Skill" in content
     assert "foo bar" in content
+
+
+def test_skill_registry_uses_custom_runtime_backend_for_inline_exec(exec_skill_dir):
+    registry = SkillRegistry(
+        workspace_skills_dir=exec_skill_dir,
+        runtime_backend=FakeSkillRuntimeBackend(),
+    )
+
+    content = registry.load_skill("exec-test")
+    assert content is not None
+    assert "inline:echo hello-from-shell" in content
+    assert "!`echo hello-from-shell`" not in content
 
 
 def test_skill_registry_missing(skill_dir):
@@ -302,6 +350,37 @@ def test_install_approval_declined(install_skill_dir):
     with patch.object(SkillRegistry, '_prompt_install_approval', return_value=False):
         content = registry.load_skill("install-test")
     assert content is not None  # skill still loads, install just skipped
+
+
+def test_install_runtime_backend_and_approver_are_used(install_skill_dir):
+    runtime_backend = FakeSkillRuntimeBackend()
+    runtime_backend.has_python_distribution = lambda name: False
+    approver = FakeApprover(decision=True)
+    registry = SkillRegistry(
+        workspace_skills_dir=install_skill_dir,
+        runtime_backend=runtime_backend,
+        install_approver=approver,
+    )
+
+    content = registry.load_skill("install-test")
+
+    assert content is not None
+    assert approver.calls
+    assert ("install", "pip", "httpx", 120) in runtime_backend.calls
+
+
+def test_install_runtime_backend_skips_install_when_dependency_present(install_skill_dir):
+    runtime_backend = FakeSkillRuntimeBackend()
+    registry = SkillRegistry(
+        workspace_skills_dir=install_skill_dir,
+        runtime_backend=runtime_backend,
+        auto_approve_installs=True,
+    )
+
+    content = registry.load_skill("install-test")
+
+    assert content is not None
+    assert not any(call[0] == "install" for call in runtime_backend.calls)
 
 
 # ── Security: community skill inline exec blocked ─────────────────────────────

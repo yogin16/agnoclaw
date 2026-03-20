@@ -15,10 +15,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from agnoclaw.backends import RuntimeBackend
     from agnoclaw.config import HarnessConfig
 
 from .backends import CommandExecutor, LocalCommandExecutor, LocalWorkspaceAdapter, WorkspaceAdapter
 from .bash import BashToolkit, make_bash_tool
+from .browser_backends import BrowserBackend, LocalPlaywrightBrowserBackend
 from .files import FilesToolkit
 from .tasks import ProgressToolkit, SubagentDefinition, TodoToolkit, make_subagent_tool
 from .web import WebToolkit
@@ -28,10 +30,13 @@ logger = logging.getLogger("agnoclaw.tools")
 __all__ = [
     "make_bash_tool",
     "BashToolkit",
+    "BrowserBackend",
     "CommandExecutor",
     "FilesToolkit",
+    "LocalPlaywrightBrowserBackend",
     "LocalCommandExecutor",
     "LocalWorkspaceAdapter",
+    "RuntimeBackend",
     "WorkspaceAdapter",
     "WebToolkit",
     "TodoToolkit",
@@ -42,12 +47,19 @@ __all__ = [
 ]
 
 
+def __getattr__(name: str):
+    if name == "RuntimeBackend":
+        from agnoclaw.backends import RuntimeBackend
+
+        return RuntimeBackend
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def get_default_tools(
     config: HarnessConfig | None = None,
     subagents: dict[str, SubagentDefinition] | None = None,
     workspace_dir: str | Path | None = None,
-    command_executor: CommandExecutor | None = None,
-    workspace_adapter: WorkspaceAdapter | None = None,
+    backend: RuntimeBackend | None = None,
 ) -> list:
     """
     Build the default tool suite based on configuration.
@@ -59,23 +71,22 @@ def get_default_tools(
 
     Returns a list of tools and toolkits ready to pass to AgentHarness.
     """
+    from agnoclaw.backends import RuntimeBackend
     from agnoclaw.config import get_config
 
     cfg = config or get_config()
+
     tool_workspace_dir = (
         Path(workspace_dir).expanduser().resolve()
         if workspace_dir is not None
         else Path(cfg.workspace_dir).expanduser().resolve()
     )
+    effective_backend = backend or RuntimeBackend()
     tools = []
-
-    # File operations (always enabled)
-    resolved_workspace_adapter = workspace_adapter or LocalWorkspaceAdapter(
-        workspace_dir=tool_workspace_dir
-    )
-    resolved_command_executor = command_executor or LocalCommandExecutor(
-        workspace_dir=tool_workspace_dir
-    )
+    resolved_backend = effective_backend.resolve(workspace_dir=tool_workspace_dir)
+    resolved_workspace_adapter = resolved_backend.workspace_adapter
+    resolved_command_executor = resolved_backend.command_executor
+    resolved_browser_backend = resolved_backend.browser_backend
 
     tools.append(
         FilesToolkit(
@@ -123,17 +134,25 @@ def get_default_tools(
         subagents=subagents,
         workspace_dir=tool_workspace_dir,
         config=cfg,
-        command_executor=resolved_command_executor,
-        workspace_adapter=resolved_workspace_adapter,
+        backend=effective_backend,
     ))
 
     # ── Optional toolkits (conditional on config + importability) ─────────
 
     # Browser toolkit (requires agnoclaw[browser])
     if cfg.enable_browser:
+        if resolved_browser_backend is None and not effective_backend.uses_host_runtime():
+            raise ValueError(
+                "Browser tools are enabled, but the configured backend does not "
+                "provide browser support. "
+                "Pass a browser-capable backend or disable browser tools."
+            )
         try:
             from .browser import BrowserToolkit
-            tools.append(BrowserToolkit())
+            if resolved_browser_backend is None:
+                tools.append(BrowserToolkit())
+            else:
+                tools.append(BrowserToolkit(backend=resolved_browser_backend))
             logger.debug("Browser toolkit enabled")
         except ImportError:
             logger.debug("Browser toolkit requested but playwright not installed")

@@ -47,7 +47,7 @@ Deferred by design:
 - Skill `command-dispatch: tool` enforcement (bypasses LLM, invokes tool directly)
 - ClawHub integration (search, inspect, install community skills)
 - Auto-skill selection (skill catalog injected into system prompt)
-- Pluggable built-in workspace backends (`CommandExecutor`, `WorkspaceAdapter`)
+- Single runtime backend abstraction for built-in tools, skills, and browser
 
 ---
 
@@ -62,8 +62,8 @@ Deferred by design:
 | Elevated execution path | Bypass/elevation semantics | Elevated mode (`!`) | **Missing** | High | Harness |
 | Tool boundary policy interception | Pre/post tool controls | Hooks around command/tool lifecycle | **Implemented** | Low | Harness |
 | Runtime guardrails | Permission/sandbox controls | Sandboxing/security controls | **Implemented (path/network)** | Low | Harness |
-| Built-in workspace backend abstraction | Tool family can target alternate runtime plane | Exec/files tools can bind to sandbox/container workspace | **Implemented** (`CommandExecutor`, `WorkspaceAdapter`) | ~~High~~ Done | Harness |
-| Sandbox provider abstraction | Multiple runtime permission/sandbox modes | Sandboxing modes (`workspace-write/read-only/full`) | **Partial** (policy + guardrails, no provider backends) | High | Harness |
+| Built-in runtime backend abstraction | Tool family can target one alternate runtime plane | Exec/files/browser/skills bind to sandbox/container workspace | **Implemented** (`RuntimeBackend`) | ~~High~~ Done | Harness |
+| Sandbox provider abstraction | Multiple runtime permission/sandbox modes | Sandboxing modes (`workspace-write/read-only/full`) | **Partial** (single backend contract exists; first-party `LLMSandboxBackend` ships, other provider adapters still open) | High | Harness |
 | Hook breadth and packaging | 17 events + multiple hook types | Plugin hook packs + lifecycle events | **Partial** (run + tool path) | High | Harness |
 | Scheduler | None | Heartbeat + Cron | **Implemented** | Low | Harness |
 | Persistent cron management | N/A | Durable job management | **Partial** (in-memory jobs) | Medium | Harness |
@@ -96,7 +96,7 @@ Newly closed or reduced gaps (v0.3):
 8. **Skill `command-dispatch: tool` enforcement** — Bypasses LLM, invokes the specified tool directly.
 9. **ClawHub integration** — HTTP client for community skill registry (search, inspect, download, install).
 10. **Auto-skill selection** — Skill catalog injected into system prompt so model can self-select relevant skills.
-11. **Pluggable workspace tool backends** — Built-in bash/files tools now accept injected execution/filesystem backends, with propagation into subagents and team presets.
+11. **Single runtime backend propagation** — Built-in bash/files, trusted skill execution/install flow, browser tools, subagents, and team presets now share one injected runtime backend.
 
 Previously closed:
 1. Runtime permission modes are now implemented in the harness core.
