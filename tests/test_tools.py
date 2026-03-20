@@ -5,6 +5,102 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from agnoclaw.tools.backends import (
+    BackgroundCommandHandle,
+    BackgroundCommandOutput,
+    CommandResult,
+)
+
+
+class FakeWorkspaceAdapter:
+    def __init__(self, workspace_dir: str | Path | None = None):
+        self.workspace_dir = (
+            Path(workspace_dir).expanduser().resolve()
+            if workspace_dir is not None
+            else Path.cwd().resolve()
+        )
+
+    def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
+        return f"adapter-read:{path}:{offset}:{limit}"
+
+    def write_file(self, path: str, content: str) -> str:
+        return f"adapter-write:{path}:{content}"
+
+    def edit_file(self, path: str, old_string: str, new_string: str) -> str:
+        return f"adapter-edit:{path}:{old_string}->{new_string}"
+
+    def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str:
+        return f"adapter-multi:{path}:{len(edits)}"
+
+    def glob_files(self, pattern: str, base_dir: str | None = None, path: str | None = None) -> str:
+        return f"adapter-glob:{pattern}:{base_dir}:{path}"
+
+    def grep_files(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        case_insensitive: bool = False,
+        context_lines: int = 0,
+        max_results: int = 50,
+    ) -> str:
+        return (
+            f"adapter-grep:{pattern}:{path}:{glob}:{case_insensitive}:"
+            f"{context_lines}:{max_results}"
+        )
+
+    def list_dir(self, path: str | None = None) -> str:
+        return f"adapter-list:{path}"
+
+
+class FakeCommandExecutor:
+    def __init__(self, workspace_dir: str | Path | None = None):
+        self.workspace_dir = (
+            str(Path(workspace_dir).expanduser().resolve())
+            if workspace_dir is not None
+            else None
+        )
+        self.calls: list[tuple] = []
+
+    def run(self, *, command: str, workdir: str | None, timeout_seconds: int | None) -> CommandResult:
+        self.calls.append(("run", command, workdir, timeout_seconds))
+        return CommandResult(stdout=f"executor-run:{command}:{workdir}:{timeout_seconds}")
+
+    def start(
+        self,
+        *,
+        command: str,
+        workdir: str | None,
+        description: str | None = None,
+    ) -> BackgroundCommandHandle:
+        self.calls.append(("start", command, workdir, description))
+        return BackgroundCommandHandle(
+            task_id="task_custom",
+            pid=1234,
+            status="running",
+            log_path="/tmp/custom.log",
+        )
+
+    def output(
+        self,
+        *,
+        task_id: str,
+        max_chars: int = 8000,
+        tail: bool = True,
+    ) -> BackgroundCommandOutput:
+        self.calls.append(("output", task_id, max_chars, tail))
+        return BackgroundCommandOutput(
+            task_id=task_id,
+            status="exited",
+            output="executor-output",
+            exit_code=0,
+            pid=1234,
+        )
+
+    def kill(self, *, task_id: str, force: bool = False) -> str:
+        self.calls.append(("kill", task_id, force))
+        return f"executor-kill:{task_id}:{force}"
+
 
 # ── FilesToolkit tests ────────────────────────────────────────────────────
 
@@ -123,6 +219,23 @@ def test_files_toolkit_list_dir(tmp_path):
     result = toolkit.list_dir(str(tmp_path))
     assert isinstance(result, str)
     assert "file1.py" in result or "file2.txt" in result
+
+
+def test_files_toolkit_delegates_to_custom_adapter(tmp_path):
+    from agnoclaw.tools.files import FilesToolkit
+
+    adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
+    toolkit = FilesToolkit(workspace_dir=tmp_path, adapter=adapter)
+
+    assert toolkit.read_file("/tmp/demo.txt") == "adapter-read:/tmp/demo.txt:0:2000"
+    assert toolkit.write_file("/tmp/demo.txt", "hello") == "adapter-write:/tmp/demo.txt:hello"
+    assert toolkit.edit_file("/tmp/demo.txt", "a", "b") == "adapter-edit:/tmp/demo.txt:a->b"
+    assert toolkit.multi_edit_file("/tmp/demo.txt", [{"old_string": "a", "new_string": "b"}]) == (
+        "adapter-multi:/tmp/demo.txt:1"
+    )
+    assert toolkit.glob_files("*.py") == "adapter-glob:*.py:None:None"
+    assert toolkit.grep_files("needle", path="/tmp") == "adapter-grep:needle:/tmp:None:False:0:50"
+    assert toolkit.list_dir("/tmp") == "adapter-list:/tmp"
 
 
 # ── MultiEdit tests ──────────────────────────────────────────────────────
@@ -309,6 +422,31 @@ def test_bash_toolkit_background_start_raises_for_invalid_working_dir():
 
     with pytest.raises(BashToolError, match="Failed to start background command"):
         bash_start(command="pwd", working_dir="/definitely/not/a/real/agnoclaw-dir")
+
+
+def test_bash_toolkit_delegates_to_custom_executor(tmp_path):
+    from agnoclaw.tools.bash import BashToolkit
+
+    executor = FakeCommandExecutor(workspace_dir=tmp_path)
+    toolkit = BashToolkit(timeout=10, workspace_dir=tmp_path, executor=executor)
+
+    bash = toolkit.functions["bash"].entrypoint
+    bash_start = toolkit.functions["bash_start"].entrypoint
+    bash_output = toolkit.functions["bash_output"].entrypoint
+    bash_kill = toolkit.functions["bash_kill"].entrypoint
+
+    assert bash("echo hi") == "executor-run:echo hi:None:10"
+    assert bash_start(command="sleep 5") == (
+        "Started background task task_custom\n"
+        "pid: 1234\n"
+        "status: running\n"
+        "log: /tmp/custom.log"
+    )
+    assert bash_output(task_id="task_custom") == (
+        "[task task_custom] status=exited exit_code=0 pid=1234\nexecutor-output"
+    )
+    assert bash_kill(task_id="task_custom") == "executor-kill:task_custom:False"
+    assert ("run", "echo hi", None, 10) in executor.calls
 
 
 # ── WebToolkit tests ─────────────────────────────────────────────────────
@@ -554,6 +692,30 @@ def test_get_default_tools_workspace_override_applies_to_files_and_progress(tmp_
 
     assert files.workspace_dir == (tmp_path / "embedder-ws").resolve()
     assert Path(progress._project_dir) == (tmp_path / "embedder-ws").resolve()
+
+
+def test_get_default_tools_uses_custom_backends(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+
+    cfg = HarnessConfig(workspace_dir="~/.agnoclaw/workspace")
+    adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
+    executor = FakeCommandExecutor(workspace_dir=tmp_path)
+
+    tools = get_default_tools(
+        cfg,
+        workspace_dir=tmp_path,
+        workspace_adapter=adapter,
+        command_executor=executor,
+    )
+
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+
+    assert files.adapter is adapter
+    assert files.read_file("/tmp/demo.txt") == "adapter-read:/tmp/demo.txt:0:2000"
+    assert bash.entrypoint("echo hi") == "executor-run:echo hi:None:120"
 
 
 def test_web_toolkit_both_enabled_by_default():
@@ -917,13 +1079,33 @@ def test_build_subagent_tools_workspace_override_applies_to_files_and_bash(tmp_p
     from agnoclaw.tools.tasks import _build_subagent_tools
 
     workspace_dir = tmp_path / "subagent-workspace"
+    workspace_dir.mkdir()
     tools = _build_subagent_tools(["files", "bash"], workspace_dir=workspace_dir)
     files = next(t for t in tools if isinstance(t, FilesToolkit))
     bash = next(t for t in tools if getattr(t, "name", None) == "bash")
-    bash_toolkit = bash.entrypoint.__closure__[1].cell_contents
 
     assert files.workspace_dir == workspace_dir.resolve()
-    assert Path(bash_toolkit.workspace_dir) == workspace_dir.resolve()
+    assert bash.entrypoint("pwd").strip() == str(workspace_dir.resolve())
+
+
+def test_build_subagent_tools_uses_custom_backends(tmp_path):
+    from agnoclaw.tools.files import FilesToolkit
+    from agnoclaw.tools.tasks import _build_subagent_tools
+
+    adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
+    executor = FakeCommandExecutor(workspace_dir=tmp_path)
+
+    tools = _build_subagent_tools(
+        ["files", "bash"],
+        workspace_dir=tmp_path,
+        workspace_adapter=adapter,
+        command_executor=executor,
+    )
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+
+    assert files.adapter is adapter
+    assert bash.entrypoint("echo hi") == "executor-run:echo hi:None:120"
 
 
 def test_run_subagent_truncates_long_output():
@@ -1025,3 +1207,23 @@ def test_get_default_tools_passes_config_to_subagent_tool():
         mock_make.return_value = MagicMock()
         get_default_tools(cfg)
         assert mock_make.call_args[1]["config"] is cfg
+
+
+def test_get_default_tools_passes_custom_backends_to_subagent_tool(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+
+    cfg = HarnessConfig()
+    adapter = FakeWorkspaceAdapter(workspace_dir=tmp_path)
+    executor = FakeCommandExecutor(workspace_dir=tmp_path)
+
+    with patch("agnoclaw.tools.make_subagent_tool") as mock_make:
+        mock_make.return_value = MagicMock()
+        get_default_tools(
+            cfg,
+            workspace_dir=tmp_path,
+            workspace_adapter=adapter,
+            command_executor=executor,
+        )
+        assert mock_make.call_args[1]["workspace_adapter"] is adapter
+        assert mock_make.call_args[1]["command_executor"] is executor

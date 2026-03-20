@@ -25,7 +25,14 @@ from agno.team import Team, TeamMode
 
 from .agent import AgentHarness, _resolve_model, _make_db
 from .config import HarnessConfig, get_config
-from .tools import FilesToolkit, WebToolkit, make_bash_tool, TodoToolkit
+from .tools import (
+    CommandExecutor,
+    FilesToolkit,
+    TodoToolkit,
+    WebToolkit,
+    WorkspaceAdapter,
+    make_bash_tool,
+)
 
 
 def _tool_workspace_dir(cfg: HarnessConfig) -> Path:
@@ -40,6 +47,8 @@ def _build_member_agent(
     cfg: HarnessConfig,
     db,
     tools: list,
+    command_executor: CommandExecutor | None = None,
+    workspace_adapter: WorkspaceAdapter | None = None,
     learning=None,
     enable_learning: bool = False,
 ):
@@ -54,6 +63,8 @@ def _build_member_agent(
         instructions=role,
         enable_learning=enable_learning,
         debug=cfg.debug,
+        command_executor=command_executor,
+        workspace_adapter=workspace_adapter,
     )
     harness._agent.role = role
     if learning is not None:
@@ -68,6 +79,8 @@ def research_team(
     config: Optional[HarnessConfig] = None,
     session_id: Optional[str] = None,
     enable_learning: bool = False,
+    command_executor: CommandExecutor | None = None,
+    workspace_adapter: WorkspaceAdapter | None = None,
 ) -> Team:
     """
     A three-agent research team:
@@ -98,6 +111,8 @@ def research_team(
         tools=[web, TodoToolkit()],
         db=db,
         cfg=cfg,
+        command_executor=command_executor,
+        workspace_adapter=workspace_adapter,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -112,6 +127,8 @@ def research_team(
         tools=[TodoToolkit()],
         db=db,
         cfg=cfg,
+        command_executor=command_executor,
+        workspace_adapter=workspace_adapter,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -127,6 +144,8 @@ def research_team(
         tools=[],
         db=db,
         cfg=cfg,
+        command_executor=command_executor,
+        workspace_adapter=workspace_adapter,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -157,6 +176,8 @@ def code_team(
     config: Optional[HarnessConfig] = None,
     session_id: Optional[str] = None,
     enable_learning: bool = False,
+    command_executor: CommandExecutor | None = None,
+    workspace_adapter: WorkspaceAdapter | None = None,
 ) -> Team:
     """
     A three-agent software development team:
@@ -173,8 +194,12 @@ def code_team(
 
     model = _resolve_model(model_id, provider, cfg)
     workspace_dir = _tool_workspace_dir(cfg)
-    files = FilesToolkit(workspace_dir=workspace_dir)
-    bash = make_bash_tool(timeout=cfg.bash_timeout_seconds, workspace_dir=workspace_dir)
+    files = FilesToolkit(workspace_dir=workspace_dir, adapter=workspace_adapter)
+    bash = make_bash_tool(
+        timeout=cfg.bash_timeout_seconds,
+        workspace_dir=workspace_dir,
+        executor=command_executor,
+    )
 
     # Learning for code patterns — namespaced separately from research
     _learning = None
@@ -193,6 +218,8 @@ def code_team(
         tools=[files, TodoToolkit()],
         db=db,
         cfg=cfg,
+        command_executor=command_executor,
+        workspace_adapter=workspace_adapter,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -208,6 +235,8 @@ def code_team(
         tools=[files, bash, TodoToolkit()],
         db=db,
         cfg=cfg,
+        command_executor=command_executor,
+        workspace_adapter=workspace_adapter,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -224,6 +253,8 @@ def code_team(
         tools=[files, bash],
         db=db,
         cfg=cfg,
+        command_executor=command_executor,
+        workspace_adapter=workspace_adapter,
         learning=_learning,
         enable_learning=enable_learning,
     )
@@ -253,6 +284,8 @@ def data_team(
     provider: Optional[str] = None,
     config: Optional[HarnessConfig] = None,
     session_id: Optional[str] = None,
+    command_executor: CommandExecutor | None = None,
+    workspace_adapter: WorkspaceAdapter | None = None,
 ) -> Team:
     """
     A two-agent data analysis team:
@@ -279,11 +312,17 @@ def data_team(
         model=model,
         tools=[
             WebToolkit(),
-            FilesToolkit(workspace_dir=workspace_dir),
-            make_bash_tool(timeout=cfg.bash_timeout_seconds, workspace_dir=workspace_dir),
+            FilesToolkit(workspace_dir=workspace_dir, adapter=workspace_adapter),
+            make_bash_tool(
+                timeout=cfg.bash_timeout_seconds,
+                workspace_dir=workspace_dir,
+                executor=command_executor,
+            ),
         ],
         db=db,
         cfg=cfg,
+        command_executor=command_executor,
+        workspace_adapter=workspace_adapter,
     )
 
     analyst = _build_member_agent(
@@ -295,11 +334,17 @@ def data_team(
         ),
         model=model,
         tools=[
-            FilesToolkit(workspace_dir=workspace_dir),
-            make_bash_tool(timeout=cfg.bash_timeout_seconds, workspace_dir=workspace_dir),
+            FilesToolkit(workspace_dir=workspace_dir, adapter=workspace_adapter),
+            make_bash_tool(
+                timeout=cfg.bash_timeout_seconds,
+                workspace_dir=workspace_dir,
+                executor=command_executor,
+            ),
         ],
         db=db,
         cfg=cfg,
+        command_executor=command_executor,
+        workspace_adapter=workspace_adapter,
     )
 
     return Team(

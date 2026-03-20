@@ -5,6 +5,8 @@
 1. Policy engine decisions (`ALLOW`, `DENY`, `ALLOW_WITH_REDACTION`, `ALLOW_WITH_CONSTRAINTS`)
 2. Runtime guardrails (path/network checks before tool execution)
 
+Those layers sit above the tool backend. If you inject a custom `CommandExecutor` or `WorkspaceAdapter`, policy and guardrail checks still run before the built-in tool implementation delegates to that backend.
+
 ## Policy checkpoints
 
 Current checkpoints:

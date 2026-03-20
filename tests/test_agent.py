@@ -314,6 +314,27 @@ def test_agent_harness_default_tools_use_constructor_workspace(tmp_path):
     assert Path(progress._project_dir) == Path(harness_workspace).resolve()
 
 
+def test_agent_harness_passes_custom_backends_to_default_tools(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    executor = object()
+    adapter = object()
+
+    with patch("agnoclaw.agent.Agent", return_value=MagicMock()):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            with patch("agnoclaw.agent.get_default_tools", return_value=[]) as mock_tools:
+                AgentHarness(
+                    workspace_dir=tmp_path,
+                    config=HarnessConfig(),
+                    command_executor=executor,
+                    workspace_adapter=adapter,
+                )
+
+    assert mock_tools.call_args[1]["command_executor"] is executor
+    assert mock_tools.call_args[1]["workspace_adapter"] is adapter
+
+
 def test_agent_harness_instructions_param():
     """AgentHarness should accept 'instructions' as primary name."""
     from agnoclaw.agent import AgentHarness

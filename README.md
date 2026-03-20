@@ -187,6 +187,29 @@ For the unified Claude Code + OpenClaw gap status (implemented/remaining roadmap
 
 ---
 
+## Sandboxed Backends
+
+The built-in workspace tool family is now backend-swappable. `agnoclaw` still owns prompts, sessions, hooks, policy, permissions, and guardrails, but you can replace the runtime plane behind:
+
+- `bash` / `bash_start` / `bash_output` / `bash_kill`
+- `read_file` / `write_file` / `edit_file` / `multi_edit_file` / `glob_files` / `grep_files` / `list_dir`
+
+Inject custom backends with `AgentHarness(command_executor=..., workspace_adapter=...)` or `get_default_tools(...)`. The same backend pair is also propagated into built-in subagents and team presets so tool behavior stays coherent across nested runs.
+
+```python
+from agnoclaw import AgentHarness
+
+agent = AgentHarness(
+    workspace_dir="/srv/workspace",
+    command_executor=my_sandbox_executor,
+    workspace_adapter=my_sandbox_workspace,
+)
+```
+
+More detail: [`docs/embedding/workspace-backends.md`](docs/embedding/workspace-backends.md)
+
+---
+
 ## CLI
 
 ```bash

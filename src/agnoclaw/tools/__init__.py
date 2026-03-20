@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agnoclaw.config import HarnessConfig
 
+from .backends import CommandExecutor, LocalCommandExecutor, LocalWorkspaceAdapter, WorkspaceAdapter
 from .bash import BashToolkit, make_bash_tool
 from .files import FilesToolkit
 from .tasks import ProgressToolkit, SubagentDefinition, TodoToolkit, make_subagent_tool
@@ -27,7 +28,11 @@ logger = logging.getLogger("agnoclaw.tools")
 __all__ = [
     "make_bash_tool",
     "BashToolkit",
+    "CommandExecutor",
     "FilesToolkit",
+    "LocalCommandExecutor",
+    "LocalWorkspaceAdapter",
+    "WorkspaceAdapter",
     "WebToolkit",
     "TodoToolkit",
     "ProgressToolkit",
@@ -38,9 +43,11 @@ __all__ = [
 
 
 def get_default_tools(
-    config: Optional["HarnessConfig"] = None,
-    subagents: Optional[dict[str, SubagentDefinition]] = None,
+    config: HarnessConfig | None = None,
+    subagents: dict[str, SubagentDefinition] | None = None,
     workspace_dir: str | Path | None = None,
+    command_executor: CommandExecutor | None = None,
+    workspace_adapter: WorkspaceAdapter | None = None,
 ) -> list:
     """
     Build the default tool suite based on configuration.
@@ -63,7 +70,19 @@ def get_default_tools(
     tools = []
 
     # File operations (always enabled)
-    tools.append(FilesToolkit(workspace_dir=tool_workspace_dir))
+    resolved_workspace_adapter = workspace_adapter or LocalWorkspaceAdapter(
+        workspace_dir=tool_workspace_dir
+    )
+    resolved_command_executor = command_executor or LocalCommandExecutor(
+        workspace_dir=tool_workspace_dir
+    )
+
+    tools.append(
+        FilesToolkit(
+            workspace_dir=tool_workspace_dir,
+            adapter=resolved_workspace_adapter,
+        )
+    )
 
     # Shell execution
     if cfg.enable_bash:
@@ -72,6 +91,7 @@ def get_default_tools(
                 BashToolkit(
                     timeout=cfg.bash_timeout_seconds,
                     workspace_dir=tool_workspace_dir,
+                    executor=resolved_command_executor,
                 )
             )
         else:
@@ -79,6 +99,7 @@ def get_default_tools(
                 make_bash_tool(
                     timeout=cfg.bash_timeout_seconds,
                     workspace_dir=tool_workspace_dir,
+                    executor=resolved_command_executor,
                 )
             )
 
@@ -102,6 +123,8 @@ def get_default_tools(
         subagents=subagents,
         workspace_dir=tool_workspace_dir,
         config=cfg,
+        command_executor=resolved_command_executor,
+        workspace_adapter=resolved_workspace_adapter,
     ))
 
     # ── Optional toolkits (conditional on config + importability) ─────────
