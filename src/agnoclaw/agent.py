@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
@@ -1144,11 +1145,12 @@ class AgentHarness:
             details=details,
         )
 
-    def _format_result_preview(self, value: Any) -> str:
+    @staticmethod
+    def _format_result_preview(value: Any) -> str:
         if value is None:
             return ""
         text = " ".join(str(value).split())
-        return self._truncate_text(text, limit=_RESULT_PREVIEW_LIMIT)
+        return AgentHarness._truncate_text(text, limit=_RESULT_PREVIEW_LIMIT)
 
     def _start_tool_step(
         self,
@@ -1269,31 +1271,11 @@ class AgentHarness:
             tool_name = getattr(fc.function, "name", "unknown_tool")
             tool_call_id = self._tool_call_id(fc)
             arguments = dict(getattr(fc, "arguments", None) or {})
-            step = self._start_tool_step(
-                run_id=run_id,
-                tool_name=tool_name,
-                tool_call_id=tool_call_id,
-                context=context,
-            )
             request = ToolCallRequest(
                 run_id=run_id,
                 tool_name=tool_name,
                 arguments=arguments,
                 metadata={"tool_call_id": tool_call_id},
-            )
-
-            self._emit_event_sync(
-                event_type="tool.call.started",
-                run_id=run_id,
-                context=context,
-                payload={
-                    "tool_name": tool_name,
-                    "tool_call_id": tool_call_id,
-                    "step_id": step["step_id"],
-                    "step_name": step["step_name"],
-                    "step_index": step["step_index"],
-                    "argument_keys": sorted(arguments.keys()),
-                },
             )
 
             violations = self._guardrails.check(request)
@@ -1353,8 +1335,36 @@ class AgentHarness:
                 context=context,
             )
 
-            if decision.action == PolicyAction.ALLOW_WITH_REDACTION and getattr(fc, "arguments", None):
-                fc.arguments = self._apply_redactions_to_object(dict(fc.arguments), decision.redactions)
+            if (
+                decision.action == PolicyAction.ALLOW_WITH_REDACTION
+                and getattr(fc, "arguments", None)
+            ):
+                fc.arguments = self._apply_redactions_to_object(
+                    dict(fc.arguments),
+                    decision.redactions,
+                )
+
+            emitted_arguments = self._normalize_tool_arguments(getattr(fc, "arguments", None))
+            step = self._start_tool_step(
+                run_id=run_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                context=context,
+            )
+            self._emit_event_sync(
+                event_type="tool.call.started",
+                run_id=run_id,
+                context=context,
+                payload={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "step_id": step["step_id"],
+                    "step_name": step["step_name"],
+                    "step_index": step["step_index"],
+                    "argument_keys": sorted(emitted_arguments.keys()),
+                    "arguments": emitted_arguments,
+                },
+            )
 
             fc._agnoclaw_tool_runtime = {
                 "context": context,
@@ -1417,6 +1427,8 @@ class AgentHarness:
                 "step_id": step.get("step_id"),
                 "step_name": step.get("step_name"),
                 "step_index": step.get("step_index"),
+                "argument_keys": sorted(result.arguments.keys()),
+                "arguments": self._normalize_tool_arguments(result.arguments),
                 "error": getattr(fc, "error", None),
                 "duration_ms": duration_ms,
                 "result_preview": result_preview,
@@ -1878,6 +1890,23 @@ class AgentHarness:
         return getattr(event, key, default)
 
     @staticmethod
+    def _normalize_tool_arguments(arguments: Any) -> dict[str, Any]:
+        if arguments is None:
+            return {}
+        if isinstance(arguments, dict):
+            raw = arguments
+        else:
+            items = getattr(arguments, "items", None)
+            if not callable(items):
+                return {}
+            try:
+                raw = dict(items())
+            except Exception:
+                return {}
+        serialized = AgentHarness._serialize_event_value(raw)
+        return serialized if isinstance(serialized, dict) else {}
+
+    @staticmethod
     def _serialize_event_value(value: Any) -> Any:
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
@@ -1938,6 +1967,46 @@ class AgentHarness:
         return details
 
     @staticmethod
+    def _tool_stream_payload(event: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        tool_obj = AgentHarness._event_attr(event, "tool", None)
+
+        arguments = AgentHarness._normalize_tool_arguments(
+            AgentHarness._event_attr(event, "arguments", None)
+        )
+        if not arguments and tool_obj is not None:
+            arguments = AgentHarness._normalize_tool_arguments(getattr(tool_obj, "arguments", None))
+        if arguments:
+            payload["argument_keys"] = sorted(arguments.keys())
+            payload["arguments"] = arguments
+
+        duration_ms = AgentHarness._event_attr(event, "duration_ms", None)
+        if duration_ms is None and tool_obj is not None:
+            duration_ms = getattr(tool_obj, "duration_ms", None)
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+
+        error = AgentHarness._event_attr(event, "error", None)
+        if error is None and tool_obj is not None:
+            error = getattr(tool_obj, "error", None)
+        if error is not None:
+            payload["error"] = AgentHarness._serialize_event_value(error)
+
+        result = AgentHarness._event_attr(event, "result", None)
+        if result is None and tool_obj is not None:
+            result = getattr(tool_obj, "result", None)
+        if result is None and AgentHarness._event_name(event) in {
+            "ToolCallCompleted",
+            "ToolCallError",
+        }:
+            result = AgentHarness._event_attr(event, "content", None)
+        if result is not None:
+            payload["result_preview"] = AgentHarness._format_result_preview(result)
+            payload["result_chars"] = len(str(result))
+
+        return payload
+
+    @staticmethod
     def _stream_event_summary(event: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         for key in (
@@ -1960,7 +2029,33 @@ class AgentHarness:
                 payload["tool_name"] = tool_name
             if tool_call_id and "tool_call_id" not in payload:
                 payload["tool_call_id"] = tool_call_id
+        payload.update(AgentHarness._tool_stream_payload(event))
         return payload
+
+    @staticmethod
+    def _format_tool_invocation_label(
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        limit: int = 140,
+    ) -> str:
+        if not arguments:
+            return tool_name
+
+        rendered_parts: list[str] = []
+        for key, value in arguments.items():
+            if isinstance(value, str):
+                rendered = json.dumps(" ".join(value.split()), ensure_ascii=True)
+            else:
+                try:
+                    rendered = json.dumps(value, ensure_ascii=True, sort_keys=True)
+                except TypeError:
+                    rendered = json.dumps(str(value), ensure_ascii=True)
+            rendered = AgentHarness._truncate_text(rendered, limit=48)
+            rendered_parts.append(f"{key}={rendered}")
+
+        label = f"{tool_name}({', '.join(rendered_parts)})"
+        return AgentHarness._truncate_text(label, limit=limit)
 
     @staticmethod
     def _extract_thinking_content(event: Any) -> str:

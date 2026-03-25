@@ -47,6 +47,7 @@ class AgentDriver:
         self._minutes_since_heartbeat = 0
         self._streaming = False
         self._tool_count = 0
+        self._active_tool_labels: dict[str, str] = {}
 
     @property
     def is_streaming(self) -> bool:
@@ -67,6 +68,7 @@ class AgentDriver:
         """
         self._streaming = True
         accumulated = []
+        self._active_tool_labels.clear()
 
         try:
             response = await self._agent.arun(text, stream=True, skill=skill)
@@ -81,12 +83,34 @@ class AgentDriver:
                 # Map tool call events
                 event_type = self._agent._map_agno_event_type(event)
                 if event_type == "tool.call.started":
-                    tool_name = getattr(event, "tool_name", "tool")
+                    summary = self._agent._stream_event_summary(event)
+                    tool_name = str(summary.get("tool_name") or getattr(event, "tool_name", "tool"))
+                    tool_call_id = summary.get("tool_call_id")
+                    display_name = self._agent._format_tool_invocation_label(
+                        tool_name,
+                        summary.get("arguments"),
+                    )
+                    if tool_call_id:
+                        self._active_tool_labels[str(tool_call_id)] = display_name
                     self._tool_count += 1
-                    self._app.post_message(ToolCallStarted(tool_name))
+                    self._app.post_message(
+                        ToolCallStarted(tool_name, display_name=display_name)
+                    )
                 elif event_type == "tool.call.completed":
-                    tool_name = getattr(event, "tool_name", "tool")
-                    self._app.post_message(ToolCallCompleted(tool_name))
+                    summary = self._agent._stream_event_summary(event)
+                    tool_name = str(summary.get("tool_name") or getattr(event, "tool_name", "tool"))
+                    tool_call_id = summary.get("tool_call_id")
+                    display_name = (
+                        self._active_tool_labels.pop(str(tool_call_id))
+                        if tool_call_id and str(tool_call_id) in self._active_tool_labels
+                        else self._agent._format_tool_invocation_label(
+                            tool_name,
+                            summary.get("arguments"),
+                        )
+                    )
+                    self._app.post_message(
+                        ToolCallCompleted(tool_name, display_name=display_name)
+                    )
 
             self._app.post_message(StreamDone("".join(accumulated)))
 
@@ -95,6 +119,7 @@ class AgentDriver:
             self._app.post_message(StreamError(str(e)))
         finally:
             self._streaming = False
+            self._active_tool_labels.clear()
 
     def start_heartbeat(self) -> None:
         """Start HeartbeatDaemon on Textual's asyncio loop."""
