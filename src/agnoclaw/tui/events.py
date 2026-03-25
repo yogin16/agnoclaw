@@ -42,17 +42,19 @@ class StreamError(Message):
 class ToolCallStarted(Message):
     """A tool call has begun."""
 
-    def __init__(self, tool_name: str) -> None:
+    def __init__(self, tool_name: str, display_name: str | None = None) -> None:
         super().__init__()
         self.tool_name = tool_name
+        self.display_name = display_name or tool_name
 
 
 class ToolCallCompleted(Message):
     """A tool call has finished."""
 
-    def __init__(self, tool_name: str) -> None:
+    def __init__(self, tool_name: str, display_name: str | None = None) -> None:
         super().__init__()
         self.tool_name = tool_name
+        self.display_name = display_name or tool_name
 
 
 # ── Heartbeat ─────────────────────────────────────────────────────────────────

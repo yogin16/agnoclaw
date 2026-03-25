@@ -16,8 +16,8 @@ from agnoclaw.runtime import (
     ExecutionContext,
     HarnessError,
     InMemoryEventSink,
-    PolicyDecision,
     PolicyAction,
+    PolicyDecision,
     RedactionRule,
     RunResultEnvelope,
 )
@@ -306,7 +306,11 @@ def test_stream_tool_lifecycle_events_do_not_duplicate_hook_events(tmp_path):
         harness._handle_tool_pre_hook(fc=fc, run_context=run_context)
         yield SimpleNamespace(
             event="ToolCallStarted",
-            tool=SimpleNamespace(tool_name="bash", tool_call_id="tc-stream-1"),
+            tool=SimpleNamespace(
+                tool_name="bash",
+                tool_call_id="tc-stream-1",
+                arguments={"command": "pwd"},
+            ),
             content="",
         )
         harness._handle_tool_post_hook(fc=fc, run_context=run_context)
@@ -326,11 +330,19 @@ def test_stream_tool_lifecycle_events_do_not_duplicate_hook_events(tmp_path):
     assert event_types.count("tool.call.completed") == 1
 
     agno_events = [e.payload for e in sink.events if e.event_type == "agno.event"]
-    tool_events = [payload for payload in agno_events if payload["source_event"].startswith("ToolCall")]
+    tool_events = [
+        payload
+        for payload in agno_events
+        if payload["source_event"].startswith("ToolCall")
+    ]
     assert [payload["source_event"] for payload in tool_events] == [
         "ToolCallStarted",
         "ToolCallCompleted",
     ]
+    assert tool_events[0]["arguments"] == {"command": "pwd"}
+    assert tool_events[0]["argument_keys"] == ["command"]
+    assert tool_events[1]["result_preview"] == "/tmp/workspace"
+    assert tool_events[1]["result_chars"] == len("/tmp/workspace")
 
 
 def test_stream_response_chunk_excludes_tool_output_but_keeps_raw_agno_detail(tmp_path):
@@ -364,7 +376,11 @@ def test_stream_response_chunk_excludes_tool_output_but_keeps_raw_agno_detail(tm
     ]
 
     agno_events = [e.payload for e in sink.events if e.event_type == "agno.event"]
-    tool_event = next(payload for payload in agno_events if payload["source_event"] == "ToolCallCompleted")
+    tool_event = next(
+        payload
+        for payload in agno_events
+        if payload["source_event"] == "ToolCallCompleted"
+    )
     assert tool_event["tool_name"] == "bash"
     assert tool_event["tool_call_id"] == "tc-weather-1"
     assert tool_event["details"]["content"] == "Ahmedabad Gujarat IN 23.0258,72.5873"
@@ -658,6 +674,7 @@ def test_before_tool_policy_denies_call(tmp_path):
 
 
 def test_tool_policy_redacts_input_and_output(tmp_path):
+    sink = InMemoryEventSink()
     class RedactPolicy:
         def before_run(self, run_input, context):
             del run_input, context
@@ -687,7 +704,7 @@ def test_tool_policy_redacts_input_and_output(tmp_path):
                 redactions=(RedactionRule(target="secret"),),
             )
 
-    harness, _ = _make_harness(tmp_path, policy_engine=RedactPolicy())
+    harness, _ = _make_harness(tmp_path, policy_engine=RedactPolicy(), event_sink=sink)
     fc = SimpleNamespace(
         function=SimpleNamespace(name="web_fetch"),
         arguments={"url": "https://example.com?q=secret"},
@@ -699,9 +716,15 @@ def test_tool_policy_redacts_input_and_output(tmp_path):
 
     harness._handle_tool_pre_hook(fc=fc, run_context=run_context)
     assert "[REDACTED]" in fc.arguments["url"]
+    started = [e for e in sink.events if e.event_type == "tool.call.started"][-1]
+    assert started.payload["arguments"] == {"url": "https://example.com?q=[REDACTED]"}
+    assert started.payload["argument_keys"] == ["url"]
 
     harness._handle_tool_post_hook(fc=fc, run_context=run_context)
     assert fc.result == "[REDACTED] output"
+    completed = [e for e in sink.events if e.event_type == "tool.call.completed"][-1]
+    assert completed.payload["arguments"] == {"url": "https://example.com?q=[REDACTED]"}
+    assert completed.payload["argument_keys"] == ["url"]
 
 
 def test_tool_events_include_step_progress_and_result_preview(tmp_path):
@@ -727,6 +750,8 @@ def test_tool_events_include_step_progress_and_result_preview(tmp_path):
     completed = [e for e in sink.events if e.event_type == "tool.call.completed"][-1]
     assert completed.payload["step_id"] == "tc-step-1"
     assert completed.payload["duration_ms"] >= 0
+    assert completed.payload["arguments"] == {"url": "https://example.com"}
+    assert completed.payload["argument_keys"] == ["url"]
     assert completed.payload["result_preview"] == "line one line two"
 
 

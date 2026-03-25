@@ -243,15 +243,15 @@ class AgnoClawApp(App):
 
     def on_tool_call_started(self, event: ToolCallStarted) -> None:
         chat = self.query_one("#chat-log", ChatLog)
-        chat.add_tool_indicator(event.tool_name, done=False)
+        chat.add_tool_indicator(event.display_name, done=False)
         log = self.query_one("#log-viewer", LogViewer)
-        log.log_tool_call(event.tool_name, started=True)
+        log.log_tool_call(event.display_name, started=True)
 
     def on_tool_call_completed(self, event: ToolCallCompleted) -> None:
         chat = self.query_one("#chat-log", ChatLog)
-        chat.add_tool_indicator(event.tool_name, done=True)
+        chat.add_tool_indicator(event.display_name, done=True)
         log = self.query_one("#log-viewer", LogViewer)
-        log.log_tool_call(event.tool_name, started=False)
+        log.log_tool_call(event.display_name, started=False)
 
     # ── Heartbeat events ──────────────────────────────────────────────────────
 

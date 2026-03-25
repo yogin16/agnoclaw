@@ -135,6 +135,7 @@ class AsyncREPL:
     ) -> None:
         """Stream agent response token-by-token."""
         self._console.print("\n[bold green][agent][/bold green]")
+        active_tool_labels: dict[str, str] = {}
 
         try:
             response = await self._agent.arun(message, stream=True, skill=skill)
@@ -148,11 +149,23 @@ class AsyncREPL:
                 # Show tool call indicators
                 event_type = self._agent._map_agno_event_type(event)
                 if event_type == "tool.call.started":
-                    tool_name = getattr(event, "tool_name", "tool")
+                    summary = self._agent._stream_event_summary(event)
+                    tool_name = str(summary.get("tool_name") or getattr(event, "tool_name", "tool"))
+                    tool_call_id = summary.get("tool_call_id")
+                    label = self._agent._format_tool_invocation_label(
+                        tool_name,
+                        summary.get("arguments"),
+                    )
+                    if tool_call_id:
+                        active_tool_labels[str(tool_call_id)] = label
                     self._console.print(
-                        f"\n  [dim]→ {tool_name}...[/dim]", end=""
+                        f"\n  [dim]→ {label}...[/dim]", end=""
                     )
                 elif event_type == "tool.call.completed":
+                    summary = self._agent._stream_event_summary(event)
+                    tool_call_id = summary.get("tool_call_id")
+                    if tool_call_id:
+                        active_tool_labels.pop(str(tool_call_id), None)
                     self._console.print(" [dim]done[/dim]")
 
             print()  # newline after stream
