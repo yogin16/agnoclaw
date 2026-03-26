@@ -1031,12 +1031,15 @@ async def test_on_compaction_callback_exception_is_swallowed(tmp_path):
 @pytest.mark.asyncio
 async def test_end_session_generates_summary_and_fires_callback(tmp_path):
     """end_session() generates a summary and fires on_session_end."""
-    received: list[str] = []
+    received: list[tuple[str, list[str] | None]] = []
 
-    async def on_session_end(summary: str) -> None:
-        received.append(summary)
+    async def on_session_end(summary: str, created_files: list[str] | None = None) -> None:
+        received.append((summary, created_files))
 
     harness, mock_agent = _make_harness(tmp_path, on_session_end=on_session_end)
+    artifact = harness.sandbox_dir / "artifact.txt"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("hello", encoding="utf-8")
 
     # Mock chat history so _generate_session_summary has messages
     mock_agent.get_chat_history.return_value = [
@@ -1051,7 +1054,13 @@ async def test_end_session_generates_summary_and_fires_callback(tmp_path):
     result = await harness.end_session()
 
     assert result == "- Decision 1\n- Decision 2"
-    assert received == ["- Decision 1\n- Decision 2"]
+    assert received == [
+        (
+            "- Decision 1\n- Decision 2",
+            [str(artifact)],
+        )
+    ]
+    assert not harness.sandbox_dir.exists()
 
 
 @pytest.mark.asyncio
@@ -1064,18 +1073,21 @@ async def test_end_session_skips_summary_when_disabled(tmp_path):
 
     harness, mock_agent = _make_harness(tmp_path, on_session_end=on_session_end)
     mock_agent.arun = AsyncMock()
+    (harness.sandbox_dir / "artifact.txt").write_text("hello", encoding="utf-8")
 
     result = await harness.end_session(generate_summary=False)
 
     assert result is None
     assert received == []
     mock_agent.arun.assert_not_called()
+    assert not harness.sandbox_dir.exists()
 
 
 @pytest.mark.asyncio
 async def test_end_session_no_callback_still_returns_summary(tmp_path):
     """end_session() works without on_session_end callback."""
     harness, mock_agent = _make_harness(tmp_path)
+    (harness.sandbox_dir / "artifact.txt").write_text("hello", encoding="utf-8")
 
     mock_agent.get_chat_history.return_value = [
         SimpleNamespace(role="user", content="hi"),
@@ -1087,6 +1099,7 @@ async def test_end_session_no_callback_still_returns_summary(tmp_path):
     result = await harness.end_session()
 
     assert result == "summary"
+    assert not harness.sandbox_dir.exists()
 
 
 @pytest.mark.asyncio
@@ -1098,6 +1111,7 @@ async def test_end_session_callback_exception_is_swallowed(tmp_path):
         raise RuntimeError("callback failed")
 
     harness, mock_agent = _make_harness(tmp_path, on_session_end=on_session_end)
+    (harness.sandbox_dir / "artifact.txt").write_text("hello", encoding="utf-8")
     mock_agent.get_chat_history.return_value = [
         SimpleNamespace(role="user", content="hi"),
     ]
@@ -1106,3 +1120,23 @@ async def test_end_session_callback_exception_is_swallowed(tmp_path):
     result = await harness.end_session()
 
     assert result == "summary"
+    assert not harness.sandbox_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_end_session_supports_legacy_summary_only_callback(tmp_path):
+    received: list[str] = []
+
+    async def on_session_end(summary: str) -> None:
+        received.append(summary)
+
+    harness, mock_agent = _make_harness(tmp_path, on_session_end=on_session_end)
+    mock_agent.get_chat_history.return_value = [
+        SimpleNamespace(role="user", content="hi"),
+    ]
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="summary"))
+
+    result = await harness.end_session()
+
+    assert result == "summary"
+    assert received == ["summary"]

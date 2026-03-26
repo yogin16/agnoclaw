@@ -36,6 +36,8 @@ from agno.tools.toolkit import Toolkit
 if TYPE_CHECKING:
     from agnoclaw.backends import RuntimeBackend
 
+from .backends import bind_session_sandbox
+
 logger = logging.getLogger("agnoclaw.tools")
 
 
@@ -386,6 +388,7 @@ _TYPE_INSTRUCTIONS = {
 def _build_subagent_tools(
     tool_names: list[str] | None,
     workspace_dir: str | Path | None = None,
+    sandbox_dir: str | Path | None = None,
     backend: RuntimeBackend | None = None,
 ) -> list:
     """Build tool instances for a subagent from tool name list."""
@@ -396,11 +399,25 @@ def _build_subagent_tools(
         if workspace_dir is not None
         else None
     )
+    resolved_sandbox = (
+        Path(sandbox_dir).expanduser().resolve()
+        if sandbox_dir is not None
+        else None
+    )
     resolved_backend = (
         backend.resolve(workspace_dir=resolved_workspace)
         if backend is not None and resolved_workspace is not None
         else None
     )
+    resolved_command_executor = None
+    resolved_workspace_adapter = None
+    if resolved_backend is not None:
+        resolved_command_executor, resolved_workspace_adapter = bind_session_sandbox(
+            command_executor=resolved_backend.command_executor,
+            workspace_adapter=resolved_backend.workspace_adapter,
+            workspace_dir=resolved_workspace,
+            sandbox_dir=resolved_sandbox,
+        )
     if "all" in names or "web" in names:
         from agnoclaw.tools.web import WebToolkit
         agent_tools.append(WebToolkit())
@@ -408,24 +425,16 @@ def _build_subagent_tools(
         from agnoclaw.tools.files import FilesToolkit
         agent_tools.append(
             FilesToolkit(
-                workspace_dir=resolved_workspace,
-                adapter=(
-                    resolved_backend.workspace_adapter
-                    if resolved_backend is not None
-                    else None
-                ),
+                workspace_dir=resolved_sandbox or resolved_workspace,
+                adapter=resolved_workspace_adapter,
             )
         )
     if "all" in names or "bash" in names:
         from agnoclaw.tools.bash import make_bash_tool
         agent_tools.append(
             make_bash_tool(
-                workspace_dir=resolved_workspace,
-                executor=(
-                    resolved_backend.command_executor
-                    if resolved_backend is not None
-                    else None
-                ),
+                workspace_dir=resolved_sandbox or resolved_workspace,
+                executor=resolved_command_executor,
             )
         )
     return agent_tools
@@ -449,6 +458,7 @@ def _run_subagent(
     model_id: str,
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
+    sandbox_dir: str | Path | None = None,
     config=None,
     backend: RuntimeBackend | None = None,
 ) -> str:
@@ -465,10 +475,12 @@ def _run_subagent(
         model=model_id,
         config=config,
         workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
         include_default_tools=False,
         tools=_build_subagent_tools(
             tool_names,
             workspace_dir=workspace_dir,
+            sandbox_dir=sandbox_dir,
             backend=backend,
         ),
         instructions=instructions,
@@ -505,6 +517,7 @@ async def _arun_subagent(
     model_id: str,
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
+    sandbox_dir: str | Path | None = None,
     config=None,
     backend: RuntimeBackend | None = None,
 ) -> str:
@@ -521,10 +534,12 @@ async def _arun_subagent(
         model=model_id,
         config=config,
         workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
         include_default_tools=False,
         tools=_build_subagent_tools(
             tool_names,
             workspace_dir=workspace_dir,
+            sandbox_dir=sandbox_dir,
             backend=backend,
         ),
         instructions=instructions,
@@ -559,6 +574,7 @@ def make_subagent_tool(
     default_model: str | None = None,
     subagents: dict[str, SubagentDefinition] | None = None,
     workspace_dir: str | Path | None = None,
+    sandbox_dir: str | Path | None = None,
     config=None,
     backend: RuntimeBackend | None = None,
 ):
@@ -573,6 +589,7 @@ def make_subagent_tool(
         subagents: Named subagent definitions. When provided, the model can
                    invoke them by name via the `agent_name` parameter.
         workspace_dir: Workspace root propagated to spawned files/bash tools.
+        sandbox_dir: Session sandbox propagated to spawned files/bash tools.
         config: HarnessConfig propagated for model/provider and runtime settings.
     """
     _subagents = subagents or {}
@@ -640,6 +657,7 @@ def make_subagent_tool(
                 model_id,
                 tool_names,
                 workspace_dir=workspace_dir,
+                sandbox_dir=sandbox_dir,
                 config=config,
                 backend=backend,
             )

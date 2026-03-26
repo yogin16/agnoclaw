@@ -772,6 +772,61 @@ def test_get_default_tools_workspace_override_applies_to_files_and_progress(tmp_
     assert Path(progress._project_dir) == (tmp_path / "embedder-ws").resolve()
 
 
+def test_get_default_tools_sandbox_routes_relative_file_ops_and_allows_workspace_paths(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+
+    tools = get_default_tools(
+        HarnessConfig(),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+    )
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+
+    assert files.workspace_dir == sandbox_dir.resolve()
+
+    files.write_file("scratch.txt", "sandbox")
+    files.write_file(str(workspace_dir / "workspace.txt"), "workspace")
+
+    assert (sandbox_dir / "scratch.txt").read_text(encoding="utf-8") == "sandbox"
+    assert (workspace_dir / "workspace.txt").read_text(encoding="utf-8") == "workspace"
+
+
+def test_get_default_tools_sandboxed_bash_can_read_workspace_and_write_both_outputs(tmp_path):
+    import sys
+
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+    (workspace_dir / "input.txt").write_text("alpha", encoding="utf-8")
+
+    tools = get_default_tools(
+        HarnessConfig(enable_bash=True),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+    )
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+
+    command = (
+        f'"{sys.executable}" -c "from pathlib import Path; '
+        f'workspace = Path(r\'{workspace_dir / "input.txt"}\').read_text(); '
+        f'Path(\'session.txt\').write_text(workspace.upper()); '
+        f'Path(r\'{workspace_dir / "output.txt"}\').write_text(workspace + \'!\')"'
+    )
+    bash.entrypoint(command)
+
+    assert (sandbox_dir / "session.txt").read_text(encoding="utf-8") == "ALPHA"
+    assert (workspace_dir / "output.txt").read_text(encoding="utf-8") == "alpha!"
+
+
 def test_get_default_tools_uses_custom_backend(tmp_path):
     from agnoclaw.config import HarnessConfig
     from agnoclaw.tools import get_default_tools

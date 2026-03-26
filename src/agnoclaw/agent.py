@@ -57,6 +57,9 @@ import asyncio
 import inspect
 import json
 import logging
+import shlex
+import shutil
+import tempfile
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
@@ -275,6 +278,7 @@ class AgentHarness:
         session_id: Session ID for persistence. Auto-generated if not provided.
         user_id: User identifier for per-user memory.
         workspace_dir: Workspace path override. Defaults to ~/.agnoclaw/workspace.
+        sandbox_dir: Session scratch path. Defaults to a temp dir per harness instance.
         include_default_tools: Whether to include the built-in default tool suite.
         tools: Additional tools to add alongside the defaults.
         instructions: Additional instructions appended to the system prompt.
@@ -314,6 +318,7 @@ class AgentHarness:
         session_id: str | None = None,
         user_id: str | None = None,
         workspace_dir: str | Path | None = None,
+        sandbox_dir: str | Path | None = None,
         include_default_tools: bool = True,
         tools: list | None = None,
         instructions: str | None = None,
@@ -363,7 +368,7 @@ class AgentHarness:
         skills_dirs: list[tuple[str | Path, str]] | None = None,
         # Session lifecycle callbacks
         on_compaction: Callable[[str], Awaitable[None]] | None = None,
-        on_session_end: Callable[[str], Awaitable[None]] | None = None,
+        on_session_end: Callable[..., Awaitable[None] | None] | None = None,
         # Event enrichment — merged into every HarnessEvent's metadata
         session_metadata: dict[str, Any] | None = None,
         # Legacy compat — use model + provider instead
@@ -458,8 +463,11 @@ class AgentHarness:
             project_dir=self.config.project_workspace_dir,
         )
         self.workspace.initialize()
+        self.sandbox_dir = self._resolve_sandbox_dir(sandbox_dir, session_id=session_id)
         effective_backend = backend or RuntimeBackend()
         resolved_backend = effective_backend.resolve(workspace_dir=self.workspace.path)
+        self._session_command_executor = resolved_backend.command_executor
+        self._ensure_sandbox_dir()
         resolved_skill_runtime_backend = resolved_backend.skill_runtime
         self._guardrails = RuntimeGuardrails(
             workspace_dir=self.workspace.path,
@@ -487,7 +495,10 @@ class AgentHarness:
                 self.skills.add_directory(path, trust=trust)
 
         # System prompt builder
-        self._prompt_builder = SystemPromptBuilder(self.workspace.path)
+        self._prompt_builder = SystemPromptBuilder(
+            self.workspace.path,
+            sandbox_dir=self.sandbox_dir,
+        )
 
         # Context budget monitoring
         self._max_context_tokens = max_context_tokens
@@ -503,6 +514,7 @@ class AgentHarness:
                 self.config,
                 subagents=subagents,
                 workspace_dir=self.workspace.path,
+                sandbox_dir=self.sandbox_dir,
                 backend=effective_backend,
             )
         if _tools:
@@ -622,6 +634,101 @@ class AgentHarness:
         )
         # Per-run tool step tracking for progress events and duration metrics.
         self._tool_step_state: dict[str, dict[str, Any]] = {}
+
+    def _resolve_sandbox_dir(
+        self,
+        sandbox_dir: str | Path | None,
+        *,
+        session_id: str | None,
+    ) -> Path:
+        if sandbox_dir is not None:
+            return Path(sandbox_dir).expanduser().resolve(strict=False)
+        prefix = f"agnoclaw-{session_id or uuid4().hex[:8]}-"
+        return Path(tempfile.mkdtemp(prefix=prefix)).resolve(strict=False)
+
+    def _ensure_sandbox_dir(self) -> None:
+        self.sandbox_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._session_command_executor.run(
+                command=f"mkdir -p {shlex.quote(str(self.sandbox_dir))}",
+                workdir=None,
+                timeout_seconds=30,
+            )
+        except Exception:
+            logger.debug("Could not pre-create sandbox dir %s via runtime backend", self.sandbox_dir)
+
+    def _list_created_sandbox_files(self) -> list[str]:
+        command = (
+            f"if [ -d {shlex.quote(str(self.sandbox_dir))} ]; then "
+            f"find {shlex.quote(str(self.sandbox_dir))} -type f -print | sort; "
+            f"fi"
+        )
+        try:
+            result = self._session_command_executor.run(
+                command=command,
+                workdir=None,
+                timeout_seconds=30,
+            )
+            if result.exit_code == 0 and result.stdout.strip():
+                return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        except Exception:
+            logger.debug("Could not enumerate sandbox files via runtime backend", exc_info=True)
+
+        if not self.sandbox_dir.exists():
+            return []
+        return sorted(
+            str(path)
+            for path in self.sandbox_dir.rglob("*")
+            if path.is_file()
+        )
+
+    def _cleanup_sandbox_dir(self) -> None:
+        command = f"rm -rf {shlex.quote(str(self.sandbox_dir))}"
+        try:
+            self._session_command_executor.run(
+                command=command,
+                workdir=None,
+                timeout_seconds=30,
+            )
+        except Exception:
+            logger.debug("Could not remove sandbox dir %s via runtime backend", self.sandbox_dir)
+        shutil.rmtree(self.sandbox_dir, ignore_errors=True)
+
+    async def _maybe_await(self, result: Any) -> None:
+        if inspect.isawaitable(result):
+            await result
+
+    async def _emit_session_end_callback(
+        self,
+        summary: str,
+        *,
+        created_files: list[str] | None,
+    ) -> None:
+        callback = self._on_session_end
+        if callback is None:
+            return
+
+        signature = inspect.signature(callback)
+        params = list(signature.parameters.values())
+        accepts_kwargs = any(param.kind is inspect.Parameter.VAR_KEYWORD for param in params)
+        accepts_varargs = any(param.kind is inspect.Parameter.VAR_POSITIONAL for param in params)
+        positional_params = [
+            param
+            for param in params
+            if param.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        has_created_files_param = "created_files" in signature.parameters
+
+        if has_created_files_param or accepts_kwargs:
+            await self._maybe_await(callback(summary, created_files=created_files))
+            return
+        if accepts_varargs or len(positional_params) >= 2:
+            await self._maybe_await(callback(summary, created_files))
+            return
+        await self._maybe_await(callback(summary))
 
     def _build_system_prompt(
         self,
@@ -3285,11 +3392,18 @@ class AgentHarness:
         summary = None
         if generate_summary:
             summary = await self._generate_session_summary()
-        if self._on_session_end and summary:
-            try:
-                await self._on_session_end(summary)
-            except Exception:
-                logger.exception("on_session_end callback failed")
+        created_files = self._list_created_sandbox_files()
+        try:
+            if self._on_session_end and summary:
+                try:
+                    await self._emit_session_end_callback(
+                        summary,
+                        created_files=created_files,
+                    )
+                except Exception:
+                    logger.exception("on_session_end callback failed")
+        finally:
+            self._cleanup_sandbox_dir()
         return summary
 
     async def _generate_session_summary(self) -> str | None:
