@@ -300,19 +300,21 @@ def test_agent_harness_default_tools_use_constructor_workspace(tmp_path):
 
     config_workspace = tmp_path / "config-workspace"
     harness_workspace = tmp_path / "constructor-workspace"
+    harness_sandbox = tmp_path / "constructor-sandbox"
     cfg = HarnessConfig(workspace_dir=str(config_workspace))
 
     with patch("agnoclaw.agent.Agent", side_effect=_agent_ctor):
         with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
             AgentHarness(
                 workspace_dir=harness_workspace,
+                sandbox_dir=harness_sandbox,
                 config=cfg,
             )
 
     files = next(t for t in captured_tools if isinstance(t, FilesToolkit))
     progress = next(t for t in captured_tools if isinstance(t, ProgressToolkit))
 
-    assert files.workspace_dir == Path(harness_workspace).resolve()
+    assert files.workspace_dir == Path(harness_sandbox).resolve()
     assert Path(progress._project_dir) == Path(harness_workspace).resolve()
 
 

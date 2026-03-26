@@ -7,6 +7,7 @@ from agnoclaw.prompts.sections import (
     IDENTITY,
     TONE_AND_STYLE,
     DOING_TASKS,
+    TOOL_GUIDELINES,
     SECURITY,
     GIT_PROTOCOL,
     MEMORY_INSTRUCTIONS,
@@ -31,6 +32,7 @@ def test_identity_formats_correctly():
     result = IDENTITY.format(workspace_dir="/tmp/workspace")
     assert "/tmp/workspace" in result
     assert "{workspace_dir}" not in result
+    assert "sandbox" in result.lower()
 
 
 def test_tone_no_emojis_rule():
@@ -47,6 +49,12 @@ def test_doing_tasks_has_all_items(tmp_path):
 
 def test_security_mentions_injection():
     assert "injection" in SECURITY.lower()
+
+
+def test_tool_guidelines_cover_workspace_and_sandbox_routing():
+    lowered = TOOL_GUIDELINES.lower()
+    assert "session sandbox" in lowered
+    assert "workspace" in lowered
 
 
 def test_git_protocol_mentions_force_push():
@@ -103,6 +111,12 @@ def test_build_excludes_runtime_when_disabled(builder):
 def test_build_includes_session_id(builder):
     prompt = builder.build(session_id="sess-abc123")
     assert "sess-abc123" in prompt
+
+
+def test_build_includes_sandbox_when_configured(tmp_path):
+    builder = SystemPromptBuilder(tmp_path, sandbox_dir=tmp_path / "sandbox")
+    prompt = builder.build()
+    assert "Session sandbox:" in prompt
 
 
 def test_build_no_session_id_by_default(builder):

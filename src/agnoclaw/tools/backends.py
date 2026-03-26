@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -117,6 +118,250 @@ class WorkspaceAdapter(Protocol):
 
     def list_dir(self, path: str | None = None) -> str:
         ...
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _session_path_error(path: str, *, workspace_dir: Path, sandbox_dir: Path) -> str:
+    return (
+        f"Path must be inside sandbox {sandbox_dir} or workspace {workspace_dir}: {path}"
+    )
+
+
+class SessionSandboxCommandExecutor:
+    """Wrap a command executor so default/relative work happens in a session sandbox."""
+
+    def __init__(
+        self,
+        executor: CommandExecutor,
+        *,
+        workspace_dir: str | Path,
+        sandbox_dir: str | Path,
+    ) -> None:
+        self._executor = executor
+        self._workspace_dir = Path(workspace_dir).expanduser().resolve(strict=False)
+        self._sandbox_dir = Path(sandbox_dir).expanduser().resolve(strict=False)
+        self.workspace_dir = str(self._sandbox_dir)
+        self._ensure_sandbox_exists()
+
+    def run(
+        self,
+        *,
+        command: str,
+        workdir: str | None,
+        timeout_seconds: int | None,
+    ) -> CommandResult:
+        return self._executor.run(
+            command=command,
+            workdir=self._resolve_workdir(workdir),
+            timeout_seconds=timeout_seconds,
+        )
+
+    def start(
+        self,
+        *,
+        command: str,
+        workdir: str | None,
+        description: str | None = None,
+    ) -> BackgroundCommandHandle:
+        return self._executor.start(
+            command=command,
+            workdir=self._resolve_workdir(workdir),
+            description=description,
+        )
+
+    def output(
+        self,
+        *,
+        task_id: str,
+        max_chars: int = 8000,
+        tail: bool = True,
+    ) -> BackgroundCommandOutput:
+        return self._executor.output(task_id=task_id, max_chars=max_chars, tail=tail)
+
+    def kill(self, *, task_id: str, force: bool = False) -> str:
+        return self._executor.kill(task_id=task_id, force=force)
+
+    def _resolve_workdir(self, workdir: str | None) -> str:
+        if workdir is None:
+            return str(self._sandbox_dir)
+
+        candidate = Path(workdir).expanduser()
+        if candidate.is_absolute():
+            resolved = candidate.resolve(strict=False)
+            if _is_within(resolved, self._sandbox_dir) or _is_within(resolved, self._workspace_dir):
+                return str(resolved)
+            raise RuntimeError(
+                _session_path_error(
+                    workdir,
+                    workspace_dir=self._workspace_dir,
+                    sandbox_dir=self._sandbox_dir,
+                )
+            )
+
+        resolved = (self._sandbox_dir / candidate).resolve(strict=False)
+        if not _is_within(resolved, self._sandbox_dir):
+            raise RuntimeError(
+                f"Relative working_dir must stay inside sandbox {self._sandbox_dir}: {workdir}"
+            )
+        return str(resolved)
+
+    def _ensure_sandbox_exists(self) -> None:
+        self._sandbox_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._executor.run(
+                command=f"mkdir -p {shlex.quote(str(self._sandbox_dir))}",
+                workdir=None,
+                timeout_seconds=30,
+            )
+        except Exception:
+            pass
+
+
+class SessionSandboxWorkspaceAdapter:
+    """Wrap a workspace adapter so relative paths resolve inside a session sandbox."""
+
+    def __init__(
+        self,
+        adapter: WorkspaceAdapter,
+        *,
+        workspace_dir: str | Path,
+        sandbox_dir: str | Path,
+    ) -> None:
+        self._adapter = adapter
+        self._workspace_dir = Path(workspace_dir).expanduser().resolve(strict=False)
+        self._sandbox_dir = Path(sandbox_dir).expanduser().resolve(strict=False)
+        self.workspace_dir = self._sandbox_dir
+        self._sandbox_dir.mkdir(parents=True, exist_ok=True)
+
+    def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
+        try:
+            resolved = self._resolve_path(path)
+        except ValueError as exc:
+            return f"[error] {exc}"
+        return self._adapter.read_file(path=str(resolved), offset=offset, limit=limit)
+
+    def write_file(self, path: str, content: str) -> str:
+        try:
+            resolved = self._resolve_path(path)
+        except ValueError as exc:
+            return f"[error] {exc}"
+        return self._adapter.write_file(path=str(resolved), content=content)
+
+    def edit_file(self, path: str, old_string: str, new_string: str) -> str:
+        try:
+            resolved = self._resolve_path(path)
+        except ValueError as exc:
+            return f"[error] {exc}"
+        return self._adapter.edit_file(
+            path=str(resolved),
+            old_string=old_string,
+            new_string=new_string,
+        )
+
+    def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str:
+        try:
+            resolved = self._resolve_path(path)
+        except ValueError as exc:
+            return f"[error] {exc}"
+        return self._adapter.multi_edit_file(path=str(resolved), edits=edits)
+
+    def glob_files(
+        self,
+        pattern: str,
+        base_dir: str | None = None,
+        path: str | None = None,
+    ) -> str:
+        try:
+            resolved = self._resolve_path(base_dir or path) if (base_dir or path) else self._sandbox_dir
+        except ValueError as exc:
+            return f"[error] {exc}"
+        return self._adapter.glob_files(pattern=pattern, path=str(resolved))
+
+    def grep_files(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        case_insensitive: bool = False,
+        context_lines: int = 0,
+        max_results: int = 50,
+    ) -> str:
+        try:
+            resolved = self._resolve_path(path) if path else self._sandbox_dir
+        except ValueError as exc:
+            return f"[error] {exc}"
+        return self._adapter.grep_files(
+            pattern=pattern,
+            path=str(resolved),
+            glob=glob,
+            case_insensitive=case_insensitive,
+            context_lines=context_lines,
+            max_results=max_results,
+        )
+
+    def list_dir(self, path: str | None = None) -> str:
+        try:
+            resolved = self._resolve_path(path) if path else self._sandbox_dir
+        except ValueError as exc:
+            return f"[error] {exc}"
+        return self._adapter.list_dir(path=str(resolved))
+
+    def _resolve_path(self, path: str | None) -> Path:
+        if path is None:
+            return self._sandbox_dir
+
+        candidate = Path(path).expanduser()
+        if candidate.is_absolute():
+            resolved = candidate.resolve(strict=False)
+            if _is_within(resolved, self._sandbox_dir) or _is_within(resolved, self._workspace_dir):
+                return resolved
+            raise ValueError(
+                _session_path_error(
+                    path,
+                    workspace_dir=self._workspace_dir,
+                    sandbox_dir=self._sandbox_dir,
+                )
+            )
+
+        resolved = (self._sandbox_dir / candidate).resolve(strict=False)
+        if not _is_within(resolved, self._sandbox_dir):
+            raise ValueError(
+                f"Relative paths must stay inside sandbox {self._sandbox_dir}: {path}"
+            )
+        return resolved
+
+
+def bind_session_sandbox(
+    *,
+    command_executor: CommandExecutor,
+    workspace_adapter: WorkspaceAdapter,
+    workspace_dir: str | Path,
+    sandbox_dir: str | Path | None,
+) -> tuple[CommandExecutor, WorkspaceAdapter]:
+    """Wrap backend adapters so relative/default tool operations use `sandbox_dir`."""
+
+    if sandbox_dir is None:
+        return command_executor, workspace_adapter
+
+    return (
+        SessionSandboxCommandExecutor(
+            command_executor,
+            workspace_dir=workspace_dir,
+            sandbox_dir=sandbox_dir,
+        ),
+        SessionSandboxWorkspaceAdapter(
+            workspace_adapter,
+            workspace_dir=workspace_dir,
+            sandbox_dir=sandbox_dir,
+        ),
+    )
 
 
 @dataclass
