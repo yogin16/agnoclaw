@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from agnoclaw.config import HarnessConfig
 from agnoclaw.integrations import LLMSandboxBackend
+from agnoclaw.tools import get_default_tools
 from agnoclaw.tools.files import FilesToolkit
 
 
@@ -247,3 +249,35 @@ def test_llm_sandbox_backend_kill_updates_running_task(tmp_path):
     assert "SIGTERM" in message
     assert handle.pid is not None
     assert session.background_tasks[handle.pid]["status"] == "terminated"
+
+
+def test_llm_sandbox_default_tools_route_relative_ops_to_session_sandbox(tmp_path):
+    workspace = tmp_path / "workspace"
+    sandbox = tmp_path / "sandbox"
+    workspace.mkdir()
+
+    session = FakeLLMSandboxSession(tmp_path / "runtime")
+    backend = LLMSandboxBackend(session=session)
+
+    tools = get_default_tools(
+        HarnessConfig(),
+        workspace_dir=workspace,
+        sandbox_dir=sandbox,
+        backend=backend,
+    )
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+
+    files.write_file("scratch.txt", "sandbox-only")
+    files.write_file(str(workspace / "workspace.txt"), "workspace-only")
+
+    assert files.workspace_dir == sandbox.resolve()
+    assert not (sandbox / "scratch.txt").exists()
+    assert session._runtime_path(str(sandbox / "scratch.txt")).read_text(encoding="utf-8") == "sandbox-only"
+    assert session._runtime_path(str(workspace / "workspace.txt")).read_text(encoding="utf-8") == "workspace-only"
+
+    assert bash.entrypoint("pwd") == f"ran:pwd:{sandbox.resolve()}"
+    assert (
+        bash.entrypoint("pwd", working_dir=str(workspace.resolve()))
+        == f"ran:pwd:{workspace.resolve()}"
+    )

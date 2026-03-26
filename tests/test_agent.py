@@ -1,9 +1,11 @@
 """Tests for AgentHarness and related utilities."""
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from agnoclaw.backends import RuntimeBackend
 
@@ -316,6 +318,79 @@ def test_agent_harness_default_tools_use_constructor_workspace(tmp_path):
 
     assert files.workspace_dir == Path(harness_sandbox).resolve()
     assert Path(progress._project_dir) == Path(harness_workspace).resolve()
+
+
+@pytest.mark.asyncio
+async def test_agent_harness_session_sandbox_end_to_end(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools.files import FilesToolkit
+
+    captured_tools = []
+    callback_payload = {}
+    mock_agent = MagicMock()
+
+    def _agent_ctor(*args, **kwargs):
+        captured_tools[:] = kwargs.get("tools", [])
+        mock_agent.system_message = kwargs.get("system_message")
+        mock_agent.session_id = kwargs.get("session_id")
+        return mock_agent
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+    workspace_input = workspace_dir / "input.txt"
+    workspace_input.write_text("alpha", encoding="utf-8")
+
+    async def on_session_end(summary: str, created_files: list[str] | None = None) -> None:
+        callback_payload["summary"] = summary
+        callback_payload["created_files"] = created_files
+
+    with patch("agnoclaw.agent.Agent", side_effect=_agent_ctor):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                workspace_dir=workspace_dir,
+                sandbox_dir=sandbox_dir,
+                config=HarnessConfig(),
+                on_session_end=on_session_end,
+            )
+
+    files = next(t for t in captured_tools if isinstance(t, FilesToolkit))
+    bash = next(t for t in captured_tools if getattr(t, "name", None) == "bash")
+
+    assert str(workspace_dir.resolve()) in mock_agent.system_message
+    assert str(sandbox_dir.resolve()) in mock_agent.system_message
+
+    files.write_file("notes/session.txt", "sandbox file")
+    files.write_file(str(workspace_dir / "workspace.txt"), "workspace file")
+
+    bash.entrypoint(
+        f'"{sys.executable}" -c "from pathlib import Path; '
+        f'text = Path(r\'{workspace_input}\').read_text(); '
+        f'Path(\'session-script.txt\').write_text(text.upper()); '
+        f'Path(r\'{workspace_dir / "output.txt"}\').write_text(text + \'!\')"'
+    )
+
+    assert (sandbox_dir / "notes" / "session.txt").read_text(encoding="utf-8") == "sandbox file"
+    assert (sandbox_dir / "session-script.txt").read_text(encoding="utf-8") == "ALPHA"
+    assert (workspace_dir / "workspace.txt").read_text(encoding="utf-8") == "workspace file"
+    assert (workspace_dir / "output.txt").read_text(encoding="utf-8") == "alpha!"
+
+    mock_agent.get_chat_history.return_value = [
+        SimpleNamespace(role="user", content="hello"),
+        SimpleNamespace(role="assistant", content="world"),
+    ]
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="summary"))
+
+    result = await harness.end_session()
+
+    assert result == "summary"
+    assert callback_payload["summary"] == "summary"
+    assert callback_payload["created_files"] == [
+        str(sandbox_dir / "notes" / "session.txt"),
+        str(sandbox_dir / "session-script.txt"),
+    ]
+    assert not sandbox_dir.exists()
 
 
 def test_agent_harness_passes_backend_to_default_tools(tmp_path):
