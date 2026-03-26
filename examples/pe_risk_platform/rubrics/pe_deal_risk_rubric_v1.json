@@ -1,0 +1,68 @@
+{
+  "rubric_id": "pe-deal-risk-rubric-v1",
+  "version": "2026.1",
+  "description": "Private equity downside-risk scoring rubric for investment committee gating.",
+  "score_scale": {
+    "min": 0,
+    "max": 100,
+    "higher_is_riskier": true
+  },
+  "weights": {
+    "leverage_debt_service": 0.24,
+    "revenue_quality": 0.16,
+    "earnings_quality": 0.15,
+    "market_operational": 0.13,
+    "legal_regulatory": 0.12,
+    "management_governance": 0.10,
+    "value_creation_execution": 0.10
+  },
+  "risk_bands": [
+    {
+      "name": "low",
+      "max_score": 39,
+      "default_action": "Proceed"
+    },
+    {
+      "name": "medium",
+      "max_score": 64,
+      "default_action": "Proceed with conditions"
+    },
+    {
+      "name": "high",
+      "max_score": 79,
+      "default_action": "Pause / reprice"
+    },
+    {
+      "name": "severe",
+      "max_score": 100,
+      "default_action": "No-go until mitigated"
+    }
+  ],
+  "severity_penalties": {
+    "low": 1.0,
+    "medium": 3.0,
+    "high": 7.0,
+    "critical": 12.0
+  },
+  "dimension_definitions": {
+    "leverage_debt_service": "Capital structure resilience under base and downside cases. Inputs: leverage, interest coverage, covenant headroom.",
+    "revenue_quality": "Durability and concentration risk of revenue base. Inputs: recurring share, NRR, top customer exposure, churn.",
+    "earnings_quality": "Reliability of EBITDA and cash conversion. Inputs: QoE adjustments, FCF conversion, working capital volatility, capex burden.",
+    "market_operational": "Exposure to cyclicality and operating fragility. Inputs: end-market cyclicality, supplier concentration, pricing power.",
+    "legal_regulatory": "Exposure to litigation, investigations, and compliance constraints.",
+    "management_governance": "Team stability and quality of finance control environment.",
+    "value_creation_execution": "Execution risk in the value creation plan and integration complexity."
+  },
+  "output_contract": {
+    "due_diligence_required_sections": [
+      "Risk Register",
+      "Open Diligence Questions",
+      "Go / No-go Recommendation"
+    ],
+    "deal_scoring_required_sections": [
+      "Composite Risk Score",
+      "Top Score Drivers",
+      "Investment Committee Action"
+    ]
+  }
+}
