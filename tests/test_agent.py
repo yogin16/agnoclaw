@@ -537,6 +537,23 @@ def test_agent_harness_accepts_structured_output_params():
     assert "output_model" in sig.parameters
 
 
+def test_agno_claude_sonnet_4_6_supports_structured_outputs():
+    from pydantic import BaseModel
+    from agno.models.anthropic import Claude
+    from unittest.mock import patch
+    import agno.models.anthropic.claude as claude_module
+
+    class DummySchema(BaseModel):
+        value: int
+
+    model = Claude(id="claude-sonnet-4-6")
+    assert getattr(model, "supports_native_structured_outputs", False) is True
+
+    with patch.object(claude_module, "log_warning") as mock_warning:
+        assert model._using_structured_outputs(response_format=DummySchema, tools=None) is True
+        mock_warning.assert_not_called()
+
+
 def test_agent_harness_legacy_model_id_param():
     """AgentHarness should still accept legacy model_id param."""
     from agnoclaw.agent import AgentHarness

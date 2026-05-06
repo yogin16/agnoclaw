@@ -22,7 +22,7 @@ classifiers = [
 
 dependencies = [
     # Core framework
-    "agno>=2.5.0",
+    "agno>=2.6.4",
     # Config
     # tomli not needed — Python 3.13+ has tomllib in stdlib
     "pydantic>=2.0.0",
