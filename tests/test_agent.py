@@ -393,6 +393,69 @@ async def test_agent_harness_session_sandbox_end_to_end(tmp_path):
     assert not sandbox_dir.exists()
 
 
+def test_agent_harness_close_closes_owned_storage_once(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    storage = MagicMock()
+    storage.Session.remove = MagicMock()
+    storage.close = MagicMock()
+
+    with patch("agnoclaw.agent.Agent", return_value=MagicMock()):
+        with patch("agnoclaw.agent._make_db", return_value=storage):
+            harness = AgentHarness(
+                workspace_dir=tmp_path,
+                config=HarnessConfig(),
+            )
+
+    harness.close()
+    harness.close()
+
+    storage.Session.remove.assert_called_once_with()
+    storage.close.assert_called_once_with()
+
+
+def test_agent_harness_close_does_not_close_injected_storage(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    storage = MagicMock()
+    storage.Session.remove = MagicMock()
+    storage.close = MagicMock()
+
+    with patch("agnoclaw.agent.Agent", return_value=MagicMock()):
+        harness = AgentHarness(
+            workspace_dir=tmp_path,
+            config=HarnessConfig(),
+            db=storage,
+        )
+
+    harness.close()
+
+    storage.Session.remove.assert_not_called()
+    storage.close.assert_not_called()
+
+
+def test_agent_harness_context_manager_closes_owned_storage(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    storage = MagicMock()
+    storage.Session.remove = MagicMock()
+    storage.close = MagicMock()
+
+    with patch("agnoclaw.agent.Agent", return_value=MagicMock()):
+        with patch("agnoclaw.agent._make_db", return_value=storage):
+            with AgentHarness(
+                workspace_dir=tmp_path,
+                config=HarnessConfig(),
+            ) as harness:
+                assert harness is not None
+
+    storage.Session.remove.assert_called_once_with()
+    storage.close.assert_called_once_with()
+
+
 def test_agent_harness_passes_backend_to_default_tools(tmp_path):
     from agnoclaw.agent import AgentHarness
     from agnoclaw.config import HarnessConfig
@@ -411,6 +474,44 @@ def test_agent_harness_passes_backend_to_default_tools(tmp_path):
     assert mock_tools.call_args[1]["backend"] is backend
 
 
+def test_agent_harness_forwards_structured_output_options(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    captured_kwargs = {}
+
+    def _agent_ctor(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        mock_agent = MagicMock()
+        mock_agent.system_message = kwargs.get("system_message")
+        mock_agent.session_id = kwargs.get("session_id")
+        return mock_agent
+
+    with patch("agnoclaw.agent.Agent", side_effect=_agent_ctor):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            AgentHarness(
+                workspace_dir=tmp_path,
+                config=HarnessConfig(),
+                output_schema={"type": "object"},
+                parser_model="anthropic:claude-haiku-4-5",
+                parser_model_prompt="parse this",
+                output_model="anthropic:claude-haiku-4-5",
+                output_model_prompt="rewrite this",
+                parse_response=False,
+                structured_outputs=True,
+                use_json_mode=True,
+            )
+
+    assert captured_kwargs["output_schema"] == {"type": "object"}
+    assert captured_kwargs["parser_model"] == "anthropic:claude-haiku-4-5"
+    assert captured_kwargs["parser_model_prompt"] == "parse this"
+    assert captured_kwargs["output_model"] == "anthropic:claude-haiku-4-5"
+    assert captured_kwargs["output_model_prompt"] == "rewrite this"
+    assert captured_kwargs["parse_response"] is False
+    assert captured_kwargs["structured_outputs"] is True
+    assert captured_kwargs["use_json_mode"] is True
+
+
 def test_runtime_backend_requires_command_and_workspace_together():
     with pytest.raises(ValueError, match="both command_executor and workspace_adapter"):
         RuntimeBackend(command_executor=object())
@@ -422,6 +523,18 @@ def test_agent_harness_instructions_param():
     import inspect
     sig = inspect.signature(AgentHarness.__init__)
     assert "instructions" in sig.parameters
+
+
+def test_agent_harness_accepts_structured_output_params():
+    """AgentHarness should expose Agno structured-output constructor options."""
+    from agnoclaw.agent import AgentHarness
+    import inspect
+
+    sig = inspect.signature(AgentHarness.__init__)
+    assert "output_schema" in sig.parameters
+    assert "parser_model" in sig.parameters
+    assert "parse_response" in sig.parameters
+    assert "output_model" in sig.parameters
 
 
 def test_agent_harness_legacy_model_id_param():

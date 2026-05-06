@@ -61,6 +61,7 @@ import shlex
 import shutil
 import tempfile
 import warnings
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from pathlib import Path
@@ -299,6 +300,9 @@ class AgentHarness:
         max_context_tokens: Max context window tokens. When set, enables automatic
                            context budget monitoring with warnings at 85% and
                            auto-compaction at 95%.
+        output_schema: Optional default structured-output schema for all runs.
+        parser_model: Optional secondary model used to parse structured output.
+        parse_response: Whether structured outputs should be parsed into objects.
         provider: Provider name — only needed when model is not in "provider:model_id"
                   format. Accepts "anthropic", "openai", "ollama", "groq", "google",
                   "aws"/"bedrock", "mistral", "xai"/"grok", "deepseek", "litellm".
@@ -342,6 +346,15 @@ class AgentHarness:
         num_history_messages: int | None = None,
         max_tool_calls_from_history: int | None = None,
         max_context_tokens: int | None = None,
+        # Structured output / response parsing
+        output_schema: type | dict[str, Any] | None = None,
+        parser_model: Any | None = None,
+        parser_model_prompt: str | None = None,
+        output_model: Any | None = None,
+        output_model_prompt: str | None = None,
+        parse_response: bool = True,
+        structured_outputs: bool | None = None,
+        use_json_mode: bool = False,
         # v0.2 runtime contracts
         event_sink: EventSink | None = None,
         event_sink_mode: str | None = None,
@@ -391,6 +404,7 @@ class AgentHarness:
         self._on_compaction = on_compaction
         self._on_session_end = on_session_end
         self._session_metadata = dict(session_metadata or {})
+        self._closed = False
 
         # Runtime extension contracts
         self._event_sink: EventSink = event_sink or NullEventSink()
@@ -563,7 +577,15 @@ class AgentHarness:
         system_prompt = self._build_system_prompt(session_id=session_id)
 
         # Storage backend
-        db = db or _make_db(self.config)
+        provided_db = db
+        db = provided_db if provided_db is not None else _make_db(self.config)
+        self._owns_storage = provided_db is None
+        self._finalizer = weakref.finalize(
+            self,
+            AgentHarness._finalize_resources,
+            db if self._owns_storage else None,
+            str(self.sandbox_dir) if sandbox_dir is None else None,
+        )
 
         # ── Memory: LearningMachine (unified per-user + institutional) ──────
         # LearningMachine handles both per-user memory (user_profile,
@@ -619,6 +641,14 @@ class AgentHarness:
             num_history_runs=num_history_runs or self.config.session_history_runs,
             num_history_messages=num_history_messages,
             max_tool_calls_from_history=max_tool_calls_from_history,
+            output_schema=output_schema,
+            parser_model=parser_model,
+            parser_model_prompt=parser_model_prompt,
+            output_model=output_model,
+            output_model_prompt=output_model_prompt,
+            parse_response=parse_response,
+            structured_outputs=structured_outputs,
+            use_json_mode=use_json_mode,
             markdown=True,
             debug_mode=debug or self.config.debug,
             # Unified memory via LearningMachine (per-user + institutional)
@@ -634,6 +664,32 @@ class AgentHarness:
         )
         # Per-run tool step tracking for progress events and duration metrics.
         self._tool_step_state: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _close_storage_resource(storage: Any) -> None:
+        if storage is None:
+            return
+
+        session_factory = getattr(storage, "Session", None)
+        remover = getattr(session_factory, "remove", None)
+        if callable(remover):
+            try:
+                remover()
+            except Exception:
+                logger.debug("Failed to remove scoped storage sessions", exc_info=True)
+
+        closer = getattr(storage, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                logger.debug("Failed to close storage backend", exc_info=True)
+
+    @staticmethod
+    def _finalize_resources(storage: Any, sandbox_dir: str | None) -> None:
+        AgentHarness._close_storage_resource(storage)
+        if sandbox_dir:
+            shutil.rmtree(sandbox_dir, ignore_errors=True)
 
     def _resolve_sandbox_dir(
         self,
@@ -3405,6 +3461,30 @@ class AgentHarness:
         finally:
             self._cleanup_sandbox_dir()
         return summary
+
+    def close(self) -> None:
+        """Release owned resources held by this harness."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._finalizer.alive:
+            self._finalizer()
+
+    async def aclose(self) -> None:
+        """Async-compatible close alias."""
+        self.close()
+
+    def __enter__(self) -> AgentHarness:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    async def __aenter__(self) -> AgentHarness:
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.aclose()
 
     async def _generate_session_summary(self) -> str | None:
         """Generate a short summary of the current session via a cheap LLM call."""
