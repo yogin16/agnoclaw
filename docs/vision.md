@@ -6,6 +6,10 @@ agnoclaw is a **general-purpose agent harness** — a foundation layer for build
 
 It wraps the Agno framework with opinionated defaults drawn from Claude Code's prompt engineering, OpenClaw's UX patterns, and production middleware insights. The result is a harness that works out of the box for common cases while remaining fully customizable for specialized ones.
 
+The long-term boundary is **embeddable library first, server-capable when needed**.
+`AgentHarness` remains the canonical runtime. Optional server, remote, AgentOS, and
+pack surfaces adapt to the harness; they do not replace it.
+
 ## Who it's for
 
 ### Developers embedding AI agents
@@ -22,6 +26,21 @@ harness = AgentHarness(config=HarnessConfig(
     enable_media_tools=True,
 ))
 response = await harness.arun("Analyze this contract PDF")
+```
+
+### Products exposing agents as services
+
+Use agnoclaw as the harness boundary and export it through an optional server runtime
+when a product needs hosted sessions, streaming, approvals, scheduler, observability,
+or external clients. AgentOS is the preferred adapter target for this mode, but it is
+not required for core embedded use.
+
+```python
+from agnoclaw import AgentHarness
+from agnoclaw.runtime.agentos import create_agentos_app
+
+harness = AgentHarness(name="deal-agent")
+app = create_agentos_app([harness], scheduler=True, approvals=True)
 ```
 
 ### Non-technical users creating their own agents
@@ -77,7 +96,7 @@ agnoclaw works with any model provider supported by Agno: OpenAI, Anthropic, Goo
 - **Simple**: `agnoclaw chat` with default config
 - **Moderate**: Custom skills, workspace files, scheduled tasks
 - **Advanced**: Custom tools, plugins, multi-agent teams, embedded in products
-- **Expert**: Runtime hooks, policy engines, guardrails, MCP integrations
+- **Expert**: Runtime hooks, policy engines, guardrails, context providers, MCP integrations, optional AgentOS/server export
 
 Each level builds on the previous one without requiring knowledge of the layers below.
 
@@ -95,3 +114,9 @@ Each level builds on the previous one without requiring knowledge of the layers 
 | Browser/MCP/Media | Build it yourself | Optional extras, config-enabled |
 
 agnoclaw doesn't replace Agno — it wraps it with the patterns and conventions that make agents actually useful in practice.
+
+## Current direction
+
+See [agnoclaw v0.8 Direction](../spec/v0.8-harness-sdk-server-packs.md) for the
+current plan around Agno context providers, optional AgentOS export, Python-native
+packs, and SDK ergonomics.
