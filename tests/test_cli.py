@@ -249,6 +249,49 @@ def test_handle_slash_clear_rotates_session():
     agent.clear_session_context.assert_called_once()
 
 
+def test_handle_slash_elevated_uses_interactive_approver_when_missing():
+    """The /elevated command should install a terminal approver and run elevated."""
+    from types import SimpleNamespace
+
+    agent = MagicMock()
+    agent.admin_list_permissions.return_value = {"has_approver": False}
+    agent.run_elevated_command.return_value = SimpleNamespace(
+        stdout="ok\n",
+        stderr="",
+        exit_code=0,
+    )
+
+    handled, queued = _handle_slash_command("/elevated printf ok", agent, None)
+
+    assert handled is True
+    assert queued is None
+    agent.set_permission_approver.assert_called_once()
+    approver = agent.set_permission_approver.call_args.args[0]
+    assert approver.__class__.__name__ == "InteractivePermissionApprover"
+    agent.run_elevated_command.assert_called_once_with(
+        "printf ok",
+        reason="CLI /elevated directive",
+    )
+
+
+def test_handle_slash_elevated_preserves_existing_approver():
+    from types import SimpleNamespace
+
+    agent = MagicMock()
+    agent.admin_list_permissions.return_value = {"has_approver": True}
+    agent.run_elevated_command.return_value = SimpleNamespace(
+        stdout="",
+        stderr="",
+        exit_code=0,
+    )
+
+    handled, _ = _handle_slash_command("/elevated id", agent, None)
+
+    assert handled is True
+    agent.set_permission_approver.assert_not_called()
+    agent.run_elevated_command.assert_called_once()
+
+
 # ── agnoclaw pack ─────────────────────────────────────────────────────────────
 
 

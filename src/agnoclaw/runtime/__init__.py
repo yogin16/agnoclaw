@@ -40,6 +40,7 @@ from .hooks import (
 from .permissions import (
     ElevatedCommandRequest,
     ElevatedCommandResult,
+    InteractivePermissionApprover,
     PermissionApprover,
     PermissionController,
     PermissionMode,
@@ -82,6 +83,7 @@ __all__ = [
     "HarnessEvent",
     "InMemoryEventSink",
     "InMemorySchedulerBackend",
+    "InteractivePermissionApprover",
     "JsonSchedulerBackend",
     "LifecycleHook",
     "LifecycleHookRequest",

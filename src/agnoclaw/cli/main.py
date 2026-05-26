@@ -328,12 +328,34 @@ def _handle_slash_command(
             console.print(f"  [dim]{name.upper()}.md[/dim]: {len(content)} chars")
         return True, queued_skill
 
+    if cmd == "/elevated":
+        if not args.strip():
+            console.print("[yellow]Usage: /elevated <host command>[/yellow]")
+            return True, queued_skill
+        from agnoclaw.runtime import InteractivePermissionApprover
+
+        permissions = agent.admin_list_permissions()
+        if not permissions.get("has_approver"):
+            agent.set_permission_approver(InteractivePermissionApprover())
+        result = agent.run_elevated_command(
+            args.strip(),
+            reason="CLI /elevated directive",
+        )
+        if result.stdout:
+            console.print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            stderr_end = "" if result.stderr.endswith("\n") else "\n"
+            console.print(f"[red]{result.stderr}[/red]", end=stderr_end)
+        console.print(f"[dim]exit code: {result.exit_code}[/dim]")
+        return True, queued_skill
+
     if cmd in ("/help", "/?"):
         console.print(
             "[bold]Chat commands:[/bold]\n"
             "  /skill <name>  — queue a skill for the next message\n"
             "  /skills        — list available skills\n"
             "  /workspace     — show workspace info\n"
+            "  /elevated <cmd> — run an approved host command\n"
             "  /clear         — clear session context\n"
             "  /quit          — exit\n"
         )

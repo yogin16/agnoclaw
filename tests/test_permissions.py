@@ -6,6 +6,7 @@ import pytest
 
 from agnoclaw.runtime.hooks import ToolCallRequest
 from agnoclaw.runtime.permissions import (
+    InteractivePermissionApprover,
     PermissionController,
     PermissionMode,
     PermissionRequest,
@@ -271,3 +272,35 @@ def test_permission_request_fields():
     assert pr.run_id == "r1"
     assert pr.tool_name == "bash"
     assert pr.arguments == {"cmd": "ls"}
+
+
+def test_interactive_permission_approver_approves_yes():
+    outputs = []
+    approver = InteractivePermissionApprover(
+        input_fn=lambda prompt: "yes",
+        output_fn=outputs.append,
+    )
+    request = PermissionRequest(
+        run_id="r1",
+        tool_name="bash.elevated",
+        category="elevated_exec",
+        arguments={"command": "id"},
+    )
+
+    assert approver.approve(request, None) is True
+    assert any("bash.elevated" in line for line in outputs)
+
+
+def test_interactive_permission_approver_rejects_default_no():
+    approver = InteractivePermissionApprover(
+        input_fn=lambda prompt: "",
+        output_fn=lambda line: None,
+    )
+    request = PermissionRequest(
+        run_id="r1",
+        tool_name="bash",
+        category="exec",
+        arguments={},
+    )
+
+    assert approver.approve(request, None) is False

@@ -62,9 +62,9 @@ Deferred by design:
 |---|---|---|---|---|---|
 | Permission modes | `default/acceptEdits/plan/dontAsk/bypassPermissions` | Approval + exec modes | **Implemented (core)** | Medium | Harness |
 | Plan-mode runtime read-only | Permission-layer enforcement | Permission/safety enforcement | **Implemented** | Low | Harness |
-| Interactive approval UX | Native in-product approval flow | Approval + elevated flow | **Partial** (approver interface exists; no built-in interactive adapter in harness) | Medium | Harness |
+| Interactive approval UX | Native in-product approval flow | Approval + elevated flow | **Implemented** (terminal approver + AgentOS bridge) | ~~Medium~~ Done | Harness |
 | Background shell lifecycle | `BashOutput`, `KillShell` | Exec task lifecycle | **Implemented (opt-in)** (`bash_start/output/kill`) | Medium | Harness |
-| Elevated execution path | Bypass/elevation semantics | Elevated mode (`!`) | **Partial** (SDK host command contract with approval/audit events; no `/elevated` directives yet) | High | Harness |
+| Elevated execution path | Bypass/elevation semantics | Elevated mode (`!`) | **Partial** (SDK + CLI `/elevated <cmd>`; no session-wide modes yet) | High | Harness |
 | Tool boundary policy interception | Pre/post tool controls | Hooks around command/tool lifecycle | **Implemented** | Low | Harness |
 | Runtime guardrails | Permission/sandbox controls | Sandboxing/security controls | **Implemented (path/network)** | Low | Harness |
 | Built-in runtime backend abstraction | Tool family can target one alternate runtime plane | Exec/files/browser/skills bind to sandbox/container workspace | **Implemented** (`RuntimeBackend`) | ~~High~~ Done | Harness |
@@ -118,7 +118,8 @@ Newly closed or reduced gaps (v0.8 preview):
 6. **Elevated command contract** — `run_elevated_command()` /
    `arun_elevated_command()` provide host-local command execution with explicit
    reason capture, guardrail and policy preflight, permission approver gating,
-   and `elevated.command.*` audit events.
+   `elevated.command.*` audit events, an interactive terminal permission
+   approver, and a CLI `/elevated <cmd>` directive.
 7. **Structured plan UX signals** — `AskUserQuestion` and `ExitPlanMode` are
    available as plan-mode-safe tools, with SDK methods for recording/emitting
    plan question and completion signals.
@@ -146,7 +147,7 @@ Previously closed:
    enable/disable, trigger, and run history.
 
 Still open in this area:
-- Built-in interactive approval adapter and `/elevated` directive/session flow
+- Session-wide `/elevated on|ask|full` directive flow
 - Cross-session/background task persistence and queueing semantics
 - Hosted scheduler API management beyond AgentOS passthrough
 
@@ -159,8 +160,8 @@ Still open in this area:
 1. Elevated execution path
 - SDK-level elevated command execution now has an explicit request/result
   contract, approval gate, policy/guardrail preflight, and audit event schema.
-  `/elevated` directive parsing, session defaults, and a built-in interactive
-  approval adapter remain open.
+  CLI `/elevated <cmd>` runs a single approved host command. Session-wide
+  `/elevated on|ask|full` defaults remain open.
 
 2. Hook-pack system + broader lifecycle coverage
 - Session/message/compaction lifecycle checkpoints now exist for harness and

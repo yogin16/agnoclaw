@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -101,6 +102,50 @@ class PermissionApprover(Protocol):
 
     def approve(self, request: PermissionRequest, context) -> bool | Awaitable[bool]:
         ...
+
+
+class InteractivePermissionApprover:
+    """Interactive terminal approver for runtime permission requests."""
+
+    def __init__(
+        self,
+        *,
+        input_fn=input,
+        output_fn=print,
+        default: bool = False,
+    ) -> None:
+        self.input_fn = input_fn
+        self.output_fn = output_fn
+        self.default = default
+
+    def approve(self, request: PermissionRequest, context) -> bool:
+        self.output_fn("\nPermission approval requested:")
+        self.output_fn(f"  tool: {request.tool_name}")
+        self.output_fn(f"  category: {request.category}")
+        run_id = getattr(request, "run_id", None)
+        if run_id:
+            self.output_fn(f"  run: {run_id}")
+        session_id = getattr(context, "session_id", None)
+        if session_id:
+            self.output_fn(f"  session: {session_id}")
+        if request.arguments:
+            serialized = json.dumps(
+                request.arguments,
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+                indent=2,
+            )
+            self.output_fn("  arguments:")
+            self.output_fn(serialized)
+        prompt = "Approve this action? [Y/n] " if self.default else "Approve this action? [y/N] "
+        try:
+            answer = str(self.input_fn(prompt)).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if not answer:
+            return self.default
+        return answer in {"y", "yes"}
 
 
 def normalize_permission_mode(value: str | PermissionMode) -> PermissionMode:

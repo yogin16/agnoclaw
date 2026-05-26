@@ -1129,6 +1129,17 @@ class AgentHarness:
         """Set runtime permission mode for tool calls."""
         self._permission_controller.set_mode(mode)
 
+    def set_permission_approver(
+        self,
+        approver: PermissionApprover | None,
+        *,
+        require_approver: bool | None = None,
+    ) -> None:
+        """Set or clear the runtime permission approver."""
+        self._permission_controller.approver = approver
+        if require_approver is not None:
+            self._permission_controller.require_approver = bool(require_approver)
+
     @property
     def permission_mode(self) -> str:
         """Current runtime permission mode."""

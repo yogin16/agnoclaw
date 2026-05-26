@@ -96,11 +96,11 @@ Elevated commands require:
 Example:
 
 ```python
-from agnoclaw import AgentHarness
+from agnoclaw import AgentHarness, InteractivePermissionApprover
 
 harness = AgentHarness(
     permission_mode="default",
-    permission_approver=my_approver,
+    permission_approver=InteractivePermissionApprover(),
 )
 
 result = harness.run_elevated_command(
@@ -108,6 +108,9 @@ result = harness.run_elevated_command(
     reason="Inspect host service state outside the sandbox",
 )
 ```
+
+In `agnoclaw chat --sync`, `/elevated <command>` runs the same path and installs
+an `InteractivePermissionApprover` automatically when no approver is configured.
 
 Elevated commands emit:
 - `elevated.command.requested`

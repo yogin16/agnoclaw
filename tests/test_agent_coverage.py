@@ -115,6 +115,16 @@ def test_add_post_run_hook(tmp_path):
     assert hook in harness._post_run_hooks
 
 
+def test_set_permission_approver(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    approver = MagicMock()
+
+    harness.set_permission_approver(approver, require_approver=True)
+
+    assert harness._permission_controller.approver is approver
+    assert harness._permission_controller.require_approver is True
+
+
 def test_add_lifecycle_hook_and_session_created_checkpoint(tmp_path):
     harness, _ = _make_harness(tmp_path)
     seen = []
