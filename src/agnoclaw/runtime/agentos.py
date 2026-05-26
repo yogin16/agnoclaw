@@ -1,9 +1,10 @@
-"""AgentOS compatibility adapter skeleton."""
+"""AgentOS compatibility adapters for AgentHarness."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from .context import ExecutionContext
 
@@ -94,7 +95,9 @@ class AgentOSContextAdapter:
         )
 
         resolved_user = user_id or _as_str(_first_non_empty(claims, self.claim_keys.user_id))
-        resolved_session = session_id or _as_str(_first_non_empty(claims, self.claim_keys.session_id))
+        resolved_session = session_id or _as_str(
+            _first_non_empty(claims, self.claim_keys.session_id)
+        )
         resolved_tenant = _as_str(_first_non_empty(claims, self.claim_keys.tenant_id))
         resolved_org = _as_str(_first_non_empty(claims, self.claim_keys.org_id))
         resolved_team = _as_str(_first_non_empty(claims, self.claim_keys.team_id))
@@ -116,3 +119,271 @@ class AgentOSContextAdapter:
             trace_id=resolved_trace,
             metadata=payload,
         )
+
+
+class AgentOSHarnessAgent:
+    """
+    AgentOS-compatible facade over an AgentHarness.
+
+    This intentionally routes every run through `AgentHarness.arun()` so policy,
+    permissions, guardrails, skill handling, event emission, and workspace context
+    remain inside the agnoclaw runtime boundary.
+    """
+
+    framework = "agnoclaw"
+
+    def __init__(
+        self,
+        harness: Any,
+        *,
+        id: str | None = None,
+        name: str | None = None,
+        context_adapter: AgentOSContextAdapter | None = None,
+    ) -> None:
+        self.harness = harness
+        self._id = (
+            id
+            or getattr(harness, "agent_id", None)
+            or getattr(harness, "name", None)
+            or "agnoclaw"
+        )
+        self._name = name or getattr(harness, "name", None) or self._id
+        self.context_adapter = context_adapter or AgentOSContextAdapter()
+
+    @property
+    def id(self) -> str:
+        return str(self._id)
+
+    @property
+    def name(self) -> str:
+        return str(self._name)
+
+    @property
+    def description(self) -> str:
+        return "agnoclaw AgentHarness runtime adapter"
+
+    @property
+    def db(self) -> Any:
+        agent = getattr(self.harness, "_agent", None)
+        return getattr(agent, "db", None)
+
+    @db.setter
+    def db(self, value: Any) -> None:
+        agent = getattr(self.harness, "_agent", None)
+        if agent is not None:
+            agent.db = value
+
+    def _context_from_agentos_kwargs(
+        self,
+        *,
+        session_id: str | None,
+        user_id: str | None,
+        metadata: Mapping[str, Any] | None,
+        dependencies: Mapping[str, Any] | None,
+    ) -> ExecutionContext:
+        metadata_payload = dict(metadata or {})
+        claims = metadata_payload.pop("agentos_claims", None)
+        if claims is None:
+            claims = metadata_payload.pop("claims", None)
+        if not isinstance(claims, Mapping):
+            claims = {}
+        if dependencies:
+            metadata_payload["dependencies"] = dict(dependencies)
+        return self.context_adapter.to_execution_context(
+            claims,
+            workspace_id=str(self.harness.workspace.path),
+            user_id=user_id,
+            session_id=session_id,
+            metadata=metadata_payload,
+        )
+
+    def arun(
+        self,
+        input: Any,
+        *,
+        stream: bool | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        stream_events: bool | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        dependencies: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        context = self._context_from_agentos_kwargs(
+            session_id=session_id,
+            user_id=user_id,
+            metadata=metadata,
+            dependencies=dependencies,
+        )
+        call_kwargs = dict(kwargs)
+        call_kwargs.pop("background_tasks", None)
+        call_kwargs.pop("background", None)
+        should_stream = bool(stream)
+        should_stream_events = bool(stream_events) if stream_events is not None else should_stream
+
+        if should_stream:
+            async def _stream():
+                result = await self.harness.arun(
+                    str(input),
+                    stream=True,
+                    stream_events=should_stream_events,
+                    context=context,
+                    metadata=dict(metadata or {}),
+                    **call_kwargs,
+                )
+                async for event in result:
+                    yield event
+
+            return _stream()
+
+        return self.harness.arun(
+            str(input),
+            stream=False,
+            stream_events=should_stream_events,
+            context=context,
+            metadata=dict(metadata or {}),
+            **call_kwargs,
+        )
+
+
+def as_agentos_agent(
+    harness: Any,
+    *,
+    agent_id: str | None = None,
+    name: str | None = None,
+    context_adapter: AgentOSContextAdapter | None = None,
+) -> AgentOSHarnessAgent:
+    """Build an AgentOS-compatible agent facade for a harness."""
+    return AgentOSHarnessAgent(
+        harness,
+        id=agent_id,
+        name=name,
+        context_adapter=context_adapter,
+    )
+
+
+def create_agentos_app(
+    harnesses: Sequence[Any],
+    *,
+    include_agnoclaw_admin: bool = False,
+    enable_mcp_server: bool = False,
+    scheduler: bool = False,
+    approvals: bool = False,
+    **kwargs: Any,
+) -> Any:
+    """
+    Create a FastAPI app backed by Agno AgentOS and agnoclaw harness adapters.
+
+    AgentOS owns the agent/session/trace/schedule/approval API surface. The
+    optional `/agnoclaw` admin routes expose only harness-owned inspection data.
+    """
+    if not harnesses:
+        raise ValueError("create_agentos_app requires at least one harness")
+    try:
+        from agno.os.app import AgentOS
+    except ImportError as exc:  # pragma: no cover - optional dependency guard
+        raise ImportError("Agno AgentOS is required for create_agentos_app()") from exc
+
+    agents = [
+        h.as_agentos_agent() if hasattr(h, "as_agentos_agent") else as_agentos_agent(h)
+        for h in harnesses
+    ]
+    db = kwargs.pop("db", None)
+    if db is None:
+        db = getattr(agents[0], "db", None)
+    agent_os = AgentOS(
+        agents=agents,
+        db=db,
+        enable_mcp_server=enable_mcp_server,
+        scheduler=scheduler,
+        **kwargs,
+    )
+    app = agent_os.get_app()
+    app.state.agnoclaw_harnesses = {
+        agent.id: harness for agent, harness in zip(agents, harnesses, strict=True)
+    }
+    app.state.agnoclaw_approvals_requested = approvals
+    if include_agnoclaw_admin:
+        app.include_router(_build_agnoclaw_admin_router(app.state.agnoclaw_harnesses))
+    return app
+
+
+def _build_agnoclaw_admin_router(harnesses: Mapping[str, Any]) -> Any:
+    from fastapi import APIRouter, HTTPException
+
+    router = APIRouter(prefix="/agnoclaw", tags=["agnoclaw"])
+
+    def _get_harness(harness_id: str) -> Any:
+        harness = harnesses.get(harness_id)
+        if harness is None:
+            raise HTTPException(status_code=404, detail="Harness not found")
+        return harness
+
+    @router.get("/harnesses")
+    async def list_harnesses() -> list[dict[str, Any]]:
+        return [
+            {
+                "id": harness_id,
+                "name": getattr(harness, "name", harness_id),
+                "workspace": str(getattr(getattr(harness, "workspace", None), "path", "")),
+            }
+            for harness_id, harness in harnesses.items()
+        ]
+
+    @router.get("/harnesses/{harness_id}/capabilities")
+    async def harness_capabilities(harness_id: str) -> dict[str, Any]:
+        harness = _get_harness(harness_id)
+        return {
+            "skills": len(getattr(getattr(harness, "skills", None), "list_skills", lambda: [])()),
+            "context_providers": [
+                {
+                    "id": getattr(provider, "id", None),
+                    "name": getattr(provider, "name", None),
+                }
+                for provider in getattr(harness, "_context_providers", [])
+            ],
+            "packs": [
+                getattr(getattr(pack, "manifest", None), "name", None)
+                for pack in getattr(harness, "_loaded_packs", [])
+            ],
+            "permission_mode": getattr(harness, "permission_mode", None),
+        }
+
+    @router.get("/harnesses/{harness_id}/runtime")
+    async def harness_runtime(harness_id: str) -> dict[str, Any]:
+        harness = _get_harness(harness_id)
+        return {
+            "model": getattr(harness, "_model", None),
+            "session_id": getattr(harness, "session_id", None),
+            "workspace_id": str(getattr(getattr(harness, "workspace", None), "path", "")),
+            "sandbox_dir": str(getattr(harness, "sandbox_dir", "")),
+        }
+
+    @router.get("/harnesses/{harness_id}/skills")
+    async def harness_skills(harness_id: str) -> list[Any]:
+        harness = _get_harness(harness_id)
+        lister = getattr(getattr(harness, "skills", None), "list_skills", None)
+        return list(lister() if callable(lister) else [])
+
+    @router.get("/harnesses/{harness_id}/packs")
+    async def harness_packs(harness_id: str) -> list[dict[str, Any]]:
+        harness = _get_harness(harness_id)
+        packs = []
+        for loaded in getattr(harness, "_loaded_packs", []):
+            manifest = getattr(loaded, "manifest", None)
+            if manifest is None:
+                continue
+            packs.append(
+                {
+                    "name": manifest.name,
+                    "version": manifest.version,
+                    "description": manifest.description,
+                    "trust": {
+                        "default": manifest.trust.default,
+                        "requires_code_execution": manifest.trust.requires_code_execution,
+                    },
+                }
+            )
+        return packs
+
+    return router

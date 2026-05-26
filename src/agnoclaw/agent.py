@@ -260,6 +260,73 @@ def _make_db(config: HarnessConfig):
         )
 
 
+class HarnessRun:
+    """Small SDK wrapper around a harness run result or event stream."""
+
+    def __init__(
+        self,
+        *,
+        result: Any = None,
+        stream: AsyncIterator[Any] | Iterator[Any] | None = None,
+    ) -> None:
+        self.result = result
+        self._stream = stream
+
+    async def events(self) -> AsyncIterator[Any]:
+        """Yield run events from sync or async harness streams."""
+        if self._stream is None:
+            return
+        if hasattr(self._stream, "__aiter__"):
+            async for event in self._stream:  # type: ignore[union-attr]
+                yield event
+            return
+        for event in self._stream:
+            yield event
+
+
+class HarnessSession:
+    """Per-session SDK facade over AgentHarness.run/arun."""
+
+    def __init__(
+        self,
+        harness: AgentHarness,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.harness = harness
+        self.user_id = user_id
+        self.workspace_id = workspace_id or str(harness.workspace.path)
+        self.session_id = session_id
+        self.metadata = dict(metadata or {})
+
+    def _context(self, metadata: dict[str, Any] | None = None) -> ExecutionContext:
+        merged = dict(self.metadata)
+        if metadata:
+            merged.update(metadata)
+        return ExecutionContext.create(
+            user_id=self.user_id or self.harness.user_id,
+            session_id=self.session_id or self.harness.session_id,
+            workspace_id=self.workspace_id,
+            metadata=merged,
+        )
+
+    async def send(self, message: str, *, stream: bool = False, **kwargs) -> HarnessRun:
+        """Send a message through this session and return a run wrapper."""
+        metadata = kwargs.pop("metadata", None)
+        result = await self.harness.arun(
+            message,
+            stream=stream,
+            context=self._context(metadata),
+            **kwargs,
+        )
+        if stream:
+            return HarnessRun(stream=result)  # type: ignore[arg-type]
+        return HarnessRun(result=result)
+
+
 class AgentHarness:
     """
     A hackable, model-agnostic agent harness built on Agno.
@@ -312,7 +379,19 @@ class AgentHarness:
         permission_require_approver: If True, deny approval-required calls when no approver exists.
         backend: Optional coherent runtime backend for tools/skills/browser.
         skill_install_approver: Optional approval backend for skill dependency installs.
+        context_providers: Optional Agno context providers to expose through the harness.
+        dependencies: Optional dependency mapping propagated into Agno run context.
+        add_dependencies_to_context: Whether Agno should add dependencies to model context.
+        packs: Optional agnoclaw pack directories or manifest paths to load.
+        trusted_packs: Whether code-executing pack registrations may run.
     """
+
+    @classmethod
+    async def create(cls, *args, **kwargs) -> AgentHarness:
+        """Async constructor that also runs async provider setup hooks."""
+        harness = cls(*args, **kwargs)
+        await harness.asetup_context_providers()
+        return harness
 
     def __init__(
         self,
@@ -367,6 +446,11 @@ class AgentHarness:
         permission_preapproved_categories: list[str] | tuple[str, ...] | None = None,
         backend: RuntimeBackend | None = None,
         skill_install_approver: SkillInstallApprover | None = None,
+        context_providers: list[Any] | tuple[Any, ...] | None = None,
+        dependencies: dict[str, Any] | None = None,
+        add_dependencies_to_context: bool = False,
+        packs: list[str | Path] | tuple[str | Path, ...] | None = None,
+        trusted_packs: bool = False,
         pre_run_hooks: list[PreRunHook] | None = None,
         post_run_hooks: list[PostRunHook] | None = None,
         tenant_id: str | None = None,
@@ -405,6 +489,12 @@ class AgentHarness:
         self._on_session_end = on_session_end
         self._session_metadata = dict(session_metadata or {})
         self._closed = False
+        self._context_providers: list[Any] = list(context_providers or [])
+        self._context_provider_tool_map: dict[str, dict[str, str]] = {}
+        self._context_providers_setup = False
+        self._dependencies = dict(dependencies or {})
+        self._add_dependencies_to_context = add_dependencies_to_context
+        self._loaded_packs: list[Any] = []
 
         # Runtime extension contracts
         self._event_sink: EventSink = event_sink or NullEventSink()
@@ -508,6 +598,26 @@ class AgentHarness:
             for path, trust in skills_dirs:
                 self.skills.add_directory(path, trust=trust)
 
+        pack_tools: list[Any] = []
+        if packs:
+            from .packs import load_pack
+
+            for pack_path in packs:
+                loaded_pack = load_pack(pack_path, trusted=trusted_packs)
+                self._loaded_packs.append(loaded_pack)
+                for skills_dir in loaded_pack.skills_dirs:
+                    self.skills.add_directory(skills_dir, trust=loaded_pack.manifest.trust.default)
+                pack_tools.extend(loaded_pack.tools)
+                self._pre_run_hooks.extend(loaded_pack.pre_run_hooks)
+                self._post_run_hooks.extend(loaded_pack.post_run_hooks)
+                self._context_providers.extend(loaded_pack.context_providers)
+                if loaded_pack.policies:
+                    logger.warning(
+                        "Pack %s provided policy engines, but automatic policy composition "
+                        "is not enabled; pass a policy_engine explicitly to choose precedence.",
+                        loaded_pack.manifest.name,
+                    )
+
         # System prompt builder
         self._prompt_builder = SystemPromptBuilder(
             self.workspace.path,
@@ -533,6 +643,14 @@ class AgentHarness:
             )
         if _tools:
             _all_tools.extend(_tools)
+        if pack_tools:
+            _all_tools.extend(pack_tools)
+        if self._context_providers:
+            provider_tools = self._collect_context_provider_tools(
+                self._context_providers,
+                existing_tools=_all_tools,
+            )
+            _all_tools.extend(provider_tools)
 
         # ── Plugin system ────────────────────────────────────────────────
         self._plugin_loader = None
@@ -637,6 +755,8 @@ class AgentHarness:
             db=db,
             session_id=session_id,
             user_id=user_id,
+            dependencies=self._dependencies or None,
+            add_dependencies_to_context=self._add_dependencies_to_context,
             add_history_to_context=True,
             num_history_runs=num_history_runs or self.config.session_history_runs,
             num_history_messages=num_history_messages,
@@ -664,6 +784,90 @@ class AgentHarness:
         )
         # Per-run tool step tracking for progress events and duration metrics.
         self._tool_step_state: dict[str, dict[str, Any]] = {}
+
+    def _collect_context_provider_tools(
+        self,
+        providers: list[Any],
+        *,
+        existing_tools: list[Any] | None = None,
+    ) -> list[Any]:
+        """Return provider tools and reject ambiguous tool names up front."""
+        tools: list[Any] = []
+        existing_names = self._tool_names(list(existing_tools or []))
+        for provider in providers:
+            getter = getattr(provider, "get_tools", None)
+            if not callable(getter):
+                raise TypeError(
+                    f"context provider {provider!r} must expose get_tools()"
+                )
+            provider_tools = list(getter() or [])
+            provider_id = str(getattr(provider, "id", "") or getattr(provider, "name", "")).strip()
+            provider_name = str(getattr(provider, "name", "") or provider_id).strip()
+            query_name = str(getattr(provider, "query_tool_name", "") or "")
+            update_name = str(getattr(provider, "update_tool_name", "") or "")
+
+            for tool in provider_tools:
+                for tool_name in self._tool_names([tool]):
+                    if tool_name in existing_names:
+                        raise ValueError(
+                            f"Duplicate context provider tool name: {tool_name!r}"
+                        )
+                    existing_names.add(tool_name)
+                    operation = "query"
+                    if tool_name == update_name:
+                        operation = "update"
+                    elif tool_name == query_name:
+                        operation = "query"
+                    self._context_provider_tool_map[tool_name] = {
+                        "provider_id": provider_id or provider_name or tool_name,
+                        "provider_name": provider_name or provider_id or tool_name,
+                        "operation": operation,
+                    }
+            tools.extend(provider_tools)
+        return tools
+
+    @staticmethod
+    def _tool_names(tools: list[Any]) -> set[str]:
+        names: set[str] = set()
+        for tool in tools:
+            if isinstance(tool, Toolkit):
+                names.update(str(name) for name in tool.functions.keys())
+            elif isinstance(tool, Function):
+                if tool.name:
+                    names.add(str(tool.name))
+            else:
+                name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
+                if name:
+                    names.add(str(name))
+        return names
+
+    def _context_provider_instructions(self) -> str | None:
+        if not self._context_providers:
+            return None
+        lines = ["## External Context Providers"]
+        for provider in self._context_providers:
+            instructions = getattr(provider, "instructions", None)
+            if callable(instructions):
+                text = str(instructions()).strip()
+            else:
+                provider_name = (
+                    getattr(provider, "name", None)
+                    or getattr(provider, "id", "provider")
+                )
+                text = f"`{provider_name}` is available as an external context provider."
+            if text:
+                lines.append(f"- {text}")
+        return "\n".join(lines)
+
+    async def asetup_context_providers(self) -> None:
+        """Run async setup for registered context providers once."""
+        if self._context_providers_setup:
+            return
+        for provider in self._context_providers:
+            setup = getattr(provider, "asetup", None)
+            if callable(setup):
+                await setup()
+        self._context_providers_setup = True
 
     @staticmethod
     def _close_storage_resource(storage: Any) -> None:
@@ -799,6 +1003,9 @@ class AgentHarness:
         extra_parts = []
         if self._extra_instructions:
             extra_parts.append(self._extra_instructions)
+        provider_instructions = self._context_provider_instructions()
+        if provider_instructions:
+            extra_parts.append(provider_instructions)
 
         # Inject available skill descriptions so the model can auto-select skills.
         # This mirrors Claude Code's skill awareness: the model sees all available
@@ -1434,6 +1641,7 @@ class AgentHarness:
             tool_name = getattr(fc.function, "name", "unknown_tool")
             tool_call_id = self._tool_call_id(fc)
             arguments = dict(getattr(fc, "arguments", None) or {})
+            provider_info = self._context_provider_tool_map.get(tool_name)
             request = ToolCallRequest(
                 run_id=run_id,
                 tool_name=tool_name,
@@ -1528,6 +1736,20 @@ class AgentHarness:
                     "arguments": emitted_arguments,
                 },
             )
+            if provider_info:
+                operation = provider_info["operation"]
+                self._emit_event_sync(
+                    event_type=f"context.provider.{operation}.started",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "provider_id": provider_info["provider_id"],
+                        "provider_name": provider_info["provider_name"],
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "argument_keys": sorted(emitted_arguments.keys()),
+                    },
+                )
 
             fc._agnoclaw_tool_runtime = {
                 "context": context,
@@ -1551,6 +1773,7 @@ class AgentHarness:
             context = self._context_from_run_context(run_context)
             tool_name = getattr(fc.function, "name", "unknown_tool")
             tool_call_id = self._tool_call_id(fc)
+            provider_info = self._context_provider_tool_map.get(tool_name)
             result = ToolCallResult(
                 run_id=run_id,
                 tool_name=tool_name,
@@ -1607,6 +1830,26 @@ class AgentHarness:
                 context=context,
                 payload=payload,
             )
+            if provider_info:
+                operation = provider_info["operation"]
+                provider_event_type = (
+                    f"context.provider.{operation}.failed"
+                    if getattr(fc, "error", None)
+                    else f"context.provider.{operation}.completed"
+                )
+                self._emit_event_sync(
+                    event_type=provider_event_type,
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "provider_id": provider_info["provider_id"],
+                        "provider_name": provider_info["provider_name"],
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "duration_ms": duration_ms,
+                        "result_preview": result_preview,
+                    },
+                )
         except HarnessError as exc:
             self._raise_agent_run_exception(exc)
 
@@ -3161,6 +3404,29 @@ class AgentHarness:
         active_session = self.session_id or getattr(self._agent, "session_id", "")
         return self._agent.get_chat_history(active_session or "")
 
+    def session(
+        self,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> HarnessSession:
+        """Return a lightweight SDK session facade over this harness."""
+        return HarnessSession(
+            self,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            metadata=metadata,
+        )
+
+    def as_agentos_agent(self, *, agent_id: str | None = None, name: str | None = None):
+        """Return an AgentOS-compatible adapter that preserves harness runtime controls."""
+        from .runtime.agentos import as_agentos_agent
+
+        return as_agentos_agent(self, agent_id=agent_id, name=name)
+
     def get_session_messages(self, session_id: str | None = None) -> list:
         """
         Return chat history for a specific session ID.
@@ -3467,12 +3733,45 @@ class AgentHarness:
         if self._closed:
             return
         self._closed = True
+        closers = [
+            getattr(provider, "aclose", None)
+            for provider in self._context_providers
+            if callable(getattr(provider, "aclose", None))
+        ]
+        if closers:
+            async def _close_providers() -> None:
+                await asyncio.gather(
+                    *(closer() for closer in closers),
+                    return_exceptions=True,
+                )
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(_close_providers())
+            else:
+                logger.debug(
+                    "AgentHarness.close() called in a running loop; "
+                    "use await AgentHarness.aclose() to close context providers."
+                )
         if self._finalizer.alive:
             self._finalizer()
 
     async def aclose(self) -> None:
-        """Async-compatible close alias."""
-        self.close()
+        """Release owned resources held by this harness, including async providers."""
+        if self._closed:
+            return
+        self._closed = True
+        await asyncio.gather(
+            *(
+                provider.aclose()
+                for provider in self._context_providers
+                if callable(getattr(provider, "aclose", None))
+            ),
+            return_exceptions=True,
+        )
+        if self._finalizer.alive:
+            self._finalizer()
 
     def __enter__(self) -> AgentHarness:
         return self

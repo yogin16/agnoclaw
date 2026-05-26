@@ -26,9 +26,21 @@ With skills:
 from .agent import AgentHarness, HarnessAgent  # HarnessAgent = backward compat alias
 from .backends import RuntimeBackend
 from .config import HarnessConfig, get_config
+from .packs import (
+    LoadedPack,
+    PackError,
+    PackManifest,
+    PackProvides,
+    PackTrust,
+    PackTrustError,
+    inspect_pack,
+    load_pack,
+)
+from .remote import RemoteHarnessClient, RemoteHarnessRun
 from .runtime import (
     AgentOSClaimKeys,
     AgentOSContextAdapter,
+    AgentOSHarnessAgent,
     AgnoAuthError,
     AgnoConfigError,
     AllowAllPolicyEngine,
@@ -42,6 +54,8 @@ from .runtime import (
     PolicyAction,
     PolicyDecision,
     RuntimeGuardrails,
+    as_agentos_agent,
+    create_agentos_app,
 )
 from .skills import AutoApproveSkillInstallApprover, InteractiveSkillInstallApprover
 from .tools import (
@@ -61,6 +75,7 @@ __all__ = [
     "AgnoConfigError",
     "AgentOSClaimKeys",
     "AgentOSContextAdapter",
+    "AgentOSHarnessAgent",
     "AgentHarness",
     "AutoApproveSkillInstallApprover",
     "BrowserBackend",
@@ -76,16 +91,28 @@ __all__ = [
     "LocalCommandExecutor",
     "LocalPlaywrightBrowserBackend",
     "LocalWorkspaceAdapter",
+    "LoadedPack",
+    "PackError",
+    "PackManifest",
+    "PackProvides",
+    "PackTrust",
+    "PackTrustError",
     "PermissionController",
     "PermissionMode",
     "PolicyAction",
     "PolicyDecision",
     "RuntimeBackend",
     "RuntimeGuardrails",
+    "RemoteHarnessClient",
+    "RemoteHarnessRun",
+    "as_agentos_agent",
+    "create_agentos_app",
     "get_config",
     "SubagentDefinition",
     "WorkspaceAdapter",
     "Workspace",
+    "inspect_pack",
+    "load_pack",
 ]
 
 __version__ = "0.7.5"

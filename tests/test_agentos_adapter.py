@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
-from agnoclaw.runtime import AgentOSContextAdapter
+from agnoclaw.runtime import AgentOSContextAdapter, create_agentos_app
 
 
 def _make_harness(tmp_path):
@@ -80,3 +82,36 @@ def test_agentos_adapter_smoke_with_harness_run(tmp_path):
     assert call_kwargs["session_id"] == "sess-claim"
     assert call_kwargs["metadata"]["_agnoclaw_context"]["tenant_id"] == "tenant-claim"
     assert call_kwargs["metadata"]["_agnoclaw_context"]["roles"] == ["employee"]
+
+
+@pytest.mark.asyncio
+async def test_agentos_harness_agent_routes_through_harness_arun(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path)
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="ok"))
+    agent = harness.as_agentos_agent(agent_id="deal-agent")
+
+    result = await agent.arun(
+        "hello",
+        session_id="sess-1",
+        user_id="user-1",
+        metadata={"agentos_claims": {"tenant_id": "tenant-1"}},
+    )
+
+    assert result.content == "ok"
+    call_kwargs = mock_agent.arun.call_args.kwargs
+    assert call_kwargs["run_id"].startswith("run_")
+    assert call_kwargs["session_id"] == "sess-1"
+    assert call_kwargs["user_id"] == "user-1"
+    assert call_kwargs["metadata"]["_agnoclaw_context"]["tenant_id"] == "tenant-1"
+
+
+def test_create_agentos_app_registers_harness_admin_routes(tmp_path):
+    pytest.importorskip("fastapi")
+    harness, _ = _make_harness(tmp_path)
+
+    app = create_agentos_app([harness], include_agnoclaw_admin=True, telemetry=False)
+
+    paths = {getattr(route, "path", "") for route in app.routes}
+    assert "/agents/{agent_id}/runs" in paths
+    assert "/agnoclaw/harnesses" in paths
+    assert app.state.agnoclaw_harnesses["agnoclaw"] is harness

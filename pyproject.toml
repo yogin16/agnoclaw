@@ -92,6 +92,11 @@ llm-sandbox = [
 mcp = [
     "mcp>=1.0.0",
 ]
+# Optional AgentOS/FastAPI server export.
+server = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
 # Media tools (PDF, images)
 media = [
     "pymupdf>=1.23.0",

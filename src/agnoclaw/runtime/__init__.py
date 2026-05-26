@@ -1,5 +1,12 @@
 """v0.2 harness runtime contracts."""
 
+from .agentos import (
+    AgentOSClaimKeys,
+    AgentOSContextAdapter,
+    AgentOSHarnessAgent,
+    as_agentos_agent,
+    create_agentos_app,
+)
 from .context import ExecutionContext
 from .errors import AgnoAuthError, AgnoConfigError, HarnessError
 from .events import (
@@ -11,6 +18,10 @@ from .events import (
     NullEventSink,
     build_event,
 )
+from .guardrails import (
+    GuardrailViolation,
+    RuntimeGuardrails,
+)
 from .hooks import (
     PostRunHook,
     PreRunHook,
@@ -21,13 +32,13 @@ from .hooks import (
     ToolCallRequest,
     ToolCallResult,
 )
-from .guardrails import (
-    GuardrailViolation,
-    RuntimeGuardrails,
-)
-from .agentos import (
-    AgentOSClaimKeys,
-    AgentOSContextAdapter,
+from .permissions import (
+    PermissionApprover,
+    PermissionController,
+    PermissionMode,
+    PermissionRequest,
+    classify_tool,
+    normalize_permission_mode,
 )
 from .policy import (
     AllowAllPolicyEngine,
@@ -37,19 +48,12 @@ from .policy import (
     RedactionRule,
     apply_redactions,
 )
-from .permissions import (
-    PermissionApprover,
-    PermissionController,
-    PermissionMode,
-    PermissionRequest,
-    classify_tool,
-    normalize_permission_mode,
-)
 
 __all__ = [
     "AllowAllPolicyEngine",
     "AgentOSClaimKeys",
     "AgentOSContextAdapter",
+    "AgentOSHarnessAgent",
     "AgnoAuthError",
     "AgnoConfigError",
     "EVENT_VERSION",
@@ -79,7 +83,9 @@ __all__ = [
     "ToolCallRequest",
     "ToolCallResult",
     "apply_redactions",
+    "as_agentos_agent",
     "build_event",
     "classify_tool",
+    "create_agentos_app",
     "normalize_permission_mode",
 ]

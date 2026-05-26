@@ -1,8 +1,9 @@
 """Additional coverage tests for AgentHarness — easy utility methods and branches."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from agno.exceptions import AgentRunException
 
 from agnoclaw.agent import AgentHarness
@@ -64,6 +65,27 @@ def test_set_permission_mode(tmp_path):
     harness, _ = _make_harness(tmp_path)
     harness.set_permission_mode("plan")
     assert harness.permission_mode == "plan"
+
+
+@pytest.mark.asyncio
+async def test_sdk_session_send_uses_execution_context(tmp_path):
+    harness, mock_agent = _make_harness(tmp_path)
+    mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="ok"))
+
+    run = await harness.session(
+        user_id="u1",
+        workspace_id="repo-a",
+        session_id="s1",
+        metadata={"source": "sdk"},
+    ).send("hello")
+
+    assert run.result.content == "ok"
+    call_kwargs = mock_agent.arun.call_args.kwargs
+    context = call_kwargs["metadata"]["_agnoclaw_context"]
+    assert context["user_id"] == "u1"
+    assert context["session_id"] == "s1"
+    assert context["workspace_id"] == "repo-a"
+    assert context["metadata"]["source"] == "sdk"
 
 
 # ── add_pre_run_hook / add_post_run_hook ────────────────────────────────
