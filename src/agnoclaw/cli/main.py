@@ -9,6 +9,7 @@ Commands:
     agnoclaw skill inspect     Show a skill's full content
     agnoclaw heartbeat start   Start heartbeat daemon
     agnoclaw heartbeat trigger Run one heartbeat check now
+    agnoclaw schedule list     Manage persisted scheduler jobs
     agnoclaw workspace show    Show workspace directory and files
     agnoclaw workspace init    Initialize workspace
 """
@@ -571,6 +572,230 @@ def pack_remove(name, root):
         console.print(f"[green]Removed pack '{name}'[/green]")
         return
     console.print(f"[yellow]Pack not installed: {name}[/yellow]")
+
+
+# ── agnoclaw schedule ─────────────────────────────────────────────────────────
+
+SCHEDULE_STORE_OPT = click.option(
+    "--store",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Scheduler JSON store path. Defaults to ~/.agnoclaw/schedules.json.",
+)
+
+
+def _scheduler_backend(store: Path | None):
+    from agnoclaw.runtime import JsonSchedulerBackend, scheduler_store_path
+
+    return JsonSchedulerBackend(scheduler_store_path(store))
+
+
+@cli.group()
+def schedule():
+    """Manage embedded scheduler jobs."""
+    pass
+
+
+@schedule.command("list")
+@SCHEDULE_STORE_OPT
+@click.option("--enabled", is_flag=True, default=False, help="Show only enabled jobs.")
+@click.option("--disabled", is_flag=True, default=False, help="Show only disabled jobs.")
+def schedule_list(store, enabled, disabled):
+    """List local scheduler jobs."""
+    if enabled and disabled:
+        console.print("[red]Use only one of --enabled or --disabled.[/red]")
+        sys.exit(1)
+    backend = _scheduler_backend(store)
+    enabled_filter = True if enabled else False if disabled else None
+    jobs = backend.list_jobs(enabled=enabled_filter)
+    if not jobs:
+        console.print("[dim]No scheduler jobs found.[/dim]")
+        return
+
+    table = Table(title="Scheduler Jobs", border_style="dim")
+    table.add_column("Name", style="cyan bold")
+    table.add_column("Schedule")
+    table.add_column("Enabled", justify="center")
+    table.add_column("Skill")
+    table.add_column("Isolated", justify="center")
+    table.add_column("Prompt")
+    for job in jobs:
+        table.add_row(
+            job.name,
+            job.schedule,
+            "yes" if job.enabled else "no",
+            job.skill or "",
+            "yes" if job.isolated else "no",
+            job.prompt[:80] + ("..." if len(job.prompt) > 80 else ""),
+        )
+    console.print(table)
+
+
+@schedule.command("add")
+@click.argument("name")
+@click.option("--schedule", "schedule_expr", required=True, help="Cron expression or interval.")
+@click.option("--prompt", required=True, help="Prompt to run when the job fires.")
+@click.option("--skill", default=None, help="Skill to activate for this job.")
+@click.option("--isolated", is_flag=True, default=False, help="Run in a fresh session.")
+@click.option("--model", "model_id", default=None, help="Model override for this job.")
+@click.option("--provider", default=None, help="Provider override for this job.")
+@click.option("--disabled", is_flag=True, default=False, help="Create disabled.")
+@SCHEDULE_STORE_OPT
+def schedule_add(name, schedule_expr, prompt, skill, isolated, model_id, provider, disabled, store):
+    """Create or update a local scheduler job."""
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+
+    if HeartbeatDaemon._seconds_until_next(schedule_expr) < 0 and len(schedule_expr.split()) < 5:
+        console.print(
+            f"[red]Invalid schedule '{schedule_expr}'. Use an interval like '30m' "
+            "or a 5-field cron expression.[/red]"
+        )
+        sys.exit(1)
+
+    backend = _scheduler_backend(store)
+    job = CronJob(
+        name=name,
+        schedule=schedule_expr,
+        prompt=prompt,
+        skill=skill,
+        isolated=isolated,
+        model_id=model_id,
+        provider=provider,
+        enabled=not disabled,
+    )
+    stored = backend.upsert_job(job.to_scheduler_job())
+    console.print(
+        f"[green]Saved schedule '{stored.name}' "
+        f"({'enabled' if stored.enabled else 'disabled'})[/green]"
+    )
+
+
+@schedule.command("show")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+def schedule_show(name, store):
+    """Show a local scheduler job."""
+    backend = _scheduler_backend(store)
+    job = backend.get_job(name)
+    if job is None:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        sys.exit(1)
+    console.print(Panel(
+        f"[bold cyan]{job.name}[/bold cyan]\n"
+        f"Schedule: {job.schedule}\n"
+        f"Enabled: {job.enabled}\n"
+        f"Skill: {job.skill or 'none'}\n"
+        f"Isolated: {job.isolated}\n"
+        f"Model: {job.model_id or 'default'}\n"
+        f"Provider: {job.provider or 'default'}\n"
+        f"Created: {job.created_at}\n"
+        f"Updated: {job.updated_at}\n\n"
+        f"{job.prompt}",
+        title="Schedule",
+        border_style="cyan",
+    ))
+
+
+@schedule.command("remove")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+def schedule_remove(name, store):
+    """Delete a local scheduler job."""
+    backend = _scheduler_backend(store)
+    if backend.delete_job(name):
+        console.print(f"[green]Removed schedule '{name}'[/green]")
+        return
+    console.print(f"[yellow]Schedule not found: {name}[/yellow]")
+
+
+@schedule.command("enable")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+def schedule_enable(name, store):
+    """Enable a local scheduler job."""
+    backend = _scheduler_backend(store)
+    if backend.set_job_enabled(name, True) is None:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Enabled schedule '{name}'[/green]")
+
+
+@schedule.command("disable")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+def schedule_disable(name, store):
+    """Disable a local scheduler job."""
+    backend = _scheduler_backend(store)
+    if backend.set_job_enabled(name, False) is None:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Disabled schedule '{name}'[/green]")
+
+
+@schedule.command("runs")
+@click.argument("name", required=False)
+@click.option("--limit", default=20, show_default=True, type=int, help="Maximum runs to show.")
+@SCHEDULE_STORE_OPT
+def schedule_runs(name, limit, store):
+    """List scheduler run history."""
+    backend = _scheduler_backend(store)
+    runs = backend.list_runs(job_name=name, limit=limit)
+    if not runs:
+        console.print("[dim]No scheduler runs found.[/dim]")
+        return
+
+    table = Table(title="Scheduler Runs", border_style="dim")
+    table.add_column("Run ID", style="cyan")
+    table.add_column("Job")
+    table.add_column("Status")
+    table.add_column("Started")
+    table.add_column("Finished")
+    table.add_column("Result")
+    for run in runs:
+        result = run.error or run.output or ""
+        table.add_row(
+            run.run_id,
+            run.job_name,
+            run.status,
+            run.started_at,
+            run.finished_at or "",
+            result[:80] + ("..." if len(result) > 80 else ""),
+        )
+    console.print(table)
+
+
+@schedule.command("trigger")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+@WORKSPACE_OPT
+@PERMISSION_MODE_OPT
+@MODEL_OPT
+@PROVIDER_OPT
+def schedule_trigger(name, store, workspace, permission_mode, model, provider):
+    """Run a local scheduler job immediately and record run history."""
+    from agnoclaw.heartbeat import HeartbeatDaemon
+
+    backend = _scheduler_backend(store)
+    job = backend.get_job(name)
+    if job is None:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        sys.exit(1)
+
+    agent = _build_agent(
+        model or job.model_id,
+        provider or job.provider,
+        None,
+        workspace,
+        False,
+        permission_mode,
+    )
+    daemon = HeartbeatDaemon(agent, scheduler_backend=backend)
+    console.print(f"[dim]Triggering schedule '{name}'...[/dim]")
+    result = asyncio.run(daemon.trigger_cron(name))
+    if result is None:
+        console.print("[yellow]Schedule completed without output.[/yellow]")
+        return
+    console.print(result)
 
 
 # ── agnoclaw hub ─────────────────────────────────────────────────────────────

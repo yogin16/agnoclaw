@@ -1,7 +1,7 @@
 """Tests for the agnoclaw CLI."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -323,3 +323,141 @@ def test_pack_install_list_trust_and_remove(runner, tmp_path):
     assert "Trusted pack 'cli-pack'" in trust_result.output
     assert remove_result.exit_code == 0
     assert "Removed pack 'cli-pack'" in remove_result.output
+
+
+# ── agnoclaw schedule ─────────────────────────────────────────────────────────
+
+
+def test_schedule_add_list_show_disable_enable_runs_remove(runner, tmp_path):
+    store = tmp_path / "schedules.json"
+
+    add_result = runner.invoke(
+        cli,
+        [
+            "schedule",
+            "add",
+            "daily",
+            "--schedule",
+            "30m",
+            "--prompt",
+            "write brief",
+            "--skill",
+            "briefing",
+            "--store",
+            str(store),
+        ],
+        catch_exceptions=False,
+    )
+    list_result = runner.invoke(
+        cli,
+        ["schedule", "list", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    show_result = runner.invoke(
+        cli,
+        ["schedule", "show", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    disable_result = runner.invoke(
+        cli,
+        ["schedule", "disable", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    disabled_list_result = runner.invoke(
+        cli,
+        ["schedule", "list", "--disabled", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    enable_result = runner.invoke(
+        cli,
+        ["schedule", "enable", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    runs_result = runner.invoke(
+        cli,
+        ["schedule", "runs", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    remove_result = runner.invoke(
+        cli,
+        ["schedule", "remove", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+
+    assert add_result.exit_code == 0
+    assert "Saved schedule 'daily'" in add_result.output
+    assert list_result.exit_code == 0
+    assert "daily" in list_result.output
+    assert show_result.exit_code == 0
+    assert "write brief" in show_result.output
+    assert disable_result.exit_code == 0
+    assert "Disabled schedule 'daily'" in disable_result.output
+    assert disabled_list_result.exit_code == 0
+    assert "daily" in disabled_list_result.output
+    assert enable_result.exit_code == 0
+    assert "Enabled schedule 'daily'" in enable_result.output
+    assert runs_result.exit_code == 0
+    assert "No scheduler runs found" in runs_result.output
+    assert remove_result.exit_code == 0
+    assert "Removed schedule 'daily'" in remove_result.output
+
+
+def test_schedule_rejects_invalid_schedule(runner, tmp_path):
+    result = runner.invoke(
+        cli,
+        [
+            "schedule",
+            "add",
+            "bad",
+            "--schedule",
+            "bad",
+            "--prompt",
+            "do it",
+            "--store",
+            str(tmp_path / "schedules.json"),
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "Invalid schedule" in result.output
+
+
+def test_schedule_trigger_records_run_history(runner, tmp_path):
+    store = tmp_path / "schedules.json"
+    runner.invoke(
+        cli,
+        [
+            "schedule",
+            "add",
+            "daily",
+            "--schedule",
+            "30m",
+            "--prompt",
+            "write brief",
+            "--store",
+            str(store),
+        ],
+        catch_exceptions=False,
+    )
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="done"))
+
+    with patch("agnoclaw.cli.main._build_agent", return_value=mock_agent):
+        trigger_result = runner.invoke(
+            cli,
+            ["schedule", "trigger", "daily", "--store", str(store)],
+            catch_exceptions=False,
+        )
+    runs_result = runner.invoke(
+        cli,
+        ["schedule", "runs", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+
+    assert trigger_result.exit_code == 0
+    assert "done" in trigger_result.output
+    assert runs_result.exit_code == 0
+    assert "completed" in runs_result.output
+    assert "daily" in runs_result.output

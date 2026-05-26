@@ -68,6 +68,7 @@ from .runtime import (
     SchedulerRunRecord,
     as_agentos_agent,
     create_agentos_app,
+    scheduler_store_path,
 )
 from .skills import AutoApproveSkillInstallApprover, InteractiveSkillInstallApprover
 from .tools import (
@@ -121,6 +122,7 @@ __all__ = [
     "SchedulerBackend",
     "SchedulerJob",
     "SchedulerRunRecord",
+    "scheduler_store_path",
     "RemoteHarnessClient",
     "RemoteHarnessRun",
     "as_agentos_agent",

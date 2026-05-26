@@ -10,6 +10,13 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 
+def scheduler_store_path(root: str | Path | None = None) -> Path:
+    """Return the default local scheduler store path."""
+    if root is not None:
+        return Path(root).expanduser().resolve()
+    return Path.home().joinpath(".agnoclaw", "schedules.json").resolve()
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 

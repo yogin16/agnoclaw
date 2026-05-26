@@ -134,11 +134,13 @@ Previously closed:
 3. Background shell lifecycle tools now exist (`bash_start`, `bash_output`, `bash_kill`).
 4. Persistent scheduler backend abstraction now exists for embedded runtimes
    (`SchedulerBackend`, `InMemorySchedulerBackend`, `JsonSchedulerBackend`).
+5. First-class local scheduler CLI now manages persisted schedule CRUD,
+   enable/disable, trigger, and run history.
 
 Still open in this area:
 - Built-in interactive approval adapter and elevated command flow
 - Cross-session/background task persistence and queueing semantics
-- First-class scheduler CLI/API management beyond heartbeat daemon helpers
+- Hosted scheduler API management beyond AgentOS passthrough
 
 ---
 
@@ -159,9 +161,10 @@ Still open in this area:
 
 ### Medium
 
-1. Persistent scheduler state + cron CRUD surface
+1. ~~Persistent scheduler state + cron CRUD surface~~ **DONE**
 - Persisted job/run storage and daemon CRUD helpers are implemented through the
-  scheduler backend contract; first-class CLI management remains open.
+  scheduler backend contract; local CLI management is implemented with
+  `agnoclaw schedule`.
 
 2. ~~AgentOS approval bridge~~ **DONE**
 - ~~Map AgentOS approval records/resolution into `PermissionController` approval
