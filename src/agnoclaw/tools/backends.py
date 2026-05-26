@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import fnmatch
+import json
+import os
 import re
 import shlex
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -395,6 +398,46 @@ class LocalCommandExecutor:
         self._tasks_dir = Path.home() / ".agnoclaw" / "tmp" / "bash_tasks"
         self._tasks_dir.mkdir(parents=True, exist_ok=True)
 
+    def _task_metadata_path(self, task_id: str) -> Path:
+        return self._tasks_dir / f"{task_id}.json"
+
+    def _write_task_metadata(self, task: _BackgroundTask) -> None:
+        metadata = {
+            "task_id": task.task_id,
+            "pid": task.process.pid,
+            "command": task.command,
+            "output_path": str(task.output_path),
+            "working_dir": task.working_dir,
+            "started_at": task.started_at,
+            "description": task.description,
+        }
+        self._task_metadata_path(task.task_id).write_text(
+            json.dumps(metadata, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _read_task_metadata(self, task_id: str) -> dict[str, Any] | None:
+        path = self._task_metadata_path(task_id)
+        if not path.exists():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    @staticmethod
+    def _pid_is_running(pid: int | None) -> bool:
+        if not pid or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
     def _resolve_cwd(self, working_dir: str | None) -> str | None:
         candidate = working_dir or self.workspace_dir
         if candidate is None:
@@ -494,7 +537,7 @@ class LocalCommandExecutor:
                 output_file.close()
             raise RuntimeError(f"Failed to start background command: {exc}") from exc
 
-        self._tasks[task_id] = _BackgroundTask(
+        task = _BackgroundTask(
             task_id=task_id,
             process=process,
             command=command,
@@ -504,6 +547,8 @@ class LocalCommandExecutor:
             started_at=time.time(),
             description=description,
         )
+        self._tasks[task_id] = task
+        self._write_task_metadata(task)
         return BackgroundCommandHandle(
             task_id=task_id,
             pid=process.pid,
@@ -520,7 +565,11 @@ class LocalCommandExecutor:
     ) -> BackgroundCommandOutput:
         task = self._tasks.get(task_id)
         if task is None:
-            raise RuntimeError(f"Unknown task id: {task_id}")
+            return self._output_from_persisted_task(
+                task_id=task_id,
+                max_chars=max_chars,
+                tail=tail,
+            )
 
         exit_code = task.process.poll()
         if exit_code is None:
@@ -545,10 +594,41 @@ class LocalCommandExecutor:
             pid=task.process.pid,
         )
 
+    def _output_from_persisted_task(
+        self,
+        *,
+        task_id: str,
+        max_chars: int,
+        tail: bool,
+    ) -> BackgroundCommandOutput:
+        metadata = self._read_task_metadata(task_id)
+        if metadata is None:
+            raise RuntimeError(f"Unknown task id: {task_id}")
+
+        output_path_text = str(metadata.get("output_path") or "")
+        output_path = Path(output_path_text) if output_path_text else None
+        if output_path is None or not output_path.is_file():
+            body = "[no output yet]"
+        else:
+            body = output_path.read_text(encoding="utf-8", errors="replace")
+            body = self._tail_text(body, max_chars=max_chars, tail=tail)
+            if not body.strip():
+                body = "[no output yet]"
+
+        pid = self._task_pid(metadata)
+        status = "running" if self._pid_is_running(pid) else "unknown"
+        return BackgroundCommandOutput(
+            task_id=task_id,
+            status=status,
+            output=body,
+            exit_code=None,
+            pid=pid,
+        )
+
     def kill(self, *, task_id: str, force: bool = False) -> str:
         task = self._tasks.get(task_id)
         if task is None:
-            raise RuntimeError(f"Unknown task id: {task_id}")
+            return self._kill_persisted_task(task_id=task_id, force=force)
 
         code = task.process.poll()
         if code is not None:
@@ -569,6 +649,30 @@ class LocalCommandExecutor:
             return f"Killed task {task_id} (exit code {code})."
         except Exception as exc:
             raise RuntimeError(f"Failed to kill task {task_id}: {exc}") from exc
+
+    def _kill_persisted_task(self, *, task_id: str, force: bool = False) -> str:
+        metadata = self._read_task_metadata(task_id)
+        if metadata is None:
+            raise RuntimeError(f"Unknown task id: {task_id}")
+
+        pid = self._task_pid(metadata)
+        if not self._pid_is_running(pid):
+            return f"Task {task_id} is not running."
+
+        try:
+            os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+        except ProcessLookupError:
+            return f"Task {task_id} is not running."
+        except Exception as exc:
+            raise RuntimeError(f"Failed to kill task {task_id}: {exc}") from exc
+        return f"Killed task {task_id} (pid {pid})."
+
+    @staticmethod
+    def _task_pid(metadata: dict[str, Any]) -> int | None:
+        try:
+            return int(metadata["pid"]) if metadata.get("pid") else None
+        except (TypeError, ValueError):
+            return None
 
 
 class LocalWorkspaceAdapter:

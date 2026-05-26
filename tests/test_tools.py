@@ -493,6 +493,37 @@ def test_bash_toolkit_background_lifecycle():
     assert "status=exited" in out_after
 
 
+def test_local_command_executor_reads_persisted_background_output(tmp_path):
+    import sys
+    import time
+
+    from agnoclaw.tools.backends import LocalCommandExecutor
+
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    executor = LocalCommandExecutor(workspace_dir=tmp_path)
+    executor._tasks_dir = tasks_dir
+    handle = executor.start(
+        command=f'"{sys.executable}" -c "print(\'persisted-output\')"',
+        workdir=None,
+        description="persist output across executor instances",
+    )
+
+    fresh_executor = LocalCommandExecutor(workspace_dir=tmp_path)
+    fresh_executor._tasks_dir = tasks_dir
+    output = None
+    for _ in range(20):
+        output = fresh_executor.output(task_id=handle.task_id)
+        if "persisted-output" in output.output:
+            break
+        time.sleep(0.05)
+
+    assert output is not None
+    assert output.task_id == handle.task_id
+    assert output.pid == handle.pid
+    assert "persisted-output" in output.output
+
+
 def test_bash_toolkit_background_start_raises_for_invalid_working_dir():
     from agnoclaw.tools.bash import BashToolError, BashToolkit
 

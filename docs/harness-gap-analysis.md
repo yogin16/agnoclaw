@@ -63,7 +63,7 @@ Deferred by design:
 | Permission modes | `default/acceptEdits/plan/dontAsk/bypassPermissions` | Approval + exec modes | **Implemented (core)** | Medium | Harness |
 | Plan-mode runtime read-only | Permission-layer enforcement | Permission/safety enforcement | **Implemented** | Low | Harness |
 | Interactive approval UX | Native in-product approval flow | Approval + elevated flow | **Implemented** (terminal approver + AgentOS bridge) | ~~Medium~~ Done | Harness |
-| Background shell lifecycle | `BashOutput`, `KillShell` | Exec task lifecycle | **Implemented (opt-in)** (`bash_start/output/kill`) | Medium | Harness |
+| Background shell lifecycle | `BashOutput`, `KillShell` | Exec task lifecycle | **Implemented (opt-in)** (`bash_start/output/kill` + task metadata) | Medium | Harness |
 | Elevated execution path | Bypass/elevation semantics | Elevated mode (`!`) | **Implemented** (SDK + CLI `/elevated` modes) | ~~High~~ Done | Harness |
 | Tool boundary policy interception | Pre/post tool controls | Hooks around command/tool lifecycle | **Implemented** | Low | Harness |
 | Runtime guardrails | Permission/sandbox controls | Sandboxing/security controls | **Implemented (path/network)** | Low | Harness |
@@ -124,6 +124,10 @@ Newly closed or reduced gaps (v0.8 preview):
 7. **Structured plan UX signals** — `AskUserQuestion` and `ExitPlanMode` are
    available as plan-mode-safe tools, with SDK methods for recording/emitting
    plan question and completion signals.
+8. **Local background task metadata** — `LocalCommandExecutor` persists
+   background task IDs, PIDs, output log paths, working directories, and command
+   metadata so a fresh executor instance can read output/status and terminate
+   known host tasks by task ID.
 
 Newly closed or reduced gaps (v0.3):
 1. **Browser toolkit** — Playwright-based with navigate, click, type, screenshot, snapshot, scroll, fill_form, close.
@@ -148,7 +152,7 @@ Previously closed:
    enable/disable, trigger, and run history.
 
 Still open in this area:
-- Cross-session/background task persistence and queueing semantics
+- Queueing semantics beyond local background task metadata
 - Hosted scheduler API management beyond AgentOS passthrough
 
 ---
