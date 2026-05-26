@@ -383,6 +383,43 @@ def test_json_scheduler_backend_persists_jobs_and_runs(tmp_path):
     assert reloaded.list_runs(job_name="daily")[0].output == "ok"
 
 
+def test_scheduler_backend_filters_and_missing_records():
+    from agnoclaw.runtime import InMemorySchedulerBackend, SchedulerJob
+
+    backend = InMemorySchedulerBackend()
+    backend.upsert_job(SchedulerJob(name="enabled", schedule="1h", prompt="go"))
+    backend.upsert_job(
+        SchedulerJob(name="disabled", schedule="1h", prompt="stop", enabled=False)
+    )
+
+    first = backend.record_run_start("enabled", run_id="run-1", metadata={"a": 1})
+    second = backend.record_run_start("disabled", run_id="run-2")
+    finished = backend.record_run_finish(first.run_id, status="completed", metadata={"b": 2})
+
+    assert [job.name for job in backend.list_jobs(enabled=True)] == ["enabled"]
+    assert [job.name for job in backend.list_jobs(enabled=False)] == ["disabled"]
+    assert backend.set_job_enabled("missing", False) is None
+    assert backend.record_run_finish("missing", status="failed") is None
+    assert finished is not None
+    assert finished.metadata == {"a": 1, "b": 2}
+    assert [run.run_id for run in backend.list_runs(limit=1)] in (["run-1"], ["run-2"])
+    assert second.status == "running"
+
+
+def test_json_scheduler_backend_delete_and_enable_persist(tmp_path):
+    from agnoclaw.runtime import JsonSchedulerBackend, SchedulerJob
+
+    path = tmp_path / "schedules.json"
+    backend = JsonSchedulerBackend(path)
+    backend.upsert_job(SchedulerJob(name="toggle", schedule="1h", prompt="go"))
+
+    assert backend.set_job_enabled("toggle", False) is not None
+    assert JsonSchedulerBackend(path).get_job("toggle").enabled is False
+    assert backend.delete_job("toggle") is True
+    assert JsonSchedulerBackend(path).get_job("toggle") is None
+    assert backend.delete_job("toggle") is False
+
+
 @pytest.mark.asyncio
 async def test_run_isolated_uses_async_arun():
     """Isolated cron execution should use AgentHarness.arun() to avoid blocking the event loop."""
