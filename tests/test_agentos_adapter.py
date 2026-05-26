@@ -11,12 +11,14 @@ from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
 from agnoclaw.runtime import (
     AgentOSContextAdapter,
+    AgentOSHarnessAgent,
     AgentOSPermissionApprover,
     ExecutionContext,
     InMemoryEventSink,
     PermissionRequest,
     create_agentos_app,
 )
+from agnoclaw.runtime.agentos import _attach_agentos_approval_bridge
 
 
 def _make_harness(tmp_path):
@@ -60,6 +62,20 @@ class FakeApprovalDb:
         return items, len(items)
 
 
+class AsyncApprovalDb:
+    def get_approvals(self, **filters):
+        async def _get():
+            return []
+
+        return _get()
+
+    def create_approval(self, approval_data):
+        async def _create():
+            return approval_data
+
+        return _create()
+
+
 def test_agentos_adapter_maps_claims_to_execution_context():
     adapter = AgentOSContextAdapter()
     claims = {
@@ -85,6 +101,66 @@ def test_agentos_adapter_maps_claims_to_execution_context():
     assert context.scopes == ("agents.read", "agents.run")
     assert context.request_id == "req-55"
     assert context.trace_id == "trace-77"
+
+
+def test_agentos_harness_agent_properties_and_db_access(tmp_path):
+    harness = SimpleNamespace(
+        agent_id="agent-1",
+        name="Agent One",
+        workspace=SimpleNamespace(path=tmp_path),
+        _agent=SimpleNamespace(db="db-1"),
+    )
+    agent = AgentOSHarnessAgent(harness)
+
+    assert agent.id == "agent-1"
+    assert agent.name == "Agent One"
+    assert agent.description == "agnoclaw AgentHarness runtime adapter"
+    assert agent.db == "db-1"
+
+    agent.db = "db-2"
+
+    assert harness._agent.db == "db-2"
+
+
+@pytest.mark.asyncio
+async def test_agentos_harness_agent_streams_from_harness(tmp_path):
+    async def fake_arun(*args, **kwargs):
+        async def _events():
+            yield {"event": "one"}
+            yield {"event": "two"}
+
+        return _events()
+
+    harness = SimpleNamespace(
+        workspace=SimpleNamespace(path=tmp_path),
+        arun=AsyncMock(side_effect=fake_arun),
+    )
+    agent = AgentOSHarnessAgent(harness, id="streamer")
+
+    stream = agent.arun(
+        "hello",
+        stream=True,
+        stream_events=False,
+        session_id="sess-1",
+        metadata={"claims": "ignore-me"},
+        dependencies={"cache": "enabled"},
+        background=True,
+        schedule_run_id="sched-run-1",
+        scheduled_at="2026-05-26T09:00:00Z",
+    )
+    events = [event async for event in stream]
+
+    assert events == [{"event": "one"}, {"event": "two"}]
+    call_kwargs = harness.arun.call_args.kwargs
+    assert call_kwargs["stream"] is True
+    assert call_kwargs["stream_events"] is False
+    assert call_kwargs["context"].session_id == "sess-1"
+    assert call_kwargs["context"].metadata["dependencies"] == {"cache": "enabled"}
+    assert call_kwargs["metadata"]["agentos"]["scheduler"] == {
+        "schedule_run_id": "sched-run-1",
+        "scheduled_at": "2026-05-26T09:00:00Z",
+    }
+    assert "background" not in call_kwargs
 
 
 def test_agentos_adapter_smoke_with_harness_run(tmp_path):
@@ -221,6 +297,81 @@ def test_agentos_permission_approver_creates_pending_and_allows_approved():
     assert db.approvals[0]["source_type"] == "agnoclaw"
     assert db.approvals[0]["pause_type"] == "permission"
     assert db.approvals[0]["tool_name"] == "bash"
+
+
+def test_agentos_permission_approver_handles_unavailable_and_async_db():
+    request = PermissionRequest(
+        run_id="run-1",
+        tool_name="bash",
+        category="exec",
+        arguments={"command": "deploy"},
+    )
+    context = ExecutionContext.create(
+        user_id="user-1",
+        session_id="sess-1",
+        workspace_id="/tmp/workspace",
+    )
+
+    assert AgentOSPermissionApprover(None, agent_id="deal-agent").approve(request, context) is False
+    assert (
+        AgentOSPermissionApprover(SimpleNamespace(), agent_id="deal-agent").approve(
+            request,
+            context,
+        )
+        is False
+    )
+    async_approver = AgentOSPermissionApprover(AsyncApprovalDb(), agent_id="deal-agent")
+    assert async_approver.approve(request, context) is False
+
+
+def test_agentos_permission_approver_filters_non_matching_records():
+    class FilteringDb:
+        def __init__(self):
+            self.created = []
+
+        def get_approvals(self, **filters):
+            return [
+                "bad-record",
+                {"tool_name": "python", "tool_args": {"command": "deploy"}},
+                {"tool_name": "bash", "tool_args": {"command": "other"}},
+            ]
+
+        def create_approval(self, approval_data):
+            self.created.append(dict(approval_data))
+
+    request = PermissionRequest(
+        run_id="run-1",
+        tool_name="bash",
+        category="exec",
+        arguments={"command": "deploy"},
+    )
+    context = ExecutionContext.create(
+        user_id=None,
+        session_id=None,
+        workspace_id="/tmp/workspace",
+    )
+    db = FilteringDb()
+
+    assert AgentOSPermissionApprover(db, agent_id="deal-agent").approve(request, context) is False
+    assert len(db.created) == 1
+
+
+def test_attach_agentos_approval_bridge_preserves_existing_approver():
+    existing_approver = object()
+    controller = SimpleNamespace(approver=existing_approver)
+    harness = SimpleNamespace(_permission_controller=controller)
+    agent = SimpleNamespace(id="agent-1")
+
+    _attach_agentos_approval_bridge([harness], [agent], db=None)
+    assert controller.approver is existing_approver
+
+    _attach_agentos_approval_bridge([harness], [agent], db=FakeApprovalDb())
+    assert controller.approver is existing_approver
+
+
+def test_create_agentos_app_requires_harness():
+    with pytest.raises(ValueError, match="at least one harness"):
+        create_agentos_app([])
 
 
 def test_create_agentos_app_attaches_approval_bridge_and_runtime_flags(tmp_path):
