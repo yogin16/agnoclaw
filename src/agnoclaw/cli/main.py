@@ -65,16 +65,34 @@ def cli():
 
 # ── Global options (shared across subcommands) ─────────────────────────────────
 
-MODEL_OPT = click.option("--model", "-m", default=None, help="Model ID (e.g. claude-sonnet-4-6, gpt-4o)")
-PROVIDER_OPT = click.option("--provider", "-p", default=None, help="Provider (anthropic, openai, google, groq, ollama...)")
+MODEL_OPT = click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model ID (e.g. claude-sonnet-4-6, gpt-4o)",
+)
+PROVIDER_OPT = click.option(
+    "--provider",
+    "-p",
+    default=None,
+    help="Provider (anthropic, openai, google, groq, ollama...)",
+)
 SESSION_OPT = click.option("--session", "-s", default=None, help="Session ID for persistence")
 WORKSPACE_OPT = click.option("--workspace", "-w", default=None, help="Workspace directory path")
-DEBUG_OPT = click.option("--debug", is_flag=True, default=False, help="Enable debug mode (show tool calls)")
+DEBUG_OPT = click.option(
+    "--debug",
+    is_flag=True,
+    default=False,
+    help="Enable debug mode (show tool calls)",
+)
 SKILL_OPT = click.option("--skill", default=None, help="Activate a skill for this run (skill name)")
 PERMISSION_MODE_OPT = click.option(
     "--permission-mode",
     default=None,
-    type=click.Choice(["bypass", "default", "accept_edits", "plan", "dont_ask"], case_sensitive=False),
+    type=click.Choice(
+        ["bypass", "default", "accept_edits", "plan", "dont_ask"],
+        case_sensitive=False,
+    ),
     help="Runtime permission mode for tool calls.",
 )
 
@@ -149,9 +167,15 @@ def init(workspace):
         "# Tool Preferences",
         "",
         f"- Preferred model for this workspace: `{model_input.strip()}`",
-        f"- Shell usage preference: `{'enabled' if enable_bash else 'avoid unless explicitly needed'}`",
+        (
+            "- Shell usage preference: "
+            f"`{'enabled' if enable_bash else 'avoid unless explicitly needed'}`"
+        ),
         "- Note: this file is advisory workspace context for the agent.",
-        "- Actual runtime configuration comes from constructor args, environment variables, or `.agnoclaw.toml`.",
+        (
+            "- Actual runtime configuration comes from constructor args, environment "
+            "variables, or `.agnoclaw.toml`."
+        ),
     ]
     ws.write_file("tools", "\n".join(tools_lines) + "\n")
 
@@ -159,7 +183,8 @@ def init(workspace):
     console.print(
         f"  SOUL.md, USER.md, IDENTITY.md, TOOLS.md written\n"
         f"  Preferred model recorded: [cyan]{model_input.strip()}[/cyan]\n"
-        f"  Shell preference recorded: [cyan]{'enabled' if enable_bash else 'avoid unless needed'}[/cyan]\n"
+        "  Shell preference recorded: "
+        f"[cyan]{'enabled' if enable_bash else 'avoid unless needed'}[/cyan]\n"
         f"\nRun [bold]agnoclaw chat[/bold] to start."
     )
 
@@ -421,12 +446,131 @@ def skill_install(path_or_url, workspace):
         skill_name = src.name
         dest = ws.skills_dir() / skill_name
         if dest.exists():
-            console.print(f"[yellow]Skill '{skill_name}' already exists at {dest}. Overwrite? [y/N][/yellow]")
+            console.print(
+                f"[yellow]Skill '{skill_name}' already exists at {dest}. "
+                "Overwrite? [y/N][/yellow]"
+            )
             if input().strip().lower() != "y":
                 return
 
         shutil.copytree(src, dest, dirs_exist_ok=True)
         console.print(f"[green]Installed skill '{skill_name}' to {dest}[/green]")
+
+
+# ── agnoclaw pack ─────────────────────────────────────────────────────────────
+
+@cli.group()
+def pack():
+    """Manage and inspect agnoclaw packs."""
+    pass
+
+
+@pack.command("list")
+@click.option("--root", type=click.Path(path_type=Path), default=None, help="Pack store root.")
+def pack_list(root):
+    """List installed packs."""
+    from agnoclaw.packs import is_pack_trusted, list_installed_packs
+
+    packs = list_installed_packs(root=root)
+    if not packs:
+        console.print("[dim]No packs installed.[/dim]")
+        return
+
+    table = Table(title="Installed Packs", border_style="dim")
+    table.add_column("Name", style="cyan bold")
+    table.add_column("Version")
+    table.add_column("Trusted", justify="center")
+    table.add_column("Description")
+    for manifest in packs:
+        table.add_row(
+            manifest.name,
+            manifest.version,
+            "yes" if is_pack_trusted(manifest.root) else "no",
+            manifest.description,
+        )
+    console.print(table)
+
+
+@pack.command("inspect")
+@click.argument("path", type=click.Path(path_type=Path))
+def pack_inspect(path):
+    """Inspect a pack manifest without executing pack code."""
+    from agnoclaw.packs import PackError, inspect_pack, is_pack_trusted
+
+    try:
+        manifest = inspect_pack(path)
+    except PackError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+
+    console.print(Panel(
+        f"[bold cyan]{manifest.name}[/bold cyan] v{manifest.version}\n"
+        f"[dim]{manifest.description or 'No description'}[/dim]\n\n"
+        f"Root: {manifest.root}\n"
+        f"Trusted locally: {'yes' if is_pack_trusted(manifest.root) else 'no'}\n"
+        f"Requires code execution: {manifest.trust.requires_code_execution}\n"
+        f"Default trust: {manifest.trust.default}",
+        title="Pack",
+        border_style="cyan",
+    ))
+
+    provides = Table(title="Provides", border_style="dim")
+    provides.add_column("Type", style="cyan")
+    provides.add_column("Entries")
+    for label, entries in (
+        ("skills", manifest.provides.skills),
+        ("tools", manifest.provides.tools),
+        ("hooks", manifest.provides.hooks),
+        ("context providers", manifest.provides.context_providers),
+        ("policies", manifest.provides.policies),
+        ("commands", manifest.provides.commands),
+    ):
+        provides.add_row(label, ", ".join(entries) or "none")
+    console.print(provides)
+
+
+@pack.command("install")
+@click.argument("source")
+@click.option("--root", type=click.Path(path_type=Path), default=None, help="Pack store root.")
+@click.option("--overwrite", is_flag=True, default=False, help="Replace an existing pack.")
+def pack_install(source, root, overwrite):
+    """Install a local or git+ pack."""
+    from agnoclaw.packs import PackError, install_pack
+
+    try:
+        manifest = install_pack(source, root=root, overwrite=overwrite)
+    except PackError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Installed pack '{manifest.name}' to {manifest.root}[/green]")
+
+
+@pack.command("trust")
+@click.argument("name")
+@click.option("--root", type=click.Path(path_type=Path), default=None, help="Pack store root.")
+def pack_trust(name, root):
+    """Trust an installed pack for code-executing registrations."""
+    from agnoclaw.packs import PackError, trust_pack
+
+    try:
+        manifest = trust_pack(name, root=root)
+    except PackError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Trusted pack '{manifest.name}'[/green]")
+
+
+@pack.command("remove")
+@click.argument("name")
+@click.option("--root", type=click.Path(path_type=Path), default=None, help="Pack store root.")
+def pack_remove(name, root):
+    """Remove an installed pack."""
+    from agnoclaw.packs import remove_pack
+
+    if remove_pack(name, root=root):
+        console.print(f"[green]Removed pack '{name}'[/green]")
+        return
+    console.print(f"[yellow]Pack not installed: {name}[/yellow]")
 
 
 # ── agnoclaw hub ─────────────────────────────────────────────────────────────
@@ -588,7 +732,13 @@ def heartbeat():
 @PROVIDER_OPT
 @WORKSPACE_OPT
 @PERMISSION_MODE_OPT
-@click.option("--interval", "-i", default=None, type=int, help="Check interval in minutes (overrides config)")
+@click.option(
+    "--interval",
+    "-i",
+    default=None,
+    type=int,
+    help="Check interval in minutes (overrides config)",
+)
 def heartbeat_start(model, provider, workspace, permission_mode, interval):
     """Start the heartbeat daemon (runs until Ctrl+C)."""
     from agnoclaw import AgentHarness
@@ -669,7 +819,14 @@ def heartbeat_trigger(model, provider, workspace, permission_mode):
 @MODEL_OPT
 @PROVIDER_OPT
 @WORKSPACE_OPT
-@click.option("--interval", "-i", default=30, type=int, show_default=True, help="Heartbeat interval in minutes")
+@click.option(
+    "--interval",
+    "-i",
+    default=30,
+    type=int,
+    show_default=True,
+    help="Heartbeat interval in minutes",
+)
 @click.option("--uninstall", is_flag=True, default=False, help="Remove the installed service")
 def heartbeat_install_service(model, provider, workspace, interval, uninstall):
     """Register heartbeat as a launchd (macOS) or systemd (Linux) persistent service.
@@ -683,7 +840,10 @@ def heartbeat_install_service(model, provider, workspace, interval, uninstall):
     os_name = platform.system().lower()
     agnoclaw_bin = shutil.which("agnoclaw")
     if not agnoclaw_bin:
-        console.print("[red]agnoclaw binary not found on PATH. Install with 'pip install agnoclaw' or 'uv tool install agnoclaw'.[/red]")
+        console.print(
+            "[red]agnoclaw binary not found on PATH. Install with "
+            "'pip install agnoclaw' or 'uv tool install agnoclaw'.[/red]"
+        )
         return
 
     if os_name == "darwin":
@@ -691,7 +851,11 @@ def heartbeat_install_service(model, provider, workspace, interval, uninstall):
     elif os_name == "linux":
         _manage_systemd_service(agnoclaw_bin, workspace, interval, uninstall, model, provider)
     else:
-        console.print(f"[yellow]Service install not supported on {platform.system()}. Run 'agnoclaw heartbeat start' manually in a persistent session (tmux/screen).[/yellow]")
+        console.print(
+            f"[yellow]Service install not supported on {platform.system()}. "
+            "Run 'agnoclaw heartbeat start' manually in a persistent session "
+            "(tmux/screen).[/yellow]"
+        )
 
 
 def _manage_launchd_service(
@@ -872,7 +1036,16 @@ def workspace_show(workspace):
     table.add_column("Status")
     table.add_column("Size")
 
-    for logical_name in ("agents", "soul", "identity", "user", "memory", "tools", "heartbeat", "boot"):
+    for logical_name in (
+        "agents",
+        "soul",
+        "identity",
+        "user",
+        "memory",
+        "tools",
+        "heartbeat",
+        "boot",
+    ):
         from agnoclaw.workspace import WORKSPACE_FILES
         filename = WORKSPACE_FILES.get(logical_name, f"{logical_name.upper()}.md")
         path = ws.path / filename

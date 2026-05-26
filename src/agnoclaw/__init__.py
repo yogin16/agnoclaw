@@ -34,7 +34,13 @@ from .packs import (
     PackTrust,
     PackTrustError,
     inspect_pack,
+    install_pack,
+    is_pack_trusted,
+    list_installed_packs,
     load_pack,
+    pack_store_dir,
+    remove_pack,
+    trust_pack,
 )
 from .remote import RemoteHarnessClient, RemoteHarnessRun
 from .runtime import (
@@ -112,7 +118,13 @@ __all__ = [
     "WorkspaceAdapter",
     "Workspace",
     "inspect_pack",
+    "install_pack",
+    "is_pack_trusted",
+    "list_installed_packs",
     "load_pack",
+    "pack_store_dir",
+    "remove_pack",
+    "trust_pack",
 ]
 
 __version__ = "0.7.5"

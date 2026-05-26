@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import json
+import re
+import shutil
+import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Iterator
@@ -104,9 +108,111 @@ def inspect_pack(path: str | Path) -> PackManifest:
     )
 
 
+def pack_store_dir(root: str | Path | None = None) -> Path:
+    """Return the local installed-pack store."""
+    if root is not None:
+        return Path(root).expanduser().resolve()
+    return Path.home().joinpath(".agnoclaw", "packs").resolve()
+
+
+def list_installed_packs(*, root: str | Path | None = None) -> list[PackManifest]:
+    """List installed pack manifests from the local pack store."""
+    store = pack_store_dir(root)
+    if not store.exists():
+        return []
+    manifests: list[PackManifest] = []
+    for child in sorted(store.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            manifests.append(inspect_pack(child))
+        except PackError:
+            continue
+    return manifests
+
+
+def install_pack(
+    source: str | Path,
+    *,
+    root: str | Path | None = None,
+    overwrite: bool = False,
+) -> PackManifest:
+    """Install a local or git+ pack into the local pack store."""
+    store = pack_store_dir(root)
+    store.mkdir(parents=True, exist_ok=True)
+    source_text = str(source)
+    temp_dir: Path | None = None
+    if source_text.startswith("git+"):
+        temp_dir = store / f".tmp-{_slugify(source_text)}"
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", source_text.removeprefix("git+"), str(temp_dir)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or str(exc)).strip()
+            raise PackError(f"Failed to clone pack source: {detail}") from exc
+        src = temp_dir
+    else:
+        src = Path(source).expanduser().resolve()
+    try:
+        manifest = inspect_pack(src)
+        dest = store / _slugify(manifest.name)
+        if dest.exists():
+            if not overwrite:
+                raise PackError(f"Pack already installed: {manifest.name}")
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+        return inspect_pack(dest)
+    finally:
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def remove_pack(name: str, *, root: str | Path | None = None) -> bool:
+    """Remove an installed pack by name."""
+    dest = pack_store_dir(root) / _slugify(name)
+    if not dest.exists():
+        return False
+    shutil.rmtree(dest)
+    return True
+
+
+def trust_pack(name: str, *, root: str | Path | None = None) -> PackManifest:
+    """Mark an installed pack as trusted for code-executing registrations."""
+    manifest = _installed_manifest(name, root=root)
+    marker = manifest.root / ".agnoclaw-trust.json"
+    marker.write_text(json.dumps({"trusted": True}, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def is_pack_trusted(path_or_name: str | Path, *, root: str | Path | None = None) -> bool:
+    """Return whether a pack path or installed pack name has a local trust marker."""
+    try:
+        manifest = inspect_pack(path_or_name)
+    except PackError:
+        try:
+            manifest = _installed_manifest(str(path_or_name), root=root)
+        except PackError:
+            return False
+    marker = manifest.root / ".agnoclaw-trust.json"
+    if not marker.exists():
+        return False
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    return bool(data.get("trusted"))
+
+
 def load_pack(path: str | Path, *, trusted: bool = False) -> LoadedPack:
     """Load a pack manifest and, when trusted, execute registered Python providers."""
     manifest = inspect_pack(path)
+    trusted = trusted or is_pack_trusted(manifest.root)
     loaded = LoadedPack(manifest=manifest)
     loaded.skills_dirs.extend(_resolve_pack_paths(manifest, manifest.provides.skills))
 
@@ -131,6 +237,18 @@ def load_pack(path: str | Path, *, trusted: bool = False) -> LoadedPack:
             )
             loaded.policies.extend(_load_registered_items(manifest.provides.policies))
     return loaded
+
+
+def _installed_manifest(name: str, *, root: str | Path | None = None) -> PackManifest:
+    dest = pack_store_dir(root) / _slugify(name)
+    if not dest.exists():
+        raise PackError(f"Pack is not installed: {name}")
+    return inspect_pack(dest)
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9_.-]+", "-", value.strip()).strip("-").lower()
+    return slug or "pack"
 
 
 def _string_list(value: Any) -> list[str]:

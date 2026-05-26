@@ -9,7 +9,7 @@ import pytest
 
 from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
-from agnoclaw.runtime import AgentOSContextAdapter, create_agentos_app
+from agnoclaw.runtime import AgentOSContextAdapter, InMemoryEventSink, create_agentos_app
 
 
 def _make_harness(tmp_path):
@@ -114,4 +114,43 @@ def test_create_agentos_app_registers_harness_admin_routes(tmp_path):
     paths = {getattr(route, "path", "") for route in app.routes}
     assert "/agents/{agent_id}/runs" in paths
     assert "/agnoclaw/harnesses" in paths
+    assert "/agnoclaw/harnesses/{harness_id}/events/{run_id}" in paths
+    assert "/agnoclaw/harnesses/{harness_id}/sandboxes/{session_id}" in paths
+    assert "/agnoclaw/harnesses/{harness_id}/sandboxes/{session_id}/files" in paths
+    assert "/agnoclaw/harnesses/{harness_id}/sandboxes/{session_id}/snapshot" in paths
+    assert "/agnoclaw/harnesses/{harness_id}/sandboxes/{session_id}/reset" in paths
+    assert "/agnoclaw/harnesses/{harness_id}/policies" in paths
+    assert "/agnoclaw/harnesses/{harness_id}/permissions" in paths
+    assert "/agnoclaw/policies" in paths
+    assert "/agnoclaw/permissions" in paths
     assert app.state.agnoclaw_harnesses["agnoclaw"] is harness
+
+
+def test_harness_admin_helpers_report_runtime_and_sandbox(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    (harness.sandbox_dir / "artifact.txt").write_text("hello", encoding="utf-8")
+
+    runtime = harness.admin_runtime_info()
+    sandbox = harness.admin_snapshot_sandbox(session_id="sess-1")
+    artifact = harness.admin_sandbox_artifact_path("artifact.txt")
+
+    assert runtime["workspace_id"] == str(harness.workspace.path)
+    assert sandbox["session_id"] == "sess-1"
+    assert sandbox["file_count"] == 1
+    assert sandbox["files"][0]["path"] == "artifact.txt"
+    assert artifact == harness.sandbox_dir / "artifact.txt"
+
+
+def test_harness_admin_events_filter_by_run_id(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    sink = InMemoryEventSink()
+    harness.set_event_sink(sink)
+    context = harness._build_execution_context(user_id=None, session_id=None)
+
+    harness._emit_event_sync(event_type="one", run_id="run-1", context=context)
+    harness._emit_event_sync(event_type="two", run_id="run-2", context=context)
+
+    assert len(harness.admin_list_events()) == 2
+    filtered = harness.admin_list_events(run_id="run-1")
+    assert len(filtered) == 1
+    assert filtered[0]["event_type"] == "one"

@@ -4,7 +4,7 @@ Unified comparison of `agnoclaw` harness core against:
 - Claude Code (v2.1.50 patterns)
 - OpenClaw (docs/repo patterns, February 2026)
 
-Last updated: 2026-03-20
+Last updated: 2026-05-26
 
 ---
 
@@ -42,6 +42,11 @@ Deferred by design:
 - Media toolkit (image + PDF reading, optional extra)
 - Notebook toolkit (Jupyter .ipynb read/edit/add)
 - Plugin system (entry-point-based discovery + explicit module paths)
+- Pack system v1 preview (manifest inspection/loading, install/list/trust/remove CLI,
+  trusted code registrations, hook event emission)
+- Agno context provider bridge (tools, instructions, lifecycle, dependencies)
+- Optional AgentOS export (`as_agentos_agent`, `create_agentos_app`) with
+  harness-owned admin/debug routes
 - Hierarchical workspace (global → project → workspace layering)
 - Skill `context: fork` enforcement (routes to isolated subagent)
 - Skill `command-dispatch: tool` enforcement (bypasses LLM, invokes tool directly)
@@ -67,6 +72,9 @@ Deferred by design:
 | Hook breadth and packaging | 17 events + multiple hook types | Plugin hook packs + lifecycle events | **Partial** (run + tool path) | High | Harness |
 | Scheduler | None | Heartbeat + Cron | **Implemented** | Low | Harness |
 | Persistent cron management | N/A | Durable job management | **Partial** (in-memory jobs) | Medium | Harness |
+| AgentOS runtime export | Hosted API/runtime adapter | Gateway/API runtime | **Partial** (AgentProtocol adapter + optional admin routes; approvals/scheduler reuse AgentOS) | Medium | Harness |
+| Context provider bridge | N/A | Source-scoped integrations | **Implemented** (Agno providers expose bounded tools + instructions) | Low | Harness |
+| Pack install/trust lifecycle | N/A | Plugin/package ecosystem | **Partial** (local/git install, inspect, trust, remove; no marketplace) | Medium | Harness |
 | Workspace core files | CLAUDE.md hierarchy | AGENTS/SOUL/IDENTITY/USER/etc | **Implemented** (OpenClaw-style files) | Low | Harness |
 | Hierarchical workspace layering | Hierarchical CLAUDE.md/rules loading | Layered behavior files | **Implemented** (global → project → workspace) | ~~Medium~~ Done | Harness |
 | Skill metadata compatibility | AgentSkills + CC frontmatter | OpenClaw metadata and install specs | **Implemented** | Low | Harness |
@@ -84,6 +92,23 @@ Deferred by design:
 ---
 
 ## What Changed Recently
+
+Newly closed or reduced gaps (v0.8 preview):
+1. **Agno context providers** — `AgentHarness` accepts providers, adds bounded
+   provider tools/instructions, supports async setup/close, and preserves policy,
+   permission, guardrail, and event boundaries.
+2. **AgentOS export** — Harnesses can be wrapped as AgentOS-compatible agents and
+   registered through `create_agentos_app()` without bypassing `AgentHarness`.
+3. **Harness admin/debug routes** — Optional `/agnoclaw` routes expose capabilities,
+   runtime metadata, in-memory events, sandbox listing/download/snapshot/reset,
+   skills, packs, policies, and permissions. Reset routes through harness
+   permission, policy, and event emission.
+4. **Pack v1 preview** — Pack manifests can be inspected without executing code,
+   installed from local paths or `git+` URLs, trusted explicitly, removed, and
+   loaded into the harness. Pack-provided hooks emit lifecycle events.
+5. **SDK ergonomics** — `AgentHarness.create()`, `session().send()`, and remote
+   client helpers provide a programmatic harness-shaped API over existing
+   `run/arun` behavior.
 
 Newly closed or reduced gaps (v0.3):
 1. **Browser toolkit** — Playwright-based with navigate, click, type, screenshot, snapshot, scroll, fill_form, close.
@@ -106,6 +131,9 @@ Previously closed:
 Still open in this area:
 - Built-in interactive approval adapter and elevated command flow
 - Cross-session/background task persistence and queueing semantics
+- Persistent scheduler backend abstraction beyond AgentOS scheduler passthrough
+- First-class mapping from AgentOS approval records into agnoclaw permission
+  request resolution
 
 ---
 
@@ -117,7 +145,9 @@ Still open in this area:
 - Add explicit elevated command contract, approval gate, and audit event schema.
 
 2. Hook-pack system + broader lifecycle coverage
-- Add workspace/project hook discovery and more checkpoints (session/message/compact/worktree equivalents).
+- Add workspace/project hook discovery and more checkpoints
+  (session/message/compact/worktree equivalents). Pack-provided run hooks now emit
+  events, but broader lifecycle coverage remains open.
 
 3. Sandbox provider abstraction beyond tool backends
 - Keep current guardrails and injected exec/files backends; add full runtime sandbox providers and mode semantics.
@@ -127,16 +157,20 @@ Still open in this area:
 1. Persistent scheduler state + cron CRUD surface
 - Persist jobs and run metadata; add first-class CLI management.
 
-2. ~~Skill runtime parity for `context: fork` and `command-dispatch`~~ **DONE**
+2. AgentOS approval bridge
+- Map AgentOS approval records/resolution into `PermissionController` approval
+  requests so hosted approvals can satisfy harness permission prompts.
+
+3. ~~Skill runtime parity for `context: fork` and `command-dispatch`~~ **DONE**
 - ~~Enforce parsed skill metadata in runtime execution.~~
 
-3. ~~Hierarchical workspace context loading~~ **DONE**
+4. ~~Hierarchical workspace context loading~~ **DONE**
 - ~~Deterministic layer precedence (global -> project -> workspace/path).~~
 
-4. Plan UX tooling
+5. Plan UX tooling
 - Add harness-level tools/signals for structured user questions and explicit plan completion.
 
-5. ~~Notebook tools~~ **DONE**
+6. ~~Notebook tools~~ **DONE**
 - ~~Add read/edit support for notebook-centric workflows.~~
 
 ---
@@ -169,6 +203,12 @@ OpenClaw:
 - https://docs.openclaw.ai/skills/skills-config
 - https://docs.openclaw.ai/agents/sub-agents
 - https://raw.githubusercontent.com/openclaw/openclaw/main/README.md
+
+Agno:
+- https://docs.agno.com/agent-os/overview
+- https://docs.agno.com/agent-os/multi-framework/overview
+- https://docs.agno.com/runtime/context
+- https://docs.agno.com/runtime/scheduling
 
 ---
 

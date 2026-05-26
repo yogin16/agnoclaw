@@ -1,9 +1,10 @@
 """Tests for the agnoclaw CLI."""
 
-import pytest
-from click.testing import CliRunner
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
+from click.testing import CliRunner
 
 from agnoclaw.cli.main import _handle_slash_command, cli
 
@@ -223,7 +224,8 @@ def test_init_help(runner):
     """agnoclaw init --help should describe the wizard."""
     result = runner.invoke(cli, ["init", "--help"])
     assert result.exit_code == 0
-    assert "onboarding" in result.output.lower() or "wizard" in result.output.lower() or "personalize" in result.output.lower()
+    output = result.output.lower()
+    assert "onboarding" in output or "wizard" in output or "personalize" in output
 
 
 def test_handle_slash_skill_queues_skill():
@@ -245,3 +247,79 @@ def test_handle_slash_clear_rotates_session():
     assert handled is True
     assert queued is None
     agent.clear_session_context.assert_called_once()
+
+
+# ── agnoclaw pack ─────────────────────────────────────────────────────────────
+
+
+def _write_pack(tmp_path, name="cli-pack"):
+    pack = tmp_path / name
+    pack.mkdir()
+    (pack / "agnoclaw-pack.toml").write_text(
+        f"""
+name = "{name}"
+version = "0.1.0"
+description = "CLI pack"
+
+[provides]
+skills = ["skills/"]
+hooks = ["cli_pack.hooks:register"]
+
+[trust]
+requires_code_execution = true
+""",
+        encoding="utf-8",
+    )
+    return pack
+
+
+def test_pack_inspect_does_not_execute_code(runner, tmp_path):
+    pack = _write_pack(tmp_path)
+    module_dir = pack / "cli_pack"
+    module_dir.mkdir()
+    (module_dir / "__init__.py").write_text("", encoding="utf-8")
+    (module_dir / "hooks.py").write_text(
+        "raise RuntimeError('should not execute')\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(cli, ["pack", "inspect", str(pack)], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "cli-pack" in result.output
+    assert "Requires code execution: True" in result.output
+
+
+def test_pack_install_list_trust_and_remove(runner, tmp_path):
+    pack = _write_pack(tmp_path)
+    store = tmp_path / "store"
+
+    install_result = runner.invoke(
+        cli,
+        ["pack", "install", str(pack), "--root", str(store)],
+        catch_exceptions=False,
+    )
+    list_result = runner.invoke(
+        cli,
+        ["pack", "list", "--root", str(store)],
+        catch_exceptions=False,
+    )
+    trust_result = runner.invoke(
+        cli,
+        ["pack", "trust", "cli-pack", "--root", str(store)],
+        catch_exceptions=False,
+    )
+    remove_result = runner.invoke(
+        cli,
+        ["pack", "remove", "cli-pack", "--root", str(store)],
+        catch_exceptions=False,
+    )
+
+    assert install_result.exit_code == 0
+    assert "Installed pack 'cli-pack'" in install_result.output
+    assert list_result.exit_code == 0
+    assert "cli-pack" in list_result.output
+    assert trust_result.exit_code == 0
+    assert "Trusted pack 'cli-pack'" in trust_result.output
+    assert remove_result.exit_code == 0
+    assert "Removed pack 'cli-pack'" in remove_result.output

@@ -310,6 +310,7 @@ def create_agentos_app(
 
 def _build_agnoclaw_admin_router(harnesses: Mapping[str, Any]) -> Any:
     from fastapi import APIRouter, HTTPException
+    from fastapi.responses import FileResponse
 
     router = APIRouter(prefix="/agnoclaw", tags=["agnoclaw"])
 
@@ -333,57 +334,116 @@ def _build_agnoclaw_admin_router(harnesses: Mapping[str, Any]) -> Any:
     @router.get("/harnesses/{harness_id}/capabilities")
     async def harness_capabilities(harness_id: str) -> dict[str, Any]:
         harness = _get_harness(harness_id)
-        return {
-            "skills": len(getattr(getattr(harness, "skills", None), "list_skills", lambda: [])()),
-            "context_providers": [
-                {
-                    "id": getattr(provider, "id", None),
-                    "name": getattr(provider, "name", None),
-                }
-                for provider in getattr(harness, "_context_providers", [])
-            ],
-            "packs": [
-                getattr(getattr(pack, "manifest", None), "name", None)
-                for pack in getattr(harness, "_loaded_packs", [])
-            ],
-            "permission_mode": getattr(harness, "permission_mode", None),
-        }
+        lister = getattr(harness, "admin_harness_capabilities", None)
+        if callable(lister):
+            return dict(lister())
+        return {"permission_mode": getattr(harness, "permission_mode", None)}
 
     @router.get("/harnesses/{harness_id}/runtime")
     async def harness_runtime(harness_id: str) -> dict[str, Any]:
         harness = _get_harness(harness_id)
-        return {
-            "model": getattr(harness, "_model", None),
-            "session_id": getattr(harness, "session_id", None),
-            "workspace_id": str(getattr(getattr(harness, "workspace", None), "path", "")),
-            "sandbox_dir": str(getattr(harness, "sandbox_dir", "")),
-        }
+        info = getattr(harness, "admin_runtime_info", None)
+        if callable(info):
+            return dict(info())
+        return {"session_id": getattr(harness, "session_id", None)}
 
     @router.get("/harnesses/{harness_id}/skills")
     async def harness_skills(harness_id: str) -> list[Any]:
         harness = _get_harness(harness_id)
+        lister = getattr(harness, "admin_list_skills", None)
+        if callable(lister):
+            return list(lister())
         lister = getattr(getattr(harness, "skills", None), "list_skills", None)
         return list(lister() if callable(lister) else [])
 
     @router.get("/harnesses/{harness_id}/packs")
     async def harness_packs(harness_id: str) -> list[dict[str, Any]]:
         harness = _get_harness(harness_id)
-        packs = []
-        for loaded in getattr(harness, "_loaded_packs", []):
-            manifest = getattr(loaded, "manifest", None)
-            if manifest is None:
-                continue
-            packs.append(
-                {
-                    "name": manifest.name,
-                    "version": manifest.version,
-                    "description": manifest.description,
-                    "trust": {
-                        "default": manifest.trust.default,
-                        "requires_code_execution": manifest.trust.requires_code_execution,
-                    },
-                }
-            )
-        return packs
+        lister = getattr(harness, "admin_list_packs", None)
+        return list(lister() if callable(lister) else [])
+
+    @router.get("/harnesses/{harness_id}/policies")
+    async def harness_policies(harness_id: str) -> dict[str, Any]:
+        harness = _get_harness(harness_id)
+        lister = getattr(harness, "admin_list_policies", None)
+        return dict(lister() if callable(lister) else {})
+
+    @router.get("/harnesses/{harness_id}/permissions")
+    async def harness_permissions(harness_id: str) -> dict[str, Any]:
+        harness = _get_harness(harness_id)
+        lister = getattr(harness, "admin_list_permissions", None)
+        return dict(lister() if callable(lister) else {})
+
+    @router.get("/harnesses/{harness_id}/events")
+    async def harness_events(harness_id: str) -> list[dict[str, Any]]:
+        harness = _get_harness(harness_id)
+        lister = getattr(harness, "admin_list_events", None)
+        return list(lister() if callable(lister) else [])
+
+    @router.get("/harnesses/{harness_id}/events/{run_id}")
+    async def harness_run_events(harness_id: str, run_id: str) -> list[dict[str, Any]]:
+        harness = _get_harness(harness_id)
+        lister = getattr(harness, "admin_list_events", None)
+        return list(lister(run_id=run_id) if callable(lister) else [])
+
+    @router.get("/harnesses/{harness_id}/sandboxes/{session_id}")
+    async def harness_sandbox(harness_id: str, session_id: str) -> dict[str, Any]:
+        harness = _get_harness(harness_id)
+        info = getattr(harness, "admin_sandbox_info", None)
+        if not callable(info):
+            raise HTTPException(status_code=404, detail="Sandbox admin is unavailable")
+        return dict(info(session_id=session_id))
+
+    @router.get("/harnesses/{harness_id}/sandboxes/{session_id}/files")
+    async def harness_sandbox_files(harness_id: str, session_id: str) -> list[dict[str, Any]]:
+        harness = _get_harness(harness_id)
+        lister = getattr(harness, "admin_list_sandbox_files", None)
+        return list(lister(session_id=session_id) if callable(lister) else [])
+
+    @router.post("/harnesses/{harness_id}/sandboxes/{session_id}/snapshot")
+    async def harness_sandbox_snapshot(harness_id: str, session_id: str) -> dict[str, Any]:
+        harness = _get_harness(harness_id)
+        snapshot = getattr(harness, "admin_snapshot_sandbox", None)
+        if not callable(snapshot):
+            raise HTTPException(status_code=404, detail="Sandbox snapshot is unavailable")
+        return dict(snapshot(session_id=session_id))
+
+    @router.post("/harnesses/{harness_id}/sandboxes/{session_id}/reset")
+    async def harness_sandbox_reset(harness_id: str, session_id: str) -> dict[str, Any]:
+        harness = _get_harness(harness_id)
+        reset = getattr(harness, "admin_reset_sandbox", None)
+        if not callable(reset):
+            raise HTTPException(status_code=404, detail="Sandbox reset is unavailable")
+        return dict(reset(session_id=session_id))
+
+    @router.get("/harnesses/{harness_id}/sandboxes/{session_id}/artifacts/{artifact_path:path}")
+    async def harness_sandbox_artifact(
+        harness_id: str,
+        session_id: str,
+        artifact_path: str,
+    ) -> FileResponse:
+        del session_id
+        harness = _get_harness(harness_id)
+        resolver = getattr(harness, "admin_sandbox_artifact_path", None)
+        path = resolver(artifact_path) if callable(resolver) else None
+        if path is None:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        return FileResponse(path)
+
+    @router.get("/policies")
+    async def policies() -> dict[str, Any]:
+        return {
+            harness_id: harness.admin_list_policies()
+            for harness_id, harness in harnesses.items()
+            if callable(getattr(harness, "admin_list_policies", None))
+        }
+
+    @router.get("/permissions")
+    async def permissions() -> dict[str, Any]:
+        return {
+            harness_id: harness.admin_list_permissions()
+            for harness_id, harness in harnesses.items()
+            if callable(getattr(harness, "admin_list_permissions", None))
+        }
 
     return router

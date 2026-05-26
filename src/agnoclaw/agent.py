@@ -608,8 +608,14 @@ class AgentHarness:
                 for skills_dir in loaded_pack.skills_dirs:
                     self.skills.add_directory(skills_dir, trust=loaded_pack.manifest.trust.default)
                 pack_tools.extend(loaded_pack.tools)
-                self._pre_run_hooks.extend(loaded_pack.pre_run_hooks)
-                self._post_run_hooks.extend(loaded_pack.post_run_hooks)
+                self._pre_run_hooks.extend(
+                    self._wrap_pack_pre_hook(loaded_pack.manifest.name, hook)
+                    for hook in loaded_pack.pre_run_hooks
+                )
+                self._post_run_hooks.extend(
+                    self._wrap_pack_post_hook(loaded_pack.manifest.name, hook)
+                    for hook in loaded_pack.post_run_hooks
+                )
                 self._context_providers.extend(loaded_pack.context_providers)
                 if loaded_pack.policies:
                     logger.warning(
@@ -1084,6 +1090,229 @@ class AgentHarness:
     def permission_mode(self) -> str:
         """Current runtime permission mode."""
         return self._permission_controller.current_mode().value
+
+    def admin_harness_capabilities(self) -> dict[str, Any]:
+        """Return harness-owned capability metadata for admin surfaces."""
+        return {
+            "skills": len(self.skills.list_skills()),
+            "context_providers": [
+                {
+                    "id": getattr(provider, "id", None),
+                    "name": getattr(provider, "name", None),
+                    "tools": [
+                        tool_name
+                        for tool_name, info in self._context_provider_tool_map.items()
+                        if info.get("provider_id")
+                        == str(
+                            getattr(provider, "id", "")
+                            or getattr(provider, "name", "")
+                            or tool_name
+                        ).strip()
+                    ],
+                }
+                for provider in self._context_providers
+            ],
+            "packs": [
+                getattr(getattr(pack, "manifest", None), "name", None)
+                for pack in self._loaded_packs
+            ],
+            "permission_mode": self.permission_mode,
+        }
+
+    def admin_runtime_info(self) -> dict[str, Any]:
+        """Return harness runtime metadata without exposing mutable internals."""
+        return {
+            "model": self._model,
+            "session_id": self.session_id,
+            "workspace_id": str(self.workspace.path),
+            "sandbox_dir": str(self.sandbox_dir),
+            "event_sink": self._event_sink.__class__.__name__,
+            "event_sink_mode": self._event_sink_mode.value,
+            "policy_engine": self._policy_engine.__class__.__name__,
+            "policy_fail_open": self._policy_fail_open,
+        }
+
+    def admin_list_skills(self) -> list[dict[str, Any]]:
+        """Return registered skills."""
+        return list(self.skills.list_skills())
+
+    def admin_list_packs(self) -> list[dict[str, Any]]:
+        """Return loaded pack manifest metadata."""
+        packs: list[dict[str, Any]] = []
+        for loaded in self._loaded_packs:
+            manifest = getattr(loaded, "manifest", None)
+            if manifest is None:
+                continue
+            packs.append(
+                {
+                    "name": manifest.name,
+                    "version": manifest.version,
+                    "description": manifest.description,
+                    "root": str(manifest.root),
+                    "provides": {
+                        "skills": list(manifest.provides.skills),
+                        "tools": list(manifest.provides.tools),
+                        "hooks": list(manifest.provides.hooks),
+                        "context_providers": list(manifest.provides.context_providers),
+                        "policies": list(manifest.provides.policies),
+                        "commands": list(manifest.provides.commands),
+                    },
+                    "trust": {
+                        "default": manifest.trust.default,
+                        "requires_code_execution": manifest.trust.requires_code_execution,
+                    },
+                }
+            )
+        return packs
+
+    def admin_list_policies(self) -> dict[str, Any]:
+        """Return active policy configuration."""
+        return {
+            "engine": self._policy_engine.__class__.__name__,
+            "fail_open": self._policy_fail_open,
+            "checkpoints": [
+                "before_run",
+                "before_prompt_send",
+                "before_skill_load",
+                "before_tool_call",
+                "after_tool_call",
+            ],
+        }
+
+    def admin_list_permissions(self) -> dict[str, Any]:
+        """Return active permission configuration."""
+        controller = self._permission_controller
+        return {
+            "mode": controller.current_mode().value,
+            "require_approver": controller.require_approver,
+            "has_approver": controller.approver is not None,
+            "preapproved_tools": sorted(controller._approved_tools),
+            "preapproved_categories": sorted(controller._approved_categories),
+        }
+
+    def admin_list_events(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        """Return in-memory events when the configured sink retains them."""
+        events = getattr(self._event_sink, "events", None)
+        if not isinstance(events, list):
+            return []
+        items = []
+        for event in events:
+            if run_id is not None and getattr(event, "run_id", None) != run_id:
+                continue
+            if hasattr(event, "to_dict"):
+                items.append(event.to_dict())
+        return items
+
+    def admin_sandbox_info(self, *, session_id: str | None = None) -> dict[str, Any]:
+        """Return sandbox metadata for a session-scoped admin view."""
+        files = self.admin_list_sandbox_files(session_id=session_id)
+        return {
+            "session_id": session_id or self.session_id,
+            "sandbox_dir": str(self.sandbox_dir),
+            "exists": self.sandbox_dir.exists(),
+            "file_count": len(files),
+            "total_bytes": sum(int(item["size_bytes"]) for item in files),
+        }
+
+    def admin_list_sandbox_files(self, *, session_id: str | None = None) -> list[dict[str, Any]]:
+        """Return sandbox file metadata. The harness currently owns one sandbox path."""
+        del session_id
+        files: list[dict[str, Any]] = []
+        if not self.sandbox_dir.exists():
+            return files
+        root = self.sandbox_dir.resolve(strict=False)
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                rel_path = path.resolve(strict=False).relative_to(root).as_posix()
+            except ValueError:
+                continue
+            stat = path.stat()
+            files.append(
+                {
+                    "path": rel_path,
+                    "size_bytes": stat.st_size,
+                    "modified_at": stat.st_mtime,
+                }
+            )
+        return files
+
+    def admin_sandbox_artifact_path(self, artifact_path: str) -> Path | None:
+        """Resolve an artifact path if it points at a file inside the sandbox."""
+        root = self.sandbox_dir.resolve(strict=False)
+        candidate = (root / artifact_path).resolve(strict=False)
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        if not candidate.is_file():
+            return None
+        return candidate
+
+    def admin_snapshot_sandbox(self, *, session_id: str | None = None) -> dict[str, Any]:
+        """Return a lightweight sandbox snapshot."""
+        return {
+            **self.admin_sandbox_info(session_id=session_id),
+            "files": self.admin_list_sandbox_files(session_id=session_id),
+        }
+
+    def admin_reset_sandbox(
+        self,
+        *,
+        session_id: str | None = None,
+        context: ExecutionContext | None = None,
+    ) -> dict[str, Any]:
+        """Reset the harness sandbox after permission and policy checks."""
+        run_id = f"admin_sandbox_reset_{uuid4().hex}"
+        context = context or self._build_execution_context(
+            user_id=self.user_id,
+            session_id=session_id or self.session_id,
+            metadata={"source": "agnoclaw_admin"},
+        )
+        request = ToolCallRequest(
+            run_id=run_id,
+            tool_name="sandbox.reset",
+            arguments={"sandbox_dir": str(self.sandbox_dir)},
+            metadata={"source": "agnoclaw_admin"},
+        )
+        permission_decision = self._permission_controller.check_tool_call(
+            request,
+            context,
+            resolve_sync_value=self._resolve_sync_value,
+        )
+        self._enforce_policy_decision(
+            decision=permission_decision,
+            checkpoint="permission.before_tool_call",
+            run_id=run_id,
+            context=context,
+        )
+        decision = self._run_policy_sync(
+            method_name="before_tool_call",
+            payload=request,
+            run_input=None,
+            context=context,
+        )
+        self._enforce_policy_decision(
+            decision=decision,
+            checkpoint="before_tool_call",
+            run_id=run_id,
+            context=context,
+        )
+        before = self.admin_sandbox_info(session_id=session_id)
+        self._cleanup_sandbox_dir()
+        self._ensure_sandbox_dir()
+        after = self.admin_sandbox_info(session_id=session_id)
+        self._emit_event_sync(
+            event_type="sandbox.reset",
+            run_id=run_id,
+            context=context,
+            payload={
+                "before": before,
+                "after": after,
+            },
+        )
+        return after
 
     def add_pre_run_hook(self, hook: PreRunHook) -> None:
         """Register a pre-run hook."""
@@ -2135,6 +2364,136 @@ class AgentHarness:
         ):
             run_input.metadata.setdefault("policy_constraints", {}).update(decision.constraints)
         return decision
+
+    def _wrap_pack_pre_hook(self, pack_name: str, hook: PreRunHook) -> PreRunHook:
+        hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+
+        async def _await_result(result: Awaitable[RunInput | None], run_input, context):
+            try:
+                resolved = await result
+            except Exception as exc:
+                await self._emit_event_async(
+                    event_type="pack.hook.failed",
+                    run_id=run_input.run_id,
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "pre",
+                        "error": str(exc),
+                    },
+                )
+                raise
+            await self._emit_event_async(
+                event_type="pack.hook.completed",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "pre"},
+            )
+            return resolved
+
+        def _wrapped(run_input: RunInput, context) -> RunInput | None | Awaitable[RunInput | None]:
+            self._emit_event_sync(
+                event_type="pack.hook.started",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "pre"},
+            )
+            try:
+                result = hook(run_input, context)
+            except Exception as exc:
+                self._emit_event_sync(
+                    event_type="pack.hook.failed",
+                    run_id=run_input.run_id,
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "pre",
+                        "error": str(exc),
+                    },
+                )
+                raise
+            if inspect.isawaitable(result):
+                return _await_result(result, run_input, context)
+            self._emit_event_sync(
+                event_type="pack.hook.completed",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "pre"},
+            )
+            return result
+
+        return _wrapped
+
+    def _wrap_pack_post_hook(self, pack_name: str, hook: PostRunHook) -> PostRunHook:
+        hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+
+        async def _await_result(
+            result: Awaitable[RunResultEnvelope | None],
+            run_input,
+            context,
+        ):
+            try:
+                resolved = await result
+            except Exception as exc:
+                await self._emit_event_async(
+                    event_type="pack.hook.failed",
+                    run_id=run_input.run_id,
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "post",
+                        "error": str(exc),
+                    },
+                )
+                raise
+            await self._emit_event_async(
+                event_type="pack.hook.completed",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "post"},
+            )
+            return resolved
+
+        def _wrapped(
+            run_input: RunInput,
+            result: RunResultEnvelope,
+            context,
+        ) -> RunResultEnvelope | None | Awaitable[RunResultEnvelope | None]:
+            self._emit_event_sync(
+                event_type="pack.hook.started",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "post"},
+            )
+            try:
+                maybe_result = hook(run_input, result, context)
+            except Exception as exc:
+                self._emit_event_sync(
+                    event_type="pack.hook.failed",
+                    run_id=run_input.run_id,
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "post",
+                        "error": str(exc),
+                    },
+                )
+                raise
+            if inspect.isawaitable(maybe_result):
+                return _await_result(maybe_result, run_input, context)
+            self._emit_event_sync(
+                event_type="pack.hook.completed",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "post"},
+            )
+            return maybe_result
+
+        return _wrapped
 
     def _run_pre_hooks_sync(
         self,
