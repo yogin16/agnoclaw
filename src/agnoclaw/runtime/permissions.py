@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
-from typing import Awaitable, Protocol, runtime_checkable
+from collections.abc import Awaitable
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any, Protocol, runtime_checkable
 
 from .hooks import ToolCallRequest
 from .policy import PolicyAction, PolicyDecision
 
 
-class PermissionMode(str, Enum):
+class PermissionMode(StrEnum):
     """Supported runtime permission modes."""
 
     BYPASS = "bypass"
@@ -50,6 +51,7 @@ READ_ONLY_TOOLS = frozenset(
 
 FILE_EDIT_TOOLS = frozenset({"write_file", "edit_file", "multi_edit_file"})
 EXEC_TOOLS = frozenset({"bash", "bash_start", "bash_kill"})
+ELEVATED_EXEC_TOOLS = frozenset({"bash.elevated", "elevated_bash"})
 SUBAGENT_TOOLS = frozenset({"spawn_subagent"})
 
 
@@ -61,6 +63,32 @@ class PermissionRequest:
     tool_name: str
     category: str
     arguments: dict
+
+
+@dataclass
+class ElevatedCommandRequest:
+    """Host-elevated command request that must pass approval and policy gates."""
+
+    run_id: str
+    command: str
+    reason: str
+    working_dir: str | None = None
+    timeout_seconds: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ElevatedCommandResult:
+    """Normalized result from a host-elevated command execution."""
+
+    run_id: str
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_ms: int | None = None
+    working_dir: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -85,6 +113,8 @@ def normalize_permission_mode(value: str | PermissionMode) -> PermissionMode:
 def classify_tool(tool_name: str) -> tuple[str, bool]:
     """Return (category, is_read_only) for a tool name."""
     name = str(tool_name or "").strip()
+    if name in ELEVATED_EXEC_TOOLS:
+        return ("elevated_exec", False)
     if name in FILE_EDIT_TOOLS:
         return ("file_edit", False)
     if name in EXEC_TOOLS:
@@ -186,7 +216,8 @@ class PermissionController:
                 return PolicyDecision.deny(
                     reason_code="PERMISSION_APPROVER_REQUIRED",
                     message=(
-                        f"Tool '{request.tool_name}' requires approval, but no approver is configured."
+                        f"Tool '{request.tool_name}' requires approval, but no "
+                        "approver is configured."
                     ),
                 )
             return PolicyDecision(
@@ -231,4 +262,3 @@ class PermissionController:
         if category in set(str(v) for v in approved_categories):
             return True
         return False
-

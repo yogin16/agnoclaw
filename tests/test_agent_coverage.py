@@ -8,13 +8,20 @@ from agno.exceptions import AgentRunException
 
 from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
-from agnoclaw.runtime import ExecutionContext, InMemoryEventSink, LifecycleHookRequest
+from agnoclaw.runtime import (
+    ElevatedCommandResult,
+    ExecutionContext,
+    InMemoryEventSink,
+    LifecycleHookRequest,
+    PolicyDecision,
+)
 from agnoclaw.runtime.errors import HarnessError
 
 
 def _make_harness(tmp_path, **kwargs):
     """Create a harness with mocked internals."""
     mock_agent = MagicMock()
+    config = kwargs.pop("config", HarnessConfig())
 
     def _agent_ctor(*args, **kw):
         mock_agent.system_message = kw.get("system_message")
@@ -26,7 +33,7 @@ def _make_harness(tmp_path, **kwargs):
         with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
             harness = AgentHarness(
                 workspace_dir=tmp_path,
-                config=HarnessConfig(),
+                config=config,
                 **kwargs,
             )
     return harness, mock_agent
@@ -184,6 +191,151 @@ async def test_async_lifecycle_hook_updates_request(tmp_path):
 
     assert isinstance(result, LifecycleHookRequest)
     assert result.metadata == {"done": True, "async": True}
+
+
+def test_run_elevated_command_requires_approver(tmp_path):
+    sink = InMemoryEventSink()
+    harness, _ = _make_harness(tmp_path, event_sink=sink)
+
+    with pytest.raises(HarnessError) as exc:
+        harness.run_elevated_command("printf denied", reason="host diagnostic")
+
+    assert exc.value.code == "ELEVATED_APPROVER_REQUIRED"
+    assert [event.event_type for event in sink.events] == [
+        "elevated.command.requested",
+        "policy.decision",
+        "elevated.command.rejected",
+    ]
+    assert sink.events[-1].payload["reason_code"] == "ELEVATED_APPROVER_REQUIRED"
+
+
+def test_run_elevated_command_uses_approval_gate_and_audit_events(tmp_path):
+    sink = InMemoryEventSink()
+    approver = MagicMock()
+    approver.approve.return_value = True
+    harness, _ = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        permission_mode="default",
+        permission_approver=approver,
+    )
+
+    result = harness.run_elevated_command(
+        "printf elevated",
+        reason="verify host execution path",
+    )
+
+    assert isinstance(result, ElevatedCommandResult)
+    assert result.stdout == "elevated"
+    assert result.stderr == ""
+    assert result.exit_code == 0
+    permission_request = approver.approve.call_args.args[0]
+    assert permission_request.tool_name == "bash.elevated"
+    assert permission_request.category == "elevated_exec"
+    assert permission_request.arguments["reason"] == "verify host execution path"
+    event_types = [event.event_type for event in sink.events]
+    assert event_types == [
+        "elevated.command.requested",
+        "policy.decision",
+        "elevated.command.approved",
+        "elevated.command.started",
+        "policy.decision",
+        "elevated.command.completed",
+    ]
+    assert sink.events[-1].payload["exit_code"] == 0
+
+
+def test_run_elevated_command_keeps_guardrails_before_approval(tmp_path):
+    sink = InMemoryEventSink()
+    approver = MagicMock()
+    approver.approve.return_value = True
+    harness, _ = _make_harness(
+        tmp_path,
+        config=HarnessConfig(network_enabled=False),
+        event_sink=sink,
+        permission_mode="default",
+        permission_approver=approver,
+    )
+
+    with pytest.raises(HarnessError) as exc:
+        harness.run_elevated_command(
+            "curl https://example.com",
+            reason="verify guardrail ordering",
+        )
+
+    assert exc.value.code == "GUARDRAIL_DENIED"
+    approver.approve.assert_not_called()
+    assert [event.event_type for event in sink.events] == [
+        "elevated.command.requested",
+        "guardrail.violation",
+        "elevated.command.rejected",
+    ]
+    assert sink.events[-1].payload["reason_code"] == "ELEVATED_GUARDRAIL_DENIED"
+
+
+def test_run_elevated_command_emits_rejected_event_for_policy_denial(tmp_path):
+    sink = InMemoryEventSink()
+    approver = MagicMock()
+    approver.approve.return_value = True
+
+    class DenyElevatedPolicy:
+        def before_tool_call(self, request, context):
+            del context
+            if request.tool_name == "bash.elevated":
+                return PolicyDecision.deny(
+                    reason_code="NO_ELEVATED",
+                    message="elevated execution disabled",
+                )
+            return PolicyDecision.allow()
+
+    harness, _ = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        permission_mode="default",
+        permission_approver=approver,
+        policy_engine=DenyElevatedPolicy(),
+    )
+
+    with pytest.raises(HarnessError) as exc:
+        harness.run_elevated_command(
+            "printf blocked",
+            reason="verify policy rejection",
+        )
+
+    assert exc.value.code == "POLICY_DENIED"
+    approver.approve.assert_not_called()
+    assert [event.event_type for event in sink.events] == [
+        "elevated.command.requested",
+        "elevated.command.rejected",
+        "policy.decision",
+    ]
+    assert sink.events[1].payload["reason_code"] == "NO_ELEVATED"
+
+
+@pytest.mark.asyncio
+async def test_arun_elevated_command_accepts_async_approver(tmp_path):
+    sink = InMemoryEventSink()
+
+    class AsyncApprover:
+        async def approve(self, request, context):
+            assert request.category == "elevated_exec"
+            assert context.metadata["source"] == "elevated_command"
+            return True
+
+    harness, _ = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        permission_mode="default",
+        permission_approver=AsyncApprover(),
+    )
+
+    result = await harness.arun_elevated_command(
+        "printf async-elevated",
+        reason="verify async approval",
+    )
+
+    assert result.stdout == "async-elevated"
+    assert [event.event_type for event in sink.events][-1] == "elevated.command.completed"
 
 
 # ── _apply_redactions_to_object ─────────────────────────────────────────

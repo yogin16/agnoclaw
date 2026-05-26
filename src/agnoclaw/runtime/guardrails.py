@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import urlparse
 
 from .hooks import ToolCallRequest
@@ -98,7 +99,10 @@ class RuntimeGuardrails:
                 violations.append(
                     GuardrailViolation(
                         code="PATH_BLOCKED_ROOT",
-                        message=f"Tool '{request.tool_name}' path is under blocked root: {blocked_root}",
+                        message=(
+                            f"Tool '{request.tool_name}' path is under blocked "
+                            f"root: {blocked_root}"
+                        ),
                         details={
                             "tool_name": request.tool_name,
                             "arg_key": arg_key,
@@ -109,7 +113,10 @@ class RuntimeGuardrails:
                 )
                 continue
 
-            if self.path_allowed_roots and self._first_matching_root(resolved, self.path_allowed_roots) is None:
+            if (
+                self.path_allowed_roots
+                and self._first_matching_root(resolved, self.path_allowed_roots) is None
+            ):
                 violations.append(
                     GuardrailViolation(
                         code="PATH_OUTSIDE_ALLOWED_ROOTS",
@@ -129,7 +136,9 @@ class RuntimeGuardrails:
         tool_name = request.tool_name
         arguments = request.arguments
 
-        if (tool_name in _NETWORK_TOOL_NAMES or tool_name in _BROWSER_TOOL_NAMES) and not self.network_enabled:
+        if (
+            tool_name in _NETWORK_TOOL_NAMES or tool_name in _BROWSER_TOOL_NAMES
+        ) and not self.network_enabled:
             violations.append(
                 GuardrailViolation(
                     code="NETWORK_DISABLED",
@@ -148,20 +157,32 @@ class RuntimeGuardrails:
             if isinstance(url, str):
                 violations.extend(self._validate_url(url=url, tool_name=tool_name, arg_key="url"))
 
-        if tool_name in {"bash", "bash_start"} and self.network_block_in_bash:
+        if tool_name in {"bash", "bash_start", "bash.elevated"} and self.network_block_in_bash:
             command = arguments.get("command")
             if isinstance(command, str):
-                command_has_network = bool(_BASH_NETWORK_COMMAND_RE.search(command) or _URL_RE.search(command))
+                command_has_network = bool(
+                    _BASH_NETWORK_COMMAND_RE.search(command)
+                    or _URL_RE.search(command)
+                )
                 if command_has_network and not self.network_enabled:
                     violations.append(
                         GuardrailViolation(
                             code="NETWORK_DISABLED_BASH",
-                            message="bash command appears to perform network access while network is disabled",
-                            details={"tool_name": "bash", "command": command[:200]},
+                            message=(
+                                "bash command appears to perform network access "
+                                "while network is disabled"
+                            ),
+                            details={"tool_name": tool_name, "command": command[:200]},
                         )
                     )
                 for url in _URL_RE.findall(command):
-                    violations.extend(self._validate_url(url=url, tool_name=tool_name, arg_key="command"))
+                    violations.extend(
+                        self._validate_url(
+                            url=url,
+                            tool_name=tool_name,
+                            arg_key="command",
+                        )
+                    )
         return violations
 
     def _validate_url(self, *, url: str, tool_name: str, arg_key: str) -> list[GuardrailViolation]:
@@ -240,7 +261,11 @@ class RuntimeGuardrails:
 
     @staticmethod
     def _normalize_roots(roots: Iterable[str]) -> tuple[Path, ...]:
-        return tuple(Path(root).expanduser().resolve(strict=False) for root in roots if str(root).strip())
+        return tuple(
+            Path(root).expanduser().resolve(strict=False)
+            for root in roots
+            if str(root).strip()
+        )
 
     @staticmethod
     def _normalize_hosts(hosts: Iterable[str]) -> tuple[str, ...]:

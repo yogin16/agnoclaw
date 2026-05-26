@@ -51,6 +51,8 @@ from .runtime import (
     AgnoAuthError,
     AgnoConfigError,
     AllowAllPolicyEngine,
+    ElevatedCommandRequest,
+    ElevatedCommandResult,
     EventSinkMode,
     ExecutionContext,
     GuardrailViolation,
@@ -96,6 +98,8 @@ __all__ = [
     "AutoApproveSkillInstallApprover",
     "BrowserBackend",
     "EventSinkMode",
+    "ElevatedCommandRequest",
+    "ElevatedCommandResult",
     "ExecutionContext",
     "GuardrailViolation",
     "HarnessAgent",  # backward compat

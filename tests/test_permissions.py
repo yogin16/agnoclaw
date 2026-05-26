@@ -74,6 +74,12 @@ def test_classify_exec():
     assert read_only is False
 
 
+def test_classify_elevated_exec():
+    cat, read_only = classify_tool("bash.elevated")
+    assert cat == "elevated_exec"
+    assert read_only is False
+
+
 def test_classify_subagent():
     cat, read_only = classify_tool("spawn_subagent")
     assert cat == "subagent"

@@ -84,6 +84,8 @@ from .runtime import (
     AllowAllPolicyEngine,
     EventSink,
     EventSinkMode,
+    ElevatedCommandRequest,
+    ElevatedCommandResult,
     ExecutionContext,
     HarnessError,
     LifecycleHook,
@@ -92,6 +94,7 @@ from .runtime import (
     PermissionApprover,
     PermissionController,
     PermissionMode,
+    PermissionRequest,
     PolicyAction,
     PolicyDecision,
     PolicyEngine,
@@ -111,6 +114,7 @@ from .runtime import (
 from .skills.backends import SkillInstallApprover
 from .skills.registry import SkillRegistry
 from .tools import get_default_tools
+from .tools.backends import LocalCommandExecutor
 from .workspace import Workspace
 
 logger = logging.getLogger("agnoclaw.agent")
@@ -577,6 +581,9 @@ class AgentHarness:
         effective_backend = backend or RuntimeBackend()
         resolved_backend = effective_backend.resolve(workspace_dir=self.workspace.path)
         self._session_command_executor = resolved_backend.command_executor
+        self._elevated_command_executor = LocalCommandExecutor(
+            workspace_dir=self.workspace.path
+        )
         self._ensure_sandbox_dir()
         resolved_skill_runtime_backend = resolved_backend.skill_runtime
         self._guardrails = RuntimeGuardrails(
@@ -1342,6 +1349,573 @@ class AgentHarness:
             },
         )
         return after
+
+    def run_elevated_command(
+        self,
+        command: str,
+        *,
+        reason: str,
+        working_dir: str | Path | None = None,
+        timeout_seconds: int | None = None,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ElevatedCommandResult:
+        """Run a host-elevated command after explicit approval and audit events."""
+        request, ctx = self._build_elevated_command_request(
+            command,
+            reason=reason,
+            working_dir=working_dir,
+            timeout_seconds=timeout_seconds,
+            context=context,
+            metadata=metadata,
+        )
+        tool_request = self._elevated_tool_request(request)
+        payload = self._elevated_request_payload(request)
+        self._emit_event_sync(
+            event_type="elevated.command.requested",
+            run_id=request.run_id,
+            context=ctx,
+            payload=payload,
+        )
+        try:
+            self._run_elevated_preflight_sync(
+                request=request,
+                tool_request=tool_request,
+                context=ctx,
+            )
+            self._approve_elevated_command_sync(
+                request=request,
+                tool_request=tool_request,
+                context=ctx,
+            )
+            self._emit_event_sync(
+                event_type="elevated.command.started",
+                run_id=request.run_id,
+                context=ctx,
+                payload=payload,
+            )
+            command_result = self._elevated_command_executor.run(
+                command=request.command,
+                workdir=request.working_dir,
+                timeout_seconds=request.timeout_seconds,
+            )
+            tool_result = ToolCallResult(
+                run_id=request.run_id,
+                tool_name=tool_request.tool_name,
+                arguments=tool_request.arguments,
+                output=command_result.stdout,
+                error=command_result.stderr if command_result.exit_code else None,
+                metadata=tool_request.metadata,
+            )
+            decision = self._run_policy_sync(
+                method_name="after_tool_call",
+                payload=tool_result,
+                run_input=None,
+                context=ctx,
+            )
+            self._enforce_policy_decision(
+                decision=decision,
+                checkpoint="after_tool_call",
+                run_id=request.run_id,
+                context=ctx,
+            )
+            stdout = command_result.stdout
+            stderr = command_result.stderr
+            if decision.action == PolicyAction.ALLOW_WITH_REDACTION:
+                stdout = self._apply_redactions_to_object(stdout, decision.redactions)
+                stderr = self._apply_redactions_to_object(stderr, decision.redactions)
+            result = ElevatedCommandResult(
+                run_id=request.run_id,
+                command=request.command,
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=command_result.exit_code,
+                duration_ms=command_result.duration_ms,
+                working_dir=request.working_dir,
+                metadata=dict(request.metadata),
+            )
+            self._emit_event_sync(
+                event_type="elevated.command.completed",
+                run_id=request.run_id,
+                context=ctx,
+                payload={
+                    **payload,
+                    "exit_code": result.exit_code,
+                    "duration_ms": result.duration_ms,
+                    "stdout_chars": len(result.stdout),
+                    "stderr_chars": len(result.stderr),
+                },
+            )
+            return result
+        except HarnessError:
+            raise
+        except Exception as exc:
+            self._emit_event_sync(
+                event_type="elevated.command.failed",
+                run_id=request.run_id,
+                context=ctx,
+                payload={**payload, "error": str(exc)},
+            )
+            raise HarnessError(
+                code="ELEVATED_COMMAND_FAILED",
+                category="elevated",
+                message=f"Elevated command failed: {exc}",
+                retryable=False,
+                details={"run_id": request.run_id},
+            ) from exc
+
+    async def arun_elevated_command(
+        self,
+        command: str,
+        *,
+        reason: str,
+        working_dir: str | Path | None = None,
+        timeout_seconds: int | None = None,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ElevatedCommandResult:
+        """Async variant of run_elevated_command."""
+        request, ctx = self._build_elevated_command_request(
+            command,
+            reason=reason,
+            working_dir=working_dir,
+            timeout_seconds=timeout_seconds,
+            context=context,
+            metadata=metadata,
+        )
+        tool_request = self._elevated_tool_request(request)
+        payload = self._elevated_request_payload(request)
+        await self._emit_event_async(
+            event_type="elevated.command.requested",
+            run_id=request.run_id,
+            context=ctx,
+            payload=payload,
+        )
+        try:
+            await self._run_elevated_preflight_async(
+                request=request,
+                tool_request=tool_request,
+                context=ctx,
+            )
+            await self._approve_elevated_command_async(
+                request=request,
+                tool_request=tool_request,
+                context=ctx,
+            )
+            await self._emit_event_async(
+                event_type="elevated.command.started",
+                run_id=request.run_id,
+                context=ctx,
+                payload=payload,
+            )
+            command_result = await asyncio.to_thread(
+                self._elevated_command_executor.run,
+                command=request.command,
+                workdir=request.working_dir,
+                timeout_seconds=request.timeout_seconds,
+            )
+            tool_result = ToolCallResult(
+                run_id=request.run_id,
+                tool_name=tool_request.tool_name,
+                arguments=tool_request.arguments,
+                output=command_result.stdout,
+                error=command_result.stderr if command_result.exit_code else None,
+                metadata=tool_request.metadata,
+            )
+            decision = await self._run_policy_async(
+                method_name="after_tool_call",
+                payload=tool_result,
+                run_input=None,
+                context=ctx,
+            )
+            await self._enforce_policy_decision_async(
+                decision=decision,
+                checkpoint="after_tool_call",
+                run_id=request.run_id,
+                context=ctx,
+            )
+            stdout = command_result.stdout
+            stderr = command_result.stderr
+            if decision.action == PolicyAction.ALLOW_WITH_REDACTION:
+                stdout = self._apply_redactions_to_object(stdout, decision.redactions)
+                stderr = self._apply_redactions_to_object(stderr, decision.redactions)
+            result = ElevatedCommandResult(
+                run_id=request.run_id,
+                command=request.command,
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=command_result.exit_code,
+                duration_ms=command_result.duration_ms,
+                working_dir=request.working_dir,
+                metadata=dict(request.metadata),
+            )
+            await self._emit_event_async(
+                event_type="elevated.command.completed",
+                run_id=request.run_id,
+                context=ctx,
+                payload={
+                    **payload,
+                    "exit_code": result.exit_code,
+                    "duration_ms": result.duration_ms,
+                    "stdout_chars": len(result.stdout),
+                    "stderr_chars": len(result.stderr),
+                },
+            )
+            return result
+        except HarnessError:
+            raise
+        except Exception as exc:
+            await self._emit_event_async(
+                event_type="elevated.command.failed",
+                run_id=request.run_id,
+                context=ctx,
+                payload={**payload, "error": str(exc)},
+            )
+            raise HarnessError(
+                code="ELEVATED_COMMAND_FAILED",
+                category="elevated",
+                message=f"Elevated command failed: {exc}",
+                retryable=False,
+                details={"run_id": request.run_id},
+            ) from exc
+
+    def _build_elevated_command_request(
+        self,
+        command: str,
+        *,
+        reason: str,
+        working_dir: str | Path | None,
+        timeout_seconds: int | None,
+        context: ExecutionContext | None,
+        metadata: dict[str, Any] | None,
+    ) -> tuple[ElevatedCommandRequest, ExecutionContext]:
+        command_text = str(command or "").strip()
+        reason_text = str(reason or "").strip()
+        if not command_text:
+            raise HarnessError(
+                code="ELEVATED_COMMAND_REQUIRED",
+                category="elevated",
+                message="Elevated command cannot be empty.",
+                retryable=False,
+            )
+        if not reason_text:
+            raise HarnessError(
+                code="ELEVATED_REASON_REQUIRED",
+                category="elevated",
+                message="Elevated command requires a human-readable reason.",
+                retryable=False,
+            )
+        request_metadata = dict(metadata or {})
+        request_metadata.setdefault("source", "elevated_command")
+        ctx = context.with_metadata(request_metadata) if context else self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata=request_metadata,
+        )
+        request = ElevatedCommandRequest(
+            run_id=f"elevated_{uuid4().hex}",
+            command=command_text,
+            reason=reason_text,
+            working_dir=str(working_dir) if working_dir is not None else None,
+            timeout_seconds=timeout_seconds,
+            metadata=request_metadata,
+        )
+        return request, ctx
+
+    @staticmethod
+    def _elevated_request_payload(
+        request: ElevatedCommandRequest,
+    ) -> dict[str, Any]:
+        return {
+            "command": request.command,
+            "reason": request.reason,
+            "working_dir": request.working_dir,
+            "timeout_seconds": request.timeout_seconds,
+            "metadata": dict(request.metadata),
+        }
+
+    @staticmethod
+    def _elevated_tool_request(
+        request: ElevatedCommandRequest,
+    ) -> ToolCallRequest:
+        return ToolCallRequest(
+            run_id=request.run_id,
+            tool_name="bash.elevated",
+            arguments={
+                "command": request.command,
+                "reason": request.reason,
+                "working_dir": request.working_dir,
+                "timeout_seconds": request.timeout_seconds,
+            },
+            metadata={"elevated": True, **request.metadata},
+        )
+
+    def _run_elevated_preflight_sync(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+    ) -> None:
+        violations = self._guardrails.check(tool_request)
+        if violations:
+            for violation in violations:
+                self._emit_event_sync(
+                    event_type="guardrail.violation",
+                    run_id=request.run_id,
+                    context=context,
+                    payload={
+                        "tool_name": tool_request.tool_name,
+                        "code": violation.code,
+                        "message": violation.message,
+                        "details": violation.details,
+                    },
+                )
+            self._emit_event_sync(
+                event_type="elevated.command.rejected",
+                run_id=request.run_id,
+                context=context,
+                payload={
+                    **self._elevated_request_payload(request),
+                    "reason_code": "ELEVATED_GUARDRAIL_DENIED",
+                },
+            )
+            raise HarnessError(
+                code="GUARDRAIL_DENIED",
+                category="guardrail",
+                message="Guardrail denied elevated command.",
+                retryable=False,
+                details={"run_id": request.run_id},
+            )
+        decision = self._run_policy_sync(
+            method_name="before_tool_call",
+            payload=tool_request,
+            run_input=None,
+            context=context,
+        )
+        if decision.action == PolicyAction.DENY:
+            self._emit_event_sync(
+                event_type="elevated.command.rejected",
+                run_id=request.run_id,
+                context=context,
+                payload={
+                    **self._elevated_request_payload(request),
+                    "reason_code": decision.reason_code or "ELEVATED_POLICY_DENIED",
+                    "message": decision.message,
+                },
+            )
+        self._enforce_policy_decision(
+            decision=decision,
+            checkpoint="before_tool_call",
+            run_id=request.run_id,
+            context=context,
+        )
+
+    async def _run_elevated_preflight_async(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+    ) -> None:
+        violations = self._guardrails.check(tool_request)
+        if violations:
+            for violation in violations:
+                await self._emit_event_async(
+                    event_type="guardrail.violation",
+                    run_id=request.run_id,
+                    context=context,
+                    payload={
+                        "tool_name": tool_request.tool_name,
+                        "code": violation.code,
+                        "message": violation.message,
+                        "details": violation.details,
+                    },
+                )
+            await self._emit_event_async(
+                event_type="elevated.command.rejected",
+                run_id=request.run_id,
+                context=context,
+                payload={
+                    **self._elevated_request_payload(request),
+                    "reason_code": "ELEVATED_GUARDRAIL_DENIED",
+                },
+            )
+            raise HarnessError(
+                code="GUARDRAIL_DENIED",
+                category="guardrail",
+                message="Guardrail denied elevated command.",
+                retryable=False,
+                details={"run_id": request.run_id},
+            )
+        decision = await self._run_policy_async(
+            method_name="before_tool_call",
+            payload=tool_request,
+            run_input=None,
+            context=context,
+        )
+        if decision.action == PolicyAction.DENY:
+            await self._emit_event_async(
+                event_type="elevated.command.rejected",
+                run_id=request.run_id,
+                context=context,
+                payload={
+                    **self._elevated_request_payload(request),
+                    "reason_code": decision.reason_code or "ELEVATED_POLICY_DENIED",
+                    "message": decision.message,
+                },
+            )
+        await self._enforce_policy_decision_async(
+            decision=decision,
+            checkpoint="before_tool_call",
+            run_id=request.run_id,
+            context=context,
+        )
+
+    def _approve_elevated_command_sync(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+    ) -> None:
+        approver = self._permission_controller.approver
+        if approver is None:
+            self._reject_elevated_command_sync(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_APPROVER_REQUIRED",
+                message="Elevated commands require a permission approver.",
+            )
+        permission_request = PermissionRequest(
+            run_id=request.run_id,
+            tool_name=tool_request.tool_name,
+            category="elevated_exec",
+            arguments=dict(tool_request.arguments),
+        )
+        try:
+            allowed = self._resolve_sync_value(
+                approver.approve(permission_request, context),
+                operation="permission.approve:bash.elevated",
+            )
+        except Exception as exc:
+            self._reject_elevated_command_sync(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_APPROVAL_FAILED",
+                message=str(exc),
+            )
+        if not bool(allowed):
+            self._reject_elevated_command_sync(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_REJECTED",
+                message="Elevated command approval was rejected.",
+            )
+        self._emit_event_sync(
+            event_type="elevated.command.approved",
+            run_id=request.run_id,
+            context=context,
+            payload=self._elevated_request_payload(request),
+        )
+
+    async def _approve_elevated_command_async(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+    ) -> None:
+        approver = self._permission_controller.approver
+        if approver is None:
+            await self._reject_elevated_command_async(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_APPROVER_REQUIRED",
+                message="Elevated commands require a permission approver.",
+            )
+        permission_request = PermissionRequest(
+            run_id=request.run_id,
+            tool_name=tool_request.tool_name,
+            category="elevated_exec",
+            arguments=dict(tool_request.arguments),
+        )
+        try:
+            allowed = await self._resolve_async_value(
+                approver.approve(permission_request, context)
+            )
+        except Exception as exc:
+            await self._reject_elevated_command_async(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_APPROVAL_FAILED",
+                message=str(exc),
+            )
+        if not bool(allowed):
+            await self._reject_elevated_command_async(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_REJECTED",
+                message="Elevated command approval was rejected.",
+            )
+        await self._emit_event_async(
+            event_type="elevated.command.approved",
+            run_id=request.run_id,
+            context=context,
+            payload=self._elevated_request_payload(request),
+        )
+
+    def _reject_elevated_command_sync(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        context: ExecutionContext,
+        reason_code: str,
+        message: str,
+    ) -> None:
+        self._emit_event_sync(
+            event_type="elevated.command.rejected",
+            run_id=request.run_id,
+            context=context,
+            payload={
+                **self._elevated_request_payload(request),
+                "reason_code": reason_code,
+                "message": message,
+            },
+        )
+        raise HarnessError(
+            code=reason_code,
+            category="elevated",
+            message=message,
+            retryable=False,
+            details={"run_id": request.run_id},
+        )
+
+    async def _reject_elevated_command_async(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        context: ExecutionContext,
+        reason_code: str,
+        message: str,
+    ) -> None:
+        await self._emit_event_async(
+            event_type="elevated.command.rejected",
+            run_id=request.run_id,
+            context=context,
+            payload={
+                **self._elevated_request_payload(request),
+                "reason_code": reason_code,
+                "message": message,
+            },
+        )
+        raise HarnessError(
+            code=reason_code,
+            category="elevated",
+            message=message,
+            retryable=False,
+            details={"run_id": request.run_id},
+        )
 
     def add_pre_run_hook(self, hook: PreRunHook) -> None:
         """Register a pre-run hook."""

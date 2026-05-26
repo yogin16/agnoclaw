@@ -36,6 +36,8 @@ from .hooks import (
     ToolCallResult,
 )
 from .permissions import (
+    ElevatedCommandRequest,
+    ElevatedCommandResult,
     PermissionApprover,
     PermissionController,
     PermissionMode,
@@ -72,6 +74,8 @@ __all__ = [
     "EventSink",
     "EventSinkMode",
     "ExecutionContext",
+    "ElevatedCommandRequest",
+    "ElevatedCommandResult",
     "HarnessError",
     "HarnessEvent",
     "InMemoryEventSink",
