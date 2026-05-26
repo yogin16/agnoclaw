@@ -1,9 +1,9 @@
 """Tests for the heartbeat daemon."""
 
-import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
 from datetime import time
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+import pytest
 
 # ── HeartbeatDaemon tests ────────────────────────────────────────────────
 
@@ -25,13 +25,13 @@ def test_heartbeat_prompt_exists():
 
 
 def test_heartbeat_prompt_mentions_ok():
-    from agnoclaw.heartbeat.daemon import HEARTBEAT_PROMPT, HEARTBEAT_OK_TOKEN
+    from agnoclaw.heartbeat.daemon import HEARTBEAT_OK_TOKEN, HEARTBEAT_PROMPT
     assert HEARTBEAT_OK_TOKEN in HEARTBEAT_PROMPT
 
 
 def test_heartbeat_daemon_init():
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -51,8 +51,8 @@ def test_heartbeat_daemon_init():
 
 
 def test_heartbeat_is_active_hours_within_range():
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -72,8 +72,8 @@ def test_heartbeat_is_active_hours_within_range():
 
 
 def test_heartbeat_is_active_hours_outside_range():
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -93,8 +93,8 @@ def test_heartbeat_is_active_hours_outside_range():
 
 
 def test_heartbeat_is_active_hours_at_start():
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -150,8 +150,8 @@ def test_heartbeat_ok_suppression_long_response():
 @pytest.mark.asyncio
 async def test_heartbeat_trigger_now_skips_empty_checklist():
     """trigger_now should return None when HEARTBEAT.md is empty."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -166,8 +166,8 @@ async def test_heartbeat_trigger_now_skips_empty_checklist():
 
 @pytest.mark.asyncio
 async def test_heartbeat_run_heartbeat_skips_outside_active_hours():
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -311,7 +311,7 @@ def test_seconds_until_next_cron_or_minus_one():
 
 
 def test_daemon_add_cron_job():
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -321,6 +321,66 @@ def test_daemon_add_cron_job():
     daemon.add_cron_job(job)
     assert len(daemon._cron_jobs) == 1
     assert daemon._cron_jobs[0].name == "standup"
+
+
+def test_daemon_cron_jobs_persist_to_scheduler_backend():
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+    from agnoclaw.runtime import InMemorySchedulerBackend
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    backend = InMemorySchedulerBackend()
+    daemon = HeartbeatDaemon(agent=mock_agent, scheduler_backend=backend)
+
+    daemon.add_cron_job(CronJob(name="standup", schedule="30m", prompt="daily standup"))
+
+    assert backend.get_job("standup") is not None
+    assert daemon.list_cron_jobs()[0].name == "standup"
+
+
+def test_daemon_loads_cron_jobs_from_scheduler_backend():
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime import InMemorySchedulerBackend, SchedulerJob
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    backend = InMemorySchedulerBackend()
+    backend.upsert_job(SchedulerJob(name="stored", schedule="1h", prompt="stored job"))
+
+    daemon = HeartbeatDaemon(agent=mock_agent, scheduler_backend=backend)
+
+    assert [job.name for job in daemon.list_cron_jobs()] == ["stored"]
+
+
+def test_daemon_remove_and_disable_cron_job_updates_scheduler_backend():
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+    from agnoclaw.runtime import InMemorySchedulerBackend
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    backend = InMemorySchedulerBackend()
+    daemon = HeartbeatDaemon(agent=mock_agent, scheduler_backend=backend)
+    daemon.add_cron_job(CronJob(name="stored", schedule="1h", prompt="stored job"))
+
+    assert daemon.set_cron_enabled("stored", False) is True
+    assert backend.get_job("stored").enabled is False
+    assert daemon.remove_cron_job("stored") is True
+    assert backend.get_job("stored") is None
+
+
+def test_json_scheduler_backend_persists_jobs_and_runs(tmp_path):
+    from agnoclaw.runtime import JsonSchedulerBackend, SchedulerJob
+
+    path = tmp_path / "schedules.json"
+    backend = JsonSchedulerBackend(path)
+    backend.upsert_job(SchedulerJob(name="daily", schedule="0 9 * * *", prompt="brief"))
+    run = backend.record_run_start("daily", run_id="run-1")
+    backend.record_run_finish(run.run_id, status="completed", output="ok")
+
+    reloaded = JsonSchedulerBackend(path)
+
+    assert reloaded.get_job("daily").prompt == "brief"
+    assert reloaded.list_runs(job_name="daily")[0].output == "ok"
 
 
 @pytest.mark.asyncio
@@ -339,7 +399,7 @@ async def test_run_isolated_uses_async_arun():
     with patch("agnoclaw.agent.AgentHarness", return_value=mock_harness):
         await daemon._run_isolated(job, "Ping now")
 
-    mock_harness.arun.assert_awaited_once_with("Ping now", skill="test-skill")
+    mock_harness.arun.assert_awaited_once_with("Ping now", skill="test-skill", metadata=None)
 
 
 # ── _filter_response tests ──────────────────────────────────────────────
@@ -395,8 +455,8 @@ def test_filter_response_empty_returns_none():
 
 def test_filter_response_ok_with_long_content():
     """HEARTBEAT_OK with long content beyond threshold returns the extra content."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -428,7 +488,7 @@ def test_default_alert_prints(capsys):
 @pytest.mark.asyncio
 async def test_start_creates_tasks():
     """start() creates asyncio tasks for heartbeat and cron jobs."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -467,7 +527,7 @@ async def test_start_twice_is_noop():
 @pytest.mark.asyncio
 async def test_stop_cancels_tasks():
     """stop() cancels running tasks."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -502,7 +562,7 @@ async def test_trigger_cron_not_found():
 @pytest.mark.asyncio
 async def test_trigger_cron_found():
     """trigger_cron executes a registered job."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -588,7 +648,7 @@ async def test_run_heartbeat_no_heartbeat_content():
 @pytest.mark.asyncio
 async def test_run_cron_job_non_isolated():
     """Non-isolated cron job runs on the main agent."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -599,13 +659,39 @@ async def test_run_cron_job_non_isolated():
 
     result = await daemon._run_cron_job(job)
     assert result == "done"
-    mock_agent.arun.assert_awaited_once_with("do work", skill="my-skill")
+    mock_agent.arun.assert_awaited_once_with("do work", skill="my-skill", metadata=ANY)
+
+
+@pytest.mark.asyncio
+async def test_run_cron_job_records_run_history():
+    """Cron job executions should be recorded when a scheduler backend is configured."""
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+    from agnoclaw.runtime import InMemorySchedulerBackend
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="done"))
+    backend = InMemorySchedulerBackend()
+
+    daemon = HeartbeatDaemon(agent=mock_agent, scheduler_backend=backend)
+    job = CronJob(name="main-job", schedule="1h", prompt="do work", skill="my-skill")
+
+    result = await daemon._run_cron_job(job)
+    runs = backend.list_runs(job_name="main-job")
+
+    assert result == "done"
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    assert runs[0].output == "done"
+    metadata = mock_agent.arun.call_args.kwargs["metadata"]
+    assert metadata["scheduler"]["schedule_id"] == "main-job"
+    assert metadata["scheduler"]["schedule_run_id"] == runs[0].run_id
 
 
 @pytest.mark.asyncio
 async def test_run_cron_job_exception_returns_none():
     """Cron job that raises returns None (logged, not propagated)."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -618,13 +704,34 @@ async def test_run_cron_job_exception_returns_none():
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_run_cron_job_records_failed_run_history():
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+    from agnoclaw.runtime import InMemorySchedulerBackend
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.arun = AsyncMock(side_effect=RuntimeError("boom"))
+    backend = InMemorySchedulerBackend()
+
+    daemon = HeartbeatDaemon(agent=mock_agent, scheduler_backend=backend)
+    job = CronJob(name="fail-job", schedule="1h", prompt="fail")
+
+    result = await daemon._run_cron_job(job)
+    runs = backend.list_runs(job_name="fail-job")
+
+    assert result is None
+    assert runs[0].status == "failed"
+    assert runs[0].error == "boom"
+
+
 # ── Active hours edge cases ─────────────────────────────────────────────
 
 
 def test_active_hours_overnight_range():
     """Overnight range (e.g. 22:00-06:00) works correctly."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -652,8 +759,8 @@ def test_active_hours_overnight_range():
 
 def test_active_hours_parse_failure_returns_true():
     """If active hours can't be parsed, always return True (active)."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -670,7 +777,7 @@ def test_active_hours_parse_failure_returns_true():
 
 def test_add_cron_job_invalid_schedule_raises():
     """add_cron_job raises ValueError for clearly invalid schedule."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
@@ -684,7 +791,7 @@ def test_add_cron_job_invalid_schedule_raises():
 
 def test_add_cron_job_disabled_not_started():
     """Disabled cron jobs are registered but not started."""
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()

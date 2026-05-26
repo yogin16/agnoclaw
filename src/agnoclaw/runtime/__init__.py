@@ -49,6 +49,13 @@ from .policy import (
     RedactionRule,
     apply_redactions,
 )
+from .scheduler import (
+    InMemorySchedulerBackend,
+    JsonSchedulerBackend,
+    SchedulerBackend,
+    SchedulerJob,
+    SchedulerRunRecord,
+)
 
 __all__ = [
     "AllowAllPolicyEngine",
@@ -65,6 +72,8 @@ __all__ = [
     "HarnessError",
     "HarnessEvent",
     "InMemoryEventSink",
+    "InMemorySchedulerBackend",
+    "JsonSchedulerBackend",
     "NullEventSink",
     "PolicyAction",
     "PolicyDecision",
@@ -81,6 +90,9 @@ __all__ = [
     "RuntimeGuardrails",
     "RunInput",
     "RunResultEnvelope",
+    "SchedulerBackend",
+    "SchedulerJob",
+    "SchedulerRunRecord",
     "SkillLoadRequest",
     "ToolCallRequest",
     "ToolCallResult",

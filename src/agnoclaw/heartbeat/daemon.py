@@ -42,11 +42,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, time
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING
 
 from agnoclaw.config import HarnessConfig, get_config
+from agnoclaw.runtime.scheduler import SchedulerBackend, SchedulerJob
 from agnoclaw.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -83,12 +85,37 @@ class CronJob:
     name: str
     schedule: str
     prompt: str
-    skill: Optional[str] = None
+    skill: str | None = None
     isolated: bool = False
-    model_id: Optional[str] = None
-    provider: Optional[str] = None
+    model_id: str | None = None
+    provider: str | None = None
     enabled: bool = True
-    _next_run: Optional[datetime] = field(default=None, repr=False, compare=False)
+    _next_run: datetime | None = field(default=None, repr=False, compare=False)
+
+    def to_scheduler_job(self) -> SchedulerJob:
+        return SchedulerJob(
+            name=self.name,
+            schedule=self.schedule,
+            prompt=self.prompt,
+            skill=self.skill,
+            isolated=self.isolated,
+            model_id=self.model_id,
+            provider=self.provider,
+            enabled=self.enabled,
+        )
+
+    @classmethod
+    def from_scheduler_job(cls, job: SchedulerJob) -> CronJob:
+        return cls(
+            name=job.name,
+            schedule=job.schedule,
+            prompt=job.prompt,
+            skill=job.skill,
+            isolated=job.isolated,
+            model_id=job.model_id,
+            provider=job.provider,
+            enabled=job.enabled,
+        )
 
 
 class HeartbeatDaemon:
@@ -105,19 +132,28 @@ class HeartbeatDaemon:
 
     def __init__(
         self,
-        agent: "AgentHarness",
-        on_alert: Optional[Callable[[str], None]] = None,
-        config: Optional[HarnessConfig] = None,
-        workspace: Optional[Workspace] = None,
+        agent: AgentHarness,
+        on_alert: Callable[[str], None] | None = None,
+        config: HarnessConfig | None = None,
+        workspace: Workspace | None = None,
+        scheduler_backend: SchedulerBackend | None = None,
     ):
         self._agent = agent
         self._on_alert = on_alert or self._default_alert
         self._config = config or get_config()
-        self._workspace = workspace or (agent.workspace if hasattr(agent, "workspace") else Workspace())
-        self._task: Optional[asyncio.Task] = None
+        self._workspace = workspace or (
+            agent.workspace if hasattr(agent, "workspace") else Workspace()
+        )
+        self._task: asyncio.Task | None = None
         self._cron_tasks: list[asyncio.Task] = []
         self._running = False
         self._cron_jobs: list[CronJob] = []
+        self._scheduler_backend = scheduler_backend
+        if self._scheduler_backend is not None:
+            self._cron_jobs.extend(
+                CronJob.from_scheduler_job(job)
+                for job in self._scheduler_backend.list_jobs()
+            )
 
     def add_cron_job(self, job: CronJob) -> None:
         """
@@ -144,8 +180,58 @@ class HeartbeatDaemon:
                 "Install croniter: uv add croniter",
                 job.name, job.schedule,
             )
+        self._upsert_cron_job(job)
+        if self._scheduler_backend is not None:
+            self._scheduler_backend.upsert_job(job.to_scheduler_job())
+        logger.info(
+            "Registered cron job '%s' (schedule=%s, isolated=%s)",
+            job.name,
+            job.schedule,
+            job.isolated,
+        )
+
+    def list_cron_jobs(self, *, enabled: bool | None = None) -> list[CronJob]:
+        """List registered cron jobs from memory or the configured scheduler backend."""
+        jobs = list(self._cron_jobs)
+        if enabled is not None:
+            jobs = [job for job in jobs if job.enabled is enabled]
+        return sorted(jobs, key=lambda job: job.name)
+
+    def remove_cron_job(self, name: str) -> bool:
+        """Remove a cron job by name."""
+        before = len(self._cron_jobs)
+        self._cron_jobs = [job for job in self._cron_jobs if job.name != name]
+        removed = len(self._cron_jobs) < before
+        if self._scheduler_backend is not None:
+            removed = self._scheduler_backend.delete_job(name) or removed
+        return removed
+
+    def set_cron_enabled(self, name: str, enabled: bool) -> bool:
+        """Enable or disable a cron job by name."""
+        updated = False
+        for index, job in enumerate(self._cron_jobs):
+            if job.name != name:
+                continue
+            self._cron_jobs[index] = CronJob(
+                name=job.name,
+                schedule=job.schedule,
+                prompt=job.prompt,
+                skill=job.skill,
+                isolated=job.isolated,
+                model_id=job.model_id,
+                provider=job.provider,
+                enabled=enabled,
+            )
+            updated = True
+            break
+        if self._scheduler_backend is not None:
+            backend_job = self._scheduler_backend.set_job_enabled(name, enabled)
+            updated = backend_job is not None or updated
+        return updated
+
+    def _upsert_cron_job(self, job: CronJob) -> None:
+        self._cron_jobs = [existing for existing in self._cron_jobs if existing.name != job.name]
         self._cron_jobs.append(job)
-        logger.info("Registered cron job '%s' (schedule=%s, isolated=%s)", job.name, job.schedule, job.isolated)
 
     def start(self) -> None:
         """Start the heartbeat daemon and any registered cron jobs."""
@@ -160,7 +246,10 @@ class HeartbeatDaemon:
         # Start each cron job
         for job in self._cron_jobs:
             if job.enabled:
-                task = asyncio.create_task(self._run_cron_loop(job), name=f"agnoclaw-cron-{job.name}")
+                task = asyncio.create_task(
+                    self._run_cron_loop(job),
+                    name=f"agnoclaw-cron-{job.name}",
+                )
                 self._cron_tasks.append(task)
 
         logger.info(
@@ -198,7 +287,7 @@ class HeartbeatDaemon:
         except (KeyboardInterrupt, asyncio.CancelledError):
             self.stop()
 
-    async def trigger_now(self) -> Optional[str]:
+    async def trigger_now(self) -> str | None:
         """
         Manually trigger a heartbeat run immediately.
 
@@ -207,7 +296,7 @@ class HeartbeatDaemon:
         """
         return await self._run_heartbeat()
 
-    async def trigger_cron(self, job_name: str) -> Optional[str]:
+    async def trigger_cron(self, job_name: str) -> str | None:
         """
         Manually trigger a named cron job immediately.
 
@@ -235,7 +324,7 @@ class HeartbeatDaemon:
 
             await asyncio.sleep(interval_seconds)
 
-    async def _run_heartbeat(self) -> Optional[str]:
+    async def _run_heartbeat(self) -> str | None:
         """
         Execute one heartbeat run on the main agent's session.
 
@@ -283,25 +372,56 @@ class HeartbeatDaemon:
             if result:
                 self._on_alert(f"[{job.name}] {result}")
 
-    async def _run_cron_job(self, job: CronJob) -> Optional[str]:
+    async def _run_cron_job(self, job: CronJob) -> str | None:
         """Execute a single cron job run."""
         prompt = job.prompt
+        schedule_run = None
+        if self._scheduler_backend is not None:
+            schedule_run = self._scheduler_backend.record_run_start(
+                job.name,
+                metadata={"schedule": job.schedule, "isolated": job.isolated},
+            )
+        metadata = {
+            "scheduler": {
+                "schedule_id": job.name,
+                "schedule_run_id": schedule_run.run_id if schedule_run else None,
+                "schedule_name": job.name,
+            }
+        }
 
         try:
             if job.isolated:
                 # Isolated: fresh agent session — no prior context
-                result = await self._run_isolated(job, prompt)
+                result = await self._run_isolated(job, prompt, metadata=metadata)
             else:
                 # Main session: run on the shared agent (has workspace + history)
-                result = await self._agent.arun(prompt, skill=job.skill)
+                result = await self._agent.arun(prompt, skill=job.skill, metadata=metadata)
 
             content = str(result.content) if result and result.content else ""
+            if schedule_run is not None and self._scheduler_backend is not None:
+                self._scheduler_backend.record_run_finish(
+                    schedule_run.run_id,
+                    status="completed",
+                    output=content,
+                )
             return content if content else None
         except Exception as e:
             logger.error("Cron job '%s' failed: %s", job.name, e)
+            if schedule_run is not None and self._scheduler_backend is not None:
+                self._scheduler_backend.record_run_finish(
+                    schedule_run.run_id,
+                    status="failed",
+                    error=str(e),
+                )
             return None
 
-    async def _run_isolated(self, job: CronJob, prompt: str) -> object:
+    async def _run_isolated(
+        self,
+        job: CronJob,
+        prompt: str,
+        *,
+        metadata: dict | None = None,
+    ) -> object:
         """Run a cron job in a fresh isolated session."""
         from agnoclaw.agent import AgentHarness
 
@@ -320,7 +440,7 @@ class HeartbeatDaemon:
             ),
             config=cfg,
         )
-        return await isolated.arun(prompt, skill=job.skill)
+        return await isolated.arun(prompt, skill=job.skill, metadata=metadata)
 
     # ── Schedule parsing ───────────────────────────────────────────────────────
 
@@ -404,7 +524,7 @@ class HeartbeatDaemon:
 
     # ── HEARTBEAT_OK filtering ─────────────────────────────────────────────────
 
-    def _filter_response(self, content: str) -> Optional[str]:
+    def _filter_response(self, content: str) -> str | None:
         """Return None if HEARTBEAT_OK and under threshold; else return content."""
         if HEARTBEAT_OK_TOKEN in content:
             if len(content) <= self._config.heartbeat.ok_threshold_chars:
