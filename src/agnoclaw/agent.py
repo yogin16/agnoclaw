@@ -57,8 +57,10 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import shlex
 import shutil
+import subprocess
 import tempfile
 import warnings
 import weakref
@@ -736,6 +738,8 @@ class AgentHarness:
             project_dir=self.config.project_workspace_dir,
         )
         self.workspace.initialize()
+        self._workspace_hook_specs = self.workspace.hook_specs()
+        self._load_workspace_lifecycle_hooks()
         self.sandbox_dir = self._resolve_sandbox_dir(sandbox_dir, session_id=session_id)
         effective_backend = backend or RuntimeBackend()
         resolved_backend = effective_backend.resolve(workspace_dir=self.workspace.path)
@@ -1395,6 +1399,16 @@ class AgentHarness:
                 }
             )
         return packs
+
+    def admin_list_hooks(self) -> dict[str, Any]:
+        """Return registered lifecycle and discovered workspace hook metadata."""
+        return {
+            "lifecycle": {
+                event_type: len(hooks)
+                for event_type, hooks in sorted(self._lifecycle_hooks.items())
+            },
+            "workspace": list(self._workspace_hook_specs),
+        }
 
     def admin_list_policies(self) -> dict[str, Any]:
         """Return active policy configuration."""
@@ -3563,6 +3577,152 @@ class AgentHarness:
 
         return _wrapped
 
+    def _load_workspace_lifecycle_hooks(self) -> None:
+        """Register lifecycle hooks discovered from workspace/project/global files."""
+        for spec in self._workspace_hook_specs:
+            event_type = str(spec["event"])
+            self._lifecycle_hooks.setdefault(event_type, []).append(
+                self._build_workspace_lifecycle_hook(spec)
+            )
+
+    def _build_workspace_lifecycle_hook(
+        self,
+        spec: dict[str, Any],
+    ) -> LifecycleHook:
+        name = str(spec.get("name") or "workspace-hook")
+        scope = str(spec.get("scope") or "workspace")
+        command = str(spec["command"])
+        cwd = str(spec.get("cwd") or self.workspace.path)
+        path = str(spec.get("path") or "")
+        timeout = spec.get("timeout_seconds")
+        timeout_seconds = int(timeout) if timeout is not None else 30
+
+        def _hook(
+            event: LifecycleHookRequest,
+            context: ExecutionContext,
+        ) -> LifecycleHookRequest | None:
+            payload = {
+                "event_type": event.event_type,
+                "run_id": event.run_id,
+                "metadata": dict(event.metadata),
+                "context": self._context_to_metadata(context),
+            }
+            env = {
+                **os.environ,
+                "AGNOCLAW_HOOK_EVENT": event.event_type,
+                "AGNOCLAW_HOOK_NAME": name,
+                "AGNOCLAW_HOOK_SCOPE": scope,
+                "AGNOCLAW_HOOK_RUN_ID": event.run_id or "",
+                "AGNOCLAW_WORKSPACE_DIR": str(self.workspace.path),
+                "AGNOCLAW_WORKTREE_DIR": str(Path.cwd().resolve()),
+                "AGNOCLAW_HOOK_METADATA_JSON": json.dumps(
+                    event.metadata,
+                    sort_keys=True,
+                    default=str,
+                ),
+                "AGNOCLAW_HOOK_PAYLOAD_JSON": json.dumps(
+                    payload,
+                    sort_keys=True,
+                    default=str,
+                ),
+            }
+            if self.workspace._project_dir:
+                env["AGNOCLAW_PROJECT_DIR"] = str(self.workspace._project_dir)
+            if self.workspace._global_dir:
+                env["AGNOCLAW_GLOBAL_DIR"] = str(self.workspace._global_dir)
+
+            self._emit_event_sync(
+                event_type="workspace.hook.started",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "name": name,
+                    "scope": scope,
+                    "hook_event": event.event_type,
+                    "path": path,
+                },
+            )
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=cwd,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+            except Exception as exc:
+                self._emit_event_sync(
+                    event_type="workspace.hook.failed",
+                    run_id=event.run_id or "",
+                    context=context,
+                    payload={
+                        "name": name,
+                        "scope": scope,
+                        "hook_event": event.event_type,
+                        "path": path,
+                        "error": str(exc),
+                    },
+                )
+                raise
+            if result.returncode != 0:
+                message = result.stderr.strip() or result.stdout.strip()
+                self._emit_event_sync(
+                    event_type="workspace.hook.failed",
+                    run_id=event.run_id or "",
+                    context=context,
+                    payload={
+                        "name": name,
+                        "scope": scope,
+                        "hook_event": event.event_type,
+                        "path": path,
+                        "exit_code": result.returncode,
+                        "error": message,
+                    },
+                )
+                raise RuntimeError(
+                    f"workspace hook {scope}:{name} exited {result.returncode}: {message}"
+                )
+
+            updated = self._workspace_hook_result(event, result.stdout)
+            self._emit_event_sync(
+                event_type="workspace.hook.completed",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "name": name,
+                    "scope": scope,
+                    "hook_event": event.event_type,
+                    "path": path,
+                    "stdout_chars": len(result.stdout or ""),
+                },
+            )
+            return updated
+
+        _hook.__name__ = f"workspace_hook_{scope}_{name}".replace("-", "_")
+        return _hook
+
+    @staticmethod
+    def _workspace_hook_result(
+        event: LifecycleHookRequest,
+        stdout: str,
+    ) -> LifecycleHookRequest:
+        text = str(stdout or "").strip()
+        if not text:
+            return event
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return event
+        if not isinstance(payload, dict):
+            return event
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            event.metadata.update(metadata)
+        return event
+
     def add_lifecycle_hook(self, event_type: str, hook: LifecycleHook) -> None:
         """Register a generic lifecycle hook for a named checkpoint."""
         self._lifecycle_hooks.setdefault(event_type, []).append(hook)
@@ -3578,7 +3738,7 @@ class AgentHarness:
         current = LifecycleHookRequest(
             event_type=event_type,
             run_id=run_id,
-            metadata=dict(metadata or {}),
+            metadata=self._lifecycle_metadata(metadata),
         )
         for hook in self._lifecycle_hooks.get(event_type, []):
             hook_name = getattr(hook, "__name__", hook.__class__.__name__)
@@ -3620,7 +3780,7 @@ class AgentHarness:
         current = LifecycleHookRequest(
             event_type=event_type,
             run_id=run_id,
-            metadata=dict(metadata or {}),
+            metadata=self._lifecycle_metadata(metadata),
         )
         for hook in self._lifecycle_hooks.get(event_type, []):
             hook_name = getattr(hook, "__name__", hook.__class__.__name__)
@@ -3647,6 +3807,16 @@ class AgentHarness:
                 )
             current = maybe_result
         return current
+
+    def _lifecycle_metadata(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        values = dict(metadata or {})
+        values.setdefault("workspace_dir", str(self.workspace.path))
+        values.setdefault("worktree_dir", str(Path.cwd().resolve()))
+        if self.workspace._project_dir:
+            values.setdefault("project_dir", str(self.workspace._project_dir))
+        if self.workspace._global_dir:
+            values.setdefault("global_dir", str(self.workspace._global_dir))
+        return values
 
     def _run_pre_hooks_sync(
         self,

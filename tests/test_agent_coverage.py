@@ -1,5 +1,7 @@
 """Additional coverage tests for AgentHarness — easy utility methods and branches."""
 
+import json
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -193,6 +195,81 @@ def test_add_lifecycle_hook_and_session_created_checkpoint(tmp_path):
     assert seen == [("session.created", "session-1")]
 
 
+def test_workspace_lifecycle_hook_discovery_and_execution(tmp_path):
+    sink = InMemoryEventSink()
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "session_hook.py").write_text(
+        "import json, os\n"
+        "print(json.dumps({'metadata': {'hook_seen': os.environ['AGNOCLAW_HOOK_SCOPE']}}))\n",
+        encoding="utf-8",
+    )
+    (hooks_dir / "session_hook.json").write_text(
+        json.dumps(
+            {
+                "name": "session-hook",
+                "event": "session.created",
+                "command": f'"{sys.executable}" session_hook.py',
+            }
+        ),
+        encoding="utf-8",
+    )
+    harness, _ = _make_harness(tmp_path, event_sink=sink)
+    context = ExecutionContext.create(
+        user_id=None,
+        session_id="session-hooks",
+        workspace_id=str(tmp_path),
+    )
+
+    result = harness._run_lifecycle_hooks_sync(
+        "session.created",
+        context=context,
+        metadata={"source": "test"},
+    )
+
+    assert result.metadata["hook_seen"] == "workspace"
+    assert result.metadata["workspace_dir"] == str(tmp_path.resolve())
+    assert "worktree_dir" in result.metadata
+    hooks = harness.admin_list_hooks()
+    assert hooks["lifecycle"]["session.created"] == 1
+    assert hooks["workspace"][0]["scope"] == "workspace"
+    event_types = [event.event_type for event in sink.events]
+    assert event_types == ["workspace.hook.started", "workspace.hook.completed"]
+
+
+def test_project_lifecycle_hook_discovery(tmp_path):
+    project_dir = tmp_path / ".agnoclaw"
+    hooks_dir = project_dir / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "project_hook.py").write_text(
+        "import json, os\n"
+        "print(json.dumps({'metadata': {'project_dir': os.environ['AGNOCLAW_PROJECT_DIR']}}))\n",
+        encoding="utf-8",
+    )
+    (hooks_dir / "project_hook.json").write_text(
+        json.dumps(
+            {
+                "name": "project-hook",
+                "event": "session.created",
+                "command": f'"{sys.executable}" project_hook.py',
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = HarnessConfig(project_workspace_dir=str(project_dir))
+    harness, _ = _make_harness(tmp_path / "workspace", config=config)
+    context = ExecutionContext.create(
+        user_id=None,
+        session_id="session-project-hooks",
+        workspace_id=str(harness.workspace.path),
+    )
+
+    result = harness._run_lifecycle_hooks_sync("session.created", context=context)
+
+    assert result.metadata["project_dir"] == str(project_dir.resolve())
+    assert harness.admin_list_hooks()["workspace"][0]["scope"] == "project"
+
+
 @pytest.mark.asyncio
 async def test_session_end_lifecycle_checkpoint(tmp_path):
     harness, _ = _make_harness(tmp_path)
@@ -207,17 +284,15 @@ async def test_session_end_lifecycle_checkpoint(tmp_path):
     result = await harness.end_session(generate_summary=False)
 
     assert result is None
-    assert seen == [
-        (
-            "session.end.completed",
-            harness.session_id,
-            {
-                "session_id": harness.session_id,
-                "summary_generated": False,
-                "created_files": [],
-            },
-        )
-    ]
+    assert len(seen) == 1
+    event_type, session_id, metadata = seen[0]
+    assert event_type == "session.end.completed"
+    assert session_id == harness.session_id
+    assert metadata["session_id"] == harness.session_id
+    assert metadata["summary_generated"] is False
+    assert metadata["created_files"] == []
+    assert metadata["workspace_dir"] == str(harness.workspace.path)
+    assert "worktree_dir" in metadata
 
 
 def test_lifecycle_hook_invalid_return_raises(tmp_path):
@@ -254,7 +329,10 @@ async def test_async_lifecycle_hook_updates_request(tmp_path):
     )
 
     assert isinstance(result, LifecycleHookRequest)
-    assert result.metadata == {"done": True, "async": True}
+    assert result.metadata["done"] is True
+    assert result.metadata["async"] is True
+    assert result.metadata["workspace_dir"] == str(harness.workspace.path)
+    assert "worktree_dir" in result.metadata
 
 
 def test_plan_signal_methods_emit_events_and_exit_plan_mode(tmp_path):

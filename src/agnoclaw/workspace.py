@@ -33,9 +33,10 @@ Size limits (matching Claude Code / OpenClaw conventions):
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 # ── Context injection size limits ──────────────────────────────────────────
@@ -209,6 +210,61 @@ class Workspace:
     def skills_dir(self) -> Path:
         """Workspace-level skills directory (highest priority for skill loading)."""
         return self.path / "skills"
+
+    def hook_specs(self) -> list[dict[str, Any]]:
+        """
+        Discover workspace/project/global command hook specs.
+
+        Hook specs live in `hooks/*.json` under any workspace layer. Each file may
+        contain a single object or a list of objects with at least:
+        `event`, `command`, and optional `name`, `cwd`, `timeout_seconds`.
+        """
+        specs: list[dict[str, Any]] = []
+        layers: list[tuple[str, Path]] = []
+        if self._global_dir:
+            layers.append(("global", self._global_dir))
+        if self._project_dir:
+            layers.append(("project", self._project_dir))
+        layers.append(("workspace", self.path))
+
+        for scope, root in layers:
+            hooks_dir = root / "hooks"
+            if not hooks_dir.is_dir():
+                continue
+            for path in sorted(hooks_dir.glob("*.json")):
+                try:
+                    loaded = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                items = loaded if isinstance(loaded, list) else [loaded]
+                for index, item in enumerate(items):
+                    if not isinstance(item, dict):
+                        continue
+                    event = str(item.get("event") or "").strip()
+                    command = str(item.get("command") or "").strip()
+                    if not event or not command:
+                        continue
+                    name = str(item.get("name") or path.stem).strip()
+                    if len(items) > 1:
+                        name = f"{name}:{index}"
+                    cwd = item.get("cwd")
+                    cwd_path = (
+                        str((path.parent / str(cwd)).expanduser().resolve(strict=False))
+                        if cwd
+                        else str(path.parent)
+                    )
+                    specs.append(
+                        {
+                            "scope": scope,
+                            "name": name,
+                            "event": event,
+                            "command": command,
+                            "cwd": cwd_path,
+                            "timeout_seconds": item.get("timeout_seconds"),
+                            "path": str(path),
+                        }
+                    )
+        return specs
 
     def heartbeat_md(self) -> Optional[str]:
         """Read HEARTBEAT.md. Returns None if empty or only headers."""

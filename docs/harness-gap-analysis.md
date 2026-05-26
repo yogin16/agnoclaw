@@ -69,7 +69,7 @@ Deferred by design:
 | Runtime guardrails | Permission/sandbox controls | Sandboxing/security controls | **Implemented (path/network)** | Low | Harness |
 | Built-in runtime backend abstraction | Tool family can target one alternate runtime plane | Exec/files/browser/skills bind to sandbox/container workspace | **Implemented** (`RuntimeBackend`) | ~~High~~ Done | Harness |
 | Sandbox provider abstraction | Multiple runtime permission/sandbox modes | Sandboxing modes (`workspace-write/read-only/full`) | **Partial** (single backend contract exists; first-party `LLMSandboxBackend` ships, other provider adapters still open) | High | Harness |
-| Hook breadth and packaging | 17 events + multiple hook types | Plugin hook packs + lifecycle events | **Partial** (run + tool path) | High | Harness |
+| Hook breadth and packaging | 17 events + multiple hook types | Plugin hook packs + lifecycle events | **Implemented** (run/tool/lifecycle + workspace hooks) | ~~High~~ Done | Harness |
 | Scheduler | None | Heartbeat + Cron | **Implemented** | Low | Harness |
 | Persistent cron management | N/A | Durable job management | **Partial** (in-memory jobs) | Medium | Harness |
 | AgentOS runtime export | Hosted API/runtime adapter | Gateway/API runtime | **Partial** (AgentProtocol adapter + optional admin routes; approvals/scheduler/MCP reuse AgentOS) | Medium | Harness |
@@ -128,6 +128,10 @@ Newly closed or reduced gaps (v0.8 preview):
    background task IDs, PIDs, output log paths, working directories, and command
    metadata so a fresh executor instance can read output/status and terminate
    known host tasks by task ID.
+9. **Workspace/project hook discovery** — Global, project, and workspace
+   `hooks/*.json` command hooks are discovered into lifecycle checkpoints,
+   receive worktree/workspace metadata through environment variables, can return
+   JSON metadata, and emit `workspace.hook.*` audit events.
 
 Newly closed or reduced gaps (v0.3):
 1. **Browser toolkit** — Playwright-based with navigate, click, type, screenshot, snapshot, scroll, fill_form, close.
@@ -169,8 +173,8 @@ Still open in this area:
 
 2. Hook-pack system + broader lifecycle coverage
 - Session/message/compaction lifecycle checkpoints now exist for harness and
-  pack hooks. Workspace/project hook discovery and worktree-specific checkpoints
-  remain open.
+  pack hooks. Workspace/project/global command hook discovery now exists for
+  lifecycle checkpoints and includes worktree-specific metadata.
 
 3. Sandbox provider abstraction beyond tool backends
 - Keep current guardrails and injected exec/files backends; add full runtime sandbox providers and mode semantics.
