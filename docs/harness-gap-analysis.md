@@ -71,10 +71,10 @@ Deferred by design:
 | Sandbox provider abstraction | Multiple runtime permission/sandbox modes | Sandboxing modes (`workspace-write/read-only/full`) | **Implemented (core)** (`RuntimeBackend`, first-party `LLMSandboxBackend`, and explicit session sandbox modes) | ~~High~~ Done | Harness |
 | Hook breadth and packaging | 17 events + multiple hook types | Plugin hook packs + lifecycle events | **Implemented** (run/tool/lifecycle + workspace hooks) | ~~High~~ Done | Harness |
 | Scheduler | None | Heartbeat + Cron | **Implemented** | Low | Harness |
-| Persistent cron management | N/A | Durable job management | **Partial** (in-memory jobs) | Medium | Harness |
-| AgentOS runtime export | Hosted API/runtime adapter | Gateway/API runtime | **Partial** (AgentProtocol adapter + optional admin routes; approvals/scheduler/MCP reuse AgentOS) | Medium | Harness |
+| Persistent cron management | N/A | Durable job management | **Implemented** (`SchedulerBackend`, JSON persistence, CLI CRUD/trigger/history) | ~~Medium~~ Done | Harness |
+| AgentOS runtime export | Hosted API/runtime adapter | Gateway/API runtime | **Implemented (adapter)** (AgentProtocol facade + optional admin routes; approvals/scheduler/MCP reuse AgentOS) | ~~Medium~~ Done | Harness |
 | Context provider bridge | N/A | Source-scoped integrations | **Implemented** (Agno providers expose bounded tools + instructions) | Low | Harness |
-| Pack install/trust lifecycle | N/A | Plugin/package ecosystem | **Partial** (local/git install, inspect, trust, remove; no marketplace) | Medium | Harness |
+| Pack install/trust lifecycle | N/A | Plugin/package ecosystem | **Implemented (v1)** (local/git install, inspect, trust, remove; marketplace is a non-goal) | ~~Medium~~ Done | Harness |
 | Workspace core files | CLAUDE.md hierarchy | AGENTS/SOUL/IDENTITY/USER/etc | **Implemented** (OpenClaw-style files) | Low | Harness |
 | Hierarchical workspace layering | Hierarchical CLAUDE.md/rules loading | Layered behavior files | **Implemented** (global → project → workspace) | ~~Medium~~ Done | Harness |
 | Skill metadata compatibility | AgentSkills + CC frontmatter | OpenClaw metadata and install specs | **Implemented** | Low | Harness |
@@ -158,9 +158,11 @@ Previously closed:
 5. First-class local scheduler CLI now manages persisted schedule CRUD,
    enable/disable, trigger, and run history.
 
-Still open in this area:
-- Queueing semantics beyond local background task metadata
-- Hosted scheduler API management beyond AgentOS passthrough
+Open by design / platform-owned:
+- Hosted queueing beyond local background task metadata belongs in AgentOS or a
+  product control plane, not `agnoclaw-core`.
+- Hosted scheduler API management beyond AgentOS passthrough remains an AgentOS
+  responsibility; the harness owns embedded scheduler storage and CLI helpers.
 
 ---
 
@@ -168,16 +170,16 @@ Still open in this area:
 
 ### High
 
-1. Elevated execution path
-- SDK-level elevated command execution now has an explicit request/result
+1. ~~Elevated execution path~~ **DONE**
+- ~~SDK-level elevated command execution now has an explicit request/result
   contract, approval gate, policy/guardrail preflight, audit event schema,
   single-command CLI execution, and session-wide CLI elevated defaults for
-  subsequent bash tool calls.
+  subsequent bash tool calls.~~
 
-2. Hook-pack system + broader lifecycle coverage
-- Session/message/compaction lifecycle checkpoints now exist for harness and
+2. ~~Hook-pack system + broader lifecycle coverage~~ **DONE**
+- ~~Session/message/compaction lifecycle checkpoints now exist for harness and
   pack hooks. Workspace/project/global command hook discovery now exists for
-  lifecycle checkpoints and includes worktree-specific metadata.
+  lifecycle checkpoints and includes worktree-specific metadata.~~
 
 3. ~~Sandbox provider abstraction beyond tool backends~~ **DONE**
 - ~~Keep current guardrails and injected exec/files backends; add full runtime sandbox providers and mode semantics.~~
