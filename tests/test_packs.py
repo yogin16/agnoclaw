@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agnoclaw import AgentHarness, HarnessConfig, InMemoryEventSink
+from agnoclaw import AgentHarness, HarnessConfig, HarnessError, InMemoryEventSink
 from agnoclaw.packs import (
     PackTrustError,
     inspect_pack,
@@ -17,7 +17,7 @@ from agnoclaw.packs import (
     remove_pack,
     trust_pack,
 )
-from agnoclaw.runtime import ExecutionContext, RunInput
+from agnoclaw.runtime import ExecutionContext, PolicyDecision, RunInput
 
 
 def _write_pack(tmp_path, manifest: str):
@@ -248,3 +248,106 @@ requires_code_execution = true
         "pack.hook.started",
         "pack.hook.completed",
     ]
+
+
+def test_harness_runs_pack_policies_and_emits_events(tmp_path):
+    pack = _write_pack(
+        tmp_path,
+        """
+name = "policy-pack"
+
+[provides]
+policies = ["policy_pack.policies:register"]
+
+[trust]
+requires_code_execution = true
+""",
+    )
+    module_dir = pack / "policy_pack"
+    module_dir.mkdir()
+    (module_dir / "__init__.py").write_text("", encoding="utf-8")
+    (module_dir / "policies.py").write_text(
+        "from agnoclaw.runtime import PolicyDecision\n\n"
+        "class DenyPolicy:\n"
+        "    def before_run(self, run_input, context):\n"
+        "        return PolicyDecision.deny(\n"
+        "            reason_code='PACK_DENIED',\n"
+        "            message='Denied by pack policy.',\n"
+        "        )\n\n"
+        "def register():\n"
+        "    return DenyPolicy()\n",
+        encoding="utf-8",
+    )
+    sink = InMemoryEventSink()
+
+    with patch("agnoclaw.agent.Agent") as agent_cls:
+        mock_agent = MagicMock()
+        mock_agent.system_message = ""
+        agent_cls.return_value = mock_agent
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                workspace_dir=tmp_path / "workspace",
+                config=HarnessConfig(),
+                include_default_tools=False,
+                packs=[pack],
+                trusted_packs=True,
+                event_sink=sink,
+            )
+
+    with pytest.raises(HarnessError) as exc_info:
+        harness.run("hello")
+
+    assert exc_info.value.details["reason_code"] == "PACK_DENIED"
+    assert mock_agent.run.called is False
+    pack_events = [
+        event.event_type for event in sink.events if event.event_type.startswith("pack.policy.")
+    ]
+    assert pack_events == ["pack.policy.started", "pack.policy.completed"]
+
+
+def test_set_policy_engine_preserves_pack_policies(tmp_path):
+    pack = _write_pack(
+        tmp_path,
+        """
+name = "policy-pack"
+
+[provides]
+policies = ["policy_pack.policies:register"]
+
+[trust]
+requires_code_execution = true
+""",
+    )
+    module_dir = pack / "policy_pack"
+    module_dir.mkdir()
+    (module_dir / "__init__.py").write_text("", encoding="utf-8")
+    (module_dir / "policies.py").write_text(
+        "from agnoclaw.runtime import PolicyDecision\n\n"
+        "class AllowPolicy:\n"
+        "    def before_run(self, run_input, context):\n"
+        "        return PolicyDecision.allow()\n\n"
+        "def register():\n"
+        "    return AllowPolicy()\n",
+        encoding="utf-8",
+    )
+
+    with patch("agnoclaw.agent.Agent") as agent_cls:
+        mock_agent = MagicMock()
+        mock_agent.system_message = ""
+        agent_cls.return_value = mock_agent
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                workspace_dir=tmp_path / "workspace",
+                config=HarnessConfig(),
+                include_default_tools=False,
+                packs=[pack],
+                trusted_packs=True,
+            )
+
+    class ReplacementPolicy:
+        def before_run(self, run_input, context):
+            return PolicyDecision.allow()
+
+    harness.set_policy_engine(ReplacementPolicy())
+
+    assert [name for name, _ in harness._policy_engines] == ["harness", "pack:policy-pack"]

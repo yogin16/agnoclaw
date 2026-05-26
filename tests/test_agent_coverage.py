@@ -8,6 +8,7 @@ from agno.exceptions import AgentRunException
 
 from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
+from agnoclaw.runtime import InMemoryEventSink
 from agnoclaw.runtime.errors import HarnessError
 
 
@@ -321,3 +322,28 @@ def test_run_passes_max_turns_to_underlying_agent(tmp_path):
     harness.run("hello", max_turns=3)
 
     assert mock_agent.run.call_args.kwargs["max_turns"] == 3
+
+
+def test_run_emits_scheduler_invocation_event(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    harness.run(
+        "hello",
+        metadata={
+            "agentos": {
+                "scheduler": {
+                    "schedule_id": "sched-1",
+                    "schedule_run_id": "sched-run-1",
+                }
+            }
+        },
+    )
+
+    scheduler_events = [
+        event for event in sink.events if event.event_type == "scheduler.invocation"
+    ]
+    assert len(scheduler_events) == 1
+    assert scheduler_events[0].payload["schedule_id"] == "sched-1"
+    assert scheduler_events[0].payload["schedule_run_id"] == "sched-run-1"

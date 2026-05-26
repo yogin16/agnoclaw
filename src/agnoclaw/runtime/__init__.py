@@ -4,6 +4,7 @@ from .agentos import (
     AgentOSClaimKeys,
     AgentOSContextAdapter,
     AgentOSHarnessAgent,
+    AgentOSPermissionApprover,
     as_agentos_agent,
     create_agentos_app,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "AgentOSClaimKeys",
     "AgentOSContextAdapter",
     "AgentOSHarnessAgent",
+    "AgentOSPermissionApprover",
     "AgnoAuthError",
     "AgnoConfigError",
     "EVENT_VERSION",

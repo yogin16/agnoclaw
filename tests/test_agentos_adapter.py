@@ -9,7 +9,14 @@ import pytest
 
 from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
-from agnoclaw.runtime import AgentOSContextAdapter, InMemoryEventSink, create_agentos_app
+from agnoclaw.runtime import (
+    AgentOSContextAdapter,
+    AgentOSPermissionApprover,
+    ExecutionContext,
+    InMemoryEventSink,
+    PermissionRequest,
+    create_agentos_app,
+)
 
 
 def _make_harness(tmp_path):
@@ -27,6 +34,30 @@ def _make_harness(tmp_path):
                 config=HarnessConfig(),
             )
     return harness, mock_agent
+
+
+class FakeApprovalDb:
+    def __init__(self):
+        self.id = "fake-approval-db"
+        self.approvals = []
+
+    def create_approval(self, approval_data):
+        self.approvals.append(dict(approval_data))
+        return self.approvals[-1]
+
+    def get_approvals(self, **filters):
+        items = []
+        for approval in self.approvals:
+            matched = True
+            for key, value in filters.items():
+                if key in {"limit", "page"} or value is None:
+                    continue
+                if approval.get(key) != value:
+                    matched = False
+                    break
+            if matched:
+                items.append(approval)
+        return items, len(items)
 
 
 def test_agentos_adapter_maps_claims_to_execution_context():
@@ -95,6 +126,7 @@ async def test_agentos_harness_agent_routes_through_harness_arun(tmp_path):
         session_id="sess-1",
         user_id="user-1",
         metadata={"agentos_claims": {"tenant_id": "tenant-1"}},
+        schedule_id="sched-1",
     )
 
     assert result.content == "ok"
@@ -103,6 +135,9 @@ async def test_agentos_harness_agent_routes_through_harness_arun(tmp_path):
     assert call_kwargs["session_id"] == "sess-1"
     assert call_kwargs["user_id"] == "user-1"
     assert call_kwargs["metadata"]["_agnoclaw_context"]["tenant_id"] == "tenant-1"
+    assert call_kwargs["metadata"]["_agnoclaw_context"]["metadata"]["agentos"]["scheduler"] == {
+        "schedule_id": "sched-1"
+    }
 
 
 def test_create_agentos_app_registers_harness_admin_routes(tmp_path):
@@ -124,6 +159,10 @@ def test_create_agentos_app_registers_harness_admin_routes(tmp_path):
     assert "/agnoclaw/policies" in paths
     assert "/agnoclaw/permissions" in paths
     assert app.state.agnoclaw_harnesses["agnoclaw"] is harness
+    agnoclaw_route = next(
+        route for route in app.routes if getattr(route, "path", "") == "/agnoclaw/harnesses"
+    )
+    assert len(agnoclaw_route.dependencies) == 2
 
 
 def test_harness_admin_helpers_report_runtime_and_sandbox(tmp_path):
@@ -135,6 +174,7 @@ def test_harness_admin_helpers_report_runtime_and_sandbox(tmp_path):
     artifact = harness.admin_sandbox_artifact_path("artifact.txt")
 
     assert runtime["workspace_id"] == str(harness.workspace.path)
+    assert runtime["agentos"]["approvals_enabled"] is False
     assert sandbox["session_id"] == "sess-1"
     assert sandbox["file_count"] == 1
     assert sandbox["files"][0]["path"] == "artifact.txt"
@@ -154,3 +194,53 @@ def test_harness_admin_events_filter_by_run_id(tmp_path):
     filtered = harness.admin_list_events(run_id="run-1")
     assert len(filtered) == 1
     assert filtered[0]["event_type"] == "one"
+
+
+def test_agentos_permission_approver_creates_pending_and_allows_approved():
+    db = FakeApprovalDb()
+    approver = AgentOSPermissionApprover(db, agent_id="deal-agent")
+    request = PermissionRequest(
+        run_id="run-1",
+        tool_name="bash",
+        category="exec",
+        arguments={"command": "deploy"},
+    )
+    context = ExecutionContext.create(
+        user_id="user-1",
+        session_id="sess-1",
+        workspace_id="/tmp/workspace",
+    )
+
+    first = approver.approve(request, context)
+    db.approvals[0]["status"] = "approved"
+    second = approver.approve(request, context)
+
+    assert first is False
+    assert second is True
+    assert len(db.approvals) == 1
+    assert db.approvals[0]["source_type"] == "agnoclaw"
+    assert db.approvals[0]["pause_type"] == "permission"
+    assert db.approvals[0]["tool_name"] == "bash"
+
+
+def test_create_agentos_app_attaches_approval_bridge_and_runtime_flags(tmp_path):
+    pytest.importorskip("fastapi")
+    harness, _ = _make_harness(tmp_path)
+    db = FakeApprovalDb()
+
+    app = create_agentos_app(
+        [harness],
+        db=db,
+        approvals=True,
+        scheduler=True,
+        telemetry=False,
+    )
+
+    assert app.state.agnoclaw_approvals_requested is True
+    assert isinstance(harness._permission_controller.approver, AgentOSPermissionApprover)
+    runtime = harness.admin_runtime_info()
+    assert runtime["agentos"] == {
+        "approvals_enabled": True,
+        "scheduler_enabled": True,
+        "mcp_enabled": False,
+    }

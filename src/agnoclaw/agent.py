@@ -507,6 +507,9 @@ class AgentHarness:
                 f"Use '{EventSinkMode.BEST_EFFORT.value}' or '{EventSinkMode.FAIL_CLOSED.value}'."
             ) from None
         self._policy_engine: PolicyEngine = policy_engine or AllowAllPolicyEngine()
+        self._policy_engines: list[tuple[str, PolicyEngine]] = [
+            ("harness", self._policy_engine)
+        ]
         self._policy_fail_open = (
             policy_fail_open if policy_fail_open is not None else self.config.policy_fail_open
         )
@@ -617,11 +620,16 @@ class AgentHarness:
                     for hook in loaded_pack.post_run_hooks
                 )
                 self._context_providers.extend(loaded_pack.context_providers)
-                if loaded_pack.policies:
-                    logger.warning(
-                        "Pack %s provided policy engines, but automatic policy composition "
-                        "is not enabled; pass a policy_engine explicitly to choose precedence.",
+                self._policy_engines.extend(
+                    (f"pack:{loaded_pack.manifest.name}", policy)
+                    for policy in loaded_pack.policies
+                )
+                if loaded_pack.policies and not isinstance(self._policy_engine, AllowAllPolicyEngine):
+                    logger.info(
+                        "Pack %s provided %d policy engine(s); they will run after the "
+                        "explicit harness policy engine.",
                         loaded_pack.manifest.name,
+                        len(loaded_pack.policies),
                     )
 
         # System prompt builder
@@ -1081,6 +1089,10 @@ class AgentHarness:
     def set_policy_engine(self, engine: PolicyEngine) -> None:
         """Swap policy engine at runtime."""
         self._policy_engine = engine
+        pack_engines = [
+            item for item in getattr(self, "_policy_engines", []) if item[0].startswith("pack:")
+        ]
+        self._policy_engines = [("harness", engine), *pack_engines]
 
     def set_permission_mode(self, mode: str) -> None:
         """Set runtime permission mode for tool calls."""
@@ -1130,6 +1142,11 @@ class AgentHarness:
             "event_sink_mode": self._event_sink_mode.value,
             "policy_engine": self._policy_engine.__class__.__name__,
             "policy_fail_open": self._policy_fail_open,
+            "agentos": {
+                "approvals_enabled": bool(getattr(self, "_agentos_approvals_enabled", False)),
+                "scheduler_enabled": bool(getattr(self, "_agentos_scheduler_enabled", False)),
+                "mcp_enabled": bool(getattr(self, "_agentos_mcp_enabled", False)),
+            },
         }
 
     def admin_list_skills(self) -> list[dict[str, Any]]:
@@ -1751,6 +1768,30 @@ class AgentHarness:
         text = " ".join(str(value).split())
         return AgentHarness._truncate_text(text, limit=_RESULT_PREVIEW_LIMIT)
 
+    @staticmethod
+    def _scheduler_invocation_payload(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(metadata, dict):
+            return None
+        scheduler = metadata.get("scheduler")
+        if not isinstance(scheduler, dict):
+            agentos = metadata.get("agentos")
+            if isinstance(agentos, dict):
+                scheduler = agentos.get("scheduler")
+        if not isinstance(scheduler, dict):
+            scheduler = {}
+        payload = {
+            key: value
+            for key, value in {
+                "schedule_id": scheduler.get("schedule_id") or metadata.get("schedule_id"),
+                "schedule_run_id": scheduler.get("schedule_run_id")
+                or metadata.get("schedule_run_id"),
+                "schedule_name": scheduler.get("schedule_name") or metadata.get("schedule_name"),
+                "scheduled_at": scheduler.get("scheduled_at") or metadata.get("scheduled_at"),
+            }.items()
+            if value is not None
+        }
+        return payload or None
+
     def _start_tool_step(
         self,
         *,
@@ -2294,38 +2335,85 @@ class AgentHarness:
         run_input: RunInput | None,
         context: ExecutionContext,
     ) -> PolicyDecision:
-        method = getattr(self._policy_engine, method_name, None)
-        if method is None:
-            return PolicyDecision.allow()
-        try:
-            decision = self._resolve_sync_value(
-                method(payload, context),
-                operation=f"policy.{method_name}",
-            )
-        except Exception as exc:
-            if self._policy_fail_open:
-                logger.warning("Policy engine failed at %s; fail-open enabled: %s", method_name, exc)
-                return PolicyDecision.allow()
-            raise HarnessError(
-                code="POLICY_EVALUATION_FAILED",
-                category="policy",
-                message=f"Policy evaluation failed at {method_name}: {exc}",
-                retryable=False,
-            ) from exc
-        if not isinstance(decision, PolicyDecision):
-            raise HarnessError(
-                code="POLICY_INVALID_DECISION",
-                category="policy",
-                message=f"Policy method {method_name} returned invalid type: {type(decision).__name__}",
-                retryable=False,
-            )
-        if (
-            run_input is not None
-            and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
-            and decision.constraints
-        ):
-            run_input.metadata.setdefault("policy_constraints", {}).update(decision.constraints)
-        return decision
+        run_id = self._policy_run_id(payload=payload, run_input=run_input)
+        for engine_name, engine in self._policy_engines:
+            method = getattr(engine, method_name, None)
+            if method is None:
+                continue
+            is_pack_policy = engine_name.startswith("pack:")
+            if is_pack_policy:
+                self._emit_event_sync(
+                    event_type="pack.policy.started",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "pack": engine_name.removeprefix("pack:"),
+                        "checkpoint": method_name,
+                    },
+                )
+            try:
+                decision = self._resolve_sync_value(
+                    method(payload, context),
+                    operation=f"policy.{engine_name}.{method_name}",
+                )
+            except Exception as exc:
+                if is_pack_policy:
+                    self._emit_event_sync(
+                        event_type="pack.policy.failed",
+                        run_id=run_id,
+                        context=context,
+                        payload={
+                            "pack": engine_name.removeprefix("pack:"),
+                            "checkpoint": method_name,
+                            "error": str(exc),
+                        },
+                    )
+                if self._policy_fail_open:
+                    logger.warning(
+                        "Policy engine failed at %s; fail-open enabled: %s",
+                        method_name,
+                        exc,
+                    )
+                    continue
+                raise HarnessError(
+                    code="POLICY_EVALUATION_FAILED",
+                    category="policy",
+                    message=f"Policy evaluation failed at {method_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if not isinstance(decision, PolicyDecision):
+                raise HarnessError(
+                    code="POLICY_INVALID_DECISION",
+                    category="policy",
+                    message=(
+                        f"Policy method {method_name} returned invalid type: "
+                        f"{type(decision).__name__}"
+                    ),
+                    retryable=False,
+                )
+            if is_pack_policy:
+                self._emit_event_sync(
+                    event_type="pack.policy.completed",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "pack": engine_name.removeprefix("pack:"),
+                        "checkpoint": method_name,
+                        "action": decision.action.value,
+                        "reason_code": decision.reason_code,
+                    },
+                )
+            if (
+                run_input is not None
+                and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
+                and decision.constraints
+            ):
+                run_input.metadata.setdefault("policy_constraints", {}).update(
+                    decision.constraints
+                )
+            if decision.action != PolicyAction.ALLOW:
+                return decision
+        return PolicyDecision.allow()
 
     async def _run_policy_async(
         self,
@@ -2335,35 +2423,91 @@ class AgentHarness:
         run_input: RunInput | None,
         context: ExecutionContext,
     ) -> PolicyDecision:
-        method = getattr(self._policy_engine, method_name, None)
-        if method is None:
-            return PolicyDecision.allow()
-        try:
-            decision = await self._resolve_async_value(method(payload, context))
-        except Exception as exc:
-            if self._policy_fail_open:
-                logger.warning("Policy engine failed at %s; fail-open enabled: %s", method_name, exc)
-                return PolicyDecision.allow()
-            raise HarnessError(
-                code="POLICY_EVALUATION_FAILED",
-                category="policy",
-                message=f"Policy evaluation failed at {method_name}: {exc}",
-                retryable=False,
-            ) from exc
-        if not isinstance(decision, PolicyDecision):
-            raise HarnessError(
-                code="POLICY_INVALID_DECISION",
-                category="policy",
-                message=f"Policy method {method_name} returned invalid type: {type(decision).__name__}",
-                retryable=False,
-            )
-        if (
-            run_input is not None
-            and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
-            and decision.constraints
-        ):
-            run_input.metadata.setdefault("policy_constraints", {}).update(decision.constraints)
-        return decision
+        run_id = self._policy_run_id(payload=payload, run_input=run_input)
+        for engine_name, engine in self._policy_engines:
+            method = getattr(engine, method_name, None)
+            if method is None:
+                continue
+            is_pack_policy = engine_name.startswith("pack:")
+            if is_pack_policy:
+                await self._emit_event_async(
+                    event_type="pack.policy.started",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "pack": engine_name.removeprefix("pack:"),
+                        "checkpoint": method_name,
+                    },
+                )
+            try:
+                decision = await self._resolve_async_value(method(payload, context))
+            except Exception as exc:
+                if is_pack_policy:
+                    await self._emit_event_async(
+                        event_type="pack.policy.failed",
+                        run_id=run_id,
+                        context=context,
+                        payload={
+                            "pack": engine_name.removeprefix("pack:"),
+                            "checkpoint": method_name,
+                            "error": str(exc),
+                        },
+                    )
+                if self._policy_fail_open:
+                    logger.warning(
+                        "Policy engine failed at %s; fail-open enabled: %s",
+                        method_name,
+                        exc,
+                    )
+                    continue
+                raise HarnessError(
+                    code="POLICY_EVALUATION_FAILED",
+                    category="policy",
+                    message=f"Policy evaluation failed at {method_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if not isinstance(decision, PolicyDecision):
+                raise HarnessError(
+                    code="POLICY_INVALID_DECISION",
+                    category="policy",
+                    message=(
+                        f"Policy method {method_name} returned invalid type: "
+                        f"{type(decision).__name__}"
+                    ),
+                    retryable=False,
+                )
+            if is_pack_policy:
+                await self._emit_event_async(
+                    event_type="pack.policy.completed",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "pack": engine_name.removeprefix("pack:"),
+                        "checkpoint": method_name,
+                        "action": decision.action.value,
+                        "reason_code": decision.reason_code,
+                    },
+                )
+            if (
+                run_input is not None
+                and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
+                and decision.constraints
+            ):
+                run_input.metadata.setdefault("policy_constraints", {}).update(
+                    decision.constraints
+                )
+            if decision.action != PolicyAction.ALLOW:
+                return decision
+        return PolicyDecision.allow()
+
+    @staticmethod
+    def _policy_run_id(*, payload: Any, run_input: RunInput | None) -> str:
+        if run_input is not None and run_input.run_id:
+            return run_input.run_id
+        payload_run_id = getattr(payload, "run_id", None)
+        if isinstance(payload_run_id, str) and payload_run_id:
+            return payload_run_id
+        return f"policy_{uuid4().hex}"
 
     def _wrap_pack_pre_hook(self, pack_name: str, hook: PreRunHook) -> PreRunHook:
         hook_name = getattr(hook, "__name__", hook.__class__.__name__)
@@ -2925,6 +3069,14 @@ class AgentHarness:
                 "max_turns": max_turns,
             },
         )
+        scheduler_payload = self._scheduler_invocation_payload(run_input.metadata)
+        if scheduler_payload:
+            self._emit_event_sync(
+                event_type="scheduler.invocation",
+                run_id=run_id,
+                context=ctx,
+                payload=scheduler_payload,
+            )
 
         try:
             run_input = self._run_pre_hooks_sync(run_input=run_input, context=ctx)
@@ -3358,6 +3510,14 @@ class AgentHarness:
                 "max_turns": max_turns,
             },
         )
+        scheduler_payload = self._scheduler_invocation_payload(run_input.metadata)
+        if scheduler_payload:
+            await self._emit_event_async(
+                event_type="scheduler.invocation",
+                run_id=run_id,
+                context=ctx,
+                payload=scheduler_payload,
+            )
 
         try:
             run_input = await self._run_pre_hooks_async(run_input=run_input, context=ctx)

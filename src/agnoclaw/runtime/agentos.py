@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from .context import ExecutionContext
 
@@ -40,6 +43,16 @@ def _as_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _agentos_scheduler_metadata(values: Mapping[str, Any]) -> dict[str, Any]:
+    scheduler_keys = (
+        "schedule_id",
+        "schedule_run_id",
+        "schedule_name",
+        "scheduled_at",
+    )
+    return {key: values[key] for key in scheduler_keys if key in values and values[key] is not None}
 
 
 @dataclass(frozen=True)
@@ -209,15 +222,24 @@ class AgentOSHarnessAgent:
         dependencies: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Any:
-        context = self._context_from_agentos_kwargs(
-            session_id=session_id,
-            user_id=user_id,
-            metadata=metadata,
-            dependencies=dependencies,
-        )
         call_kwargs = dict(kwargs)
         call_kwargs.pop("background_tasks", None)
         call_kwargs.pop("background", None)
+        scheduler_metadata = _agentos_scheduler_metadata(call_kwargs)
+        for key in scheduler_metadata:
+            call_kwargs.pop(key, None)
+        run_metadata = dict(metadata or {})
+        if scheduler_metadata:
+            run_metadata.setdefault("agentos", {})
+            if isinstance(run_metadata["agentos"], dict):
+                run_metadata["agentos"].setdefault("scheduler", scheduler_metadata)
+
+        context = self._context_from_agentos_kwargs(
+            session_id=session_id,
+            user_id=user_id,
+            metadata=run_metadata,
+            dependencies=dependencies,
+        )
         should_stream = bool(stream)
         should_stream_events = bool(stream_events) if stream_events is not None else should_stream
 
@@ -228,7 +250,7 @@ class AgentOSHarnessAgent:
                     stream=True,
                     stream_events=should_stream_events,
                     context=context,
-                    metadata=dict(metadata or {}),
+                    metadata=run_metadata,
                     **call_kwargs,
                 )
                 async for event in result:
@@ -241,9 +263,124 @@ class AgentOSHarnessAgent:
             stream=False,
             stream_events=should_stream_events,
             context=context,
-            metadata=dict(metadata or {}),
+            metadata=run_metadata,
             **call_kwargs,
         )
+
+
+class AgentOSPermissionApprover:
+    """
+    Bridge agnoclaw permission requests into AgentOS approval records.
+
+    The bridge is intentionally conservative: an already-approved matching record
+    allows the tool call; otherwise a pending approval is persisted and the current
+    permission request is rejected so the caller can resolve it through AgentOS.
+    """
+
+    def __init__(self, db: Any, *, agent_id: str, source_name: str = "agnoclaw") -> None:
+        self.db = db
+        self.agent_id = agent_id
+        self.source_name = source_name
+
+    def approve(self, request: Any, context: ExecutionContext) -> bool:
+        if self.db is None:
+            return False
+        approved = self._find_matching_approval(
+            request,
+            context,
+            status="approved",
+        )
+        if approved is not None:
+            return True
+        if self._find_matching_approval(request, context, status="pending") is None:
+            self._create_pending_approval(request, context)
+        return False
+
+    def _find_matching_approval(
+        self,
+        request: Any,
+        context: ExecutionContext,
+        *,
+        status: str,
+    ) -> Mapping[str, Any] | None:
+        getter = getattr(self.db, "get_approvals", None)
+        if not callable(getter):
+            return None
+        result = getter(
+            status=status,
+            source_type="agnoclaw",
+            approval_type="required",
+            pause_type="permission",
+            agent_id=self.agent_id,
+            user_id=context.user_id,
+            run_id=request.run_id,
+            limit=100,
+            page=1,
+        )
+        if inspect.isawaitable(result):
+            closer = getattr(result, "close", None)
+            if callable(closer):
+                closer()
+            return None
+        approvals = result[0] if isinstance(result, tuple) else result
+        if not isinstance(approvals, list):
+            return None
+        for approval in approvals:
+            if not isinstance(approval, Mapping):
+                continue
+            if approval.get("tool_name") != request.tool_name:
+                continue
+            tool_args = approval.get("tool_args")
+            if isinstance(tool_args, Mapping) and dict(tool_args) != dict(request.arguments):
+                continue
+            return approval
+        return None
+
+    def _create_pending_approval(self, request: Any, context: ExecutionContext) -> None:
+        creator = getattr(self.db, "create_approval", None)
+        if not callable(creator):
+            return
+        now = int(time.time())
+        approval = {
+            "id": f"agnoclaw_perm_{uuid4().hex}",
+            "run_id": request.run_id,
+            "session_id": context.session_id or "",
+            "status": "pending",
+            "source_type": "agnoclaw",
+            "approval_type": "required",
+            "pause_type": "permission",
+            "tool_name": request.tool_name,
+            "tool_args": dict(request.arguments),
+            "agent_id": self.agent_id,
+            "user_id": context.user_id,
+            "source_name": self.source_name,
+            "requirements": [
+                {
+                    "type": "permission",
+                    "tool_name": request.tool_name,
+                    "category": getattr(request, "category", None),
+                }
+            ],
+            "context": {
+                "tenant_id": context.tenant_id,
+                "org_id": context.org_id,
+                "team_id": context.team_id,
+                "workspace_id": context.workspace_id,
+                "request_id": context.request_id,
+                "trace_id": context.trace_id,
+                "roles": list(context.roles),
+                "scopes": list(context.scopes),
+                "metadata": context.metadata,
+            },
+            "created_at": now,
+            "updated_at": now,
+        }
+        result = creator(approval)
+        if inspect.isawaitable(result):
+            closer = getattr(result, "close", None)
+            if callable(closer):
+                closer()
+            return
 
 
 def as_agentos_agent(
@@ -260,6 +397,21 @@ def as_agentos_agent(
         name=name,
         context_adapter=context_adapter,
     )
+
+
+def _attach_agentos_approval_bridge(
+    harnesses: Sequence[Any],
+    agents: Sequence[Any],
+    db: Any,
+) -> None:
+    if db is None:
+        return
+    for harness, agent in zip(harnesses, agents, strict=True):
+        controller = getattr(harness, "_permission_controller", None)
+        if controller is None or getattr(controller, "approver", None) is not None:
+            continue
+        controller.approver = AgentOSPermissionApprover(db, agent_id=agent.id)
+        harness._agentos_approvals_enabled = True
 
 
 def create_agentos_app(
@@ -291,6 +443,8 @@ def create_agentos_app(
     db = kwargs.pop("db", None)
     if db is None:
         db = getattr(agents[0], "db", None)
+    if approvals:
+        _attach_agentos_approval_bridge(harnesses, agents, db)
     agent_os = AgentOS(
         agents=agents,
         db=db,
@@ -303,16 +457,44 @@ def create_agentos_app(
         agent.id: harness for agent, harness in zip(agents, harnesses, strict=True)
     }
     app.state.agnoclaw_approvals_requested = approvals
+    app.state.agnoclaw_scheduler_requested = scheduler
+    app.state.agnoclaw_mcp_requested = enable_mcp_server
+    for harness in harnesses:
+        harness._agentos_scheduler_enabled = scheduler
+        harness._agentos_mcp_enabled = enable_mcp_server
     if include_agnoclaw_admin:
-        app.include_router(_build_agnoclaw_admin_router(app.state.agnoclaw_harnesses))
+        app.include_router(
+            _build_agnoclaw_admin_router(
+                app.state.agnoclaw_harnesses,
+                settings=getattr(agent_os, "settings", None),
+            )
+        )
     return app
 
 
-def _build_agnoclaw_admin_router(harnesses: Mapping[str, Any]) -> Any:
-    from fastapi import APIRouter, HTTPException
+def _build_agnoclaw_admin_router(harnesses: Mapping[str, Any], *, settings: Any = None) -> Any:
+    from agno.os.auth import get_authentication_dependency
+    from agno.os.scopes import has_required_scopes
+    from fastapi import APIRouter, Depends, HTTPException, Request
     from fastapi.responses import FileResponse
 
-    router = APIRouter(prefix="/agnoclaw", tags=["agnoclaw"])
+    auth_dependency = get_authentication_dependency(settings)
+
+    async def _require_agnoclaw_admin(request: Request) -> None:
+        if not getattr(request.state, "authorization_enabled", False):
+            return
+        scopes = list(getattr(request.state, "scopes", []) or [])
+        if has_required_scopes(scopes, ["agnoclaw:debug"]):
+            return
+        if has_required_scopes(scopes, ["agnoclaw:admin"]):
+            return
+        raise HTTPException(status_code=403, detail="agnoclaw admin scope required")
+
+    router = APIRouter(
+        prefix="/agnoclaw",
+        tags=["agnoclaw"],
+        dependencies=[Depends(auth_dependency), Depends(_require_agnoclaw_admin)],
+    )
 
     def _get_harness(harness_id: str) -> Any:
         harness = harnesses.get(harness_id)
