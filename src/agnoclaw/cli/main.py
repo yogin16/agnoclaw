@@ -33,6 +33,19 @@ except ImportError as e:
 
 console = Console()
 
+_ELEVATED_MODE_WORDS = {
+    "ask",
+    "on",
+    "full",
+    "off",
+    "status",
+    "enable",
+    "disable",
+    "enabled",
+    "disabled",
+    "always",
+}
+
 
 def _build_agent(
     model: str | None,
@@ -329,17 +342,40 @@ def _handle_slash_command(
         return True, queued_skill
 
     if cmd == "/elevated":
-        if not args.strip():
-            console.print("[yellow]Usage: /elevated <host command>[/yellow]")
+        arg_text = args.strip()
+        if not arg_text:
+            permissions = agent.admin_list_permissions()
+            mode = permissions.get("elevated_mode", "off")
+            console.print(f"[cyan]Elevated mode: {mode}[/cyan]")
+            console.print(
+                "[dim]Usage: /elevated <cmd> or "
+                "/elevated on|ask|full|off [cmd][/dim]"
+            )
             return True, queued_skill
-        from agnoclaw.runtime import InteractivePermissionApprover
 
-        permissions = agent.admin_list_permissions()
-        if not permissions.get("has_approver"):
-            agent.set_permission_approver(InteractivePermissionApprover())
+        first, _, rest = arg_text.partition(" ")
+        selected_mode = None
+        if first.lower() in _ELEVATED_MODE_WORDS:
+            if first.lower() == "status":
+                permissions = agent.admin_list_permissions()
+                mode = permissions.get("elevated_mode", "off")
+                console.print(f"[cyan]Elevated mode: {mode}[/cyan]")
+                return True, queued_skill
+            selected_mode = _set_cli_elevated_mode(agent, first.lower())
+            if not rest.strip():
+                console.print(f"[cyan]Elevated mode: {selected_mode}[/cyan]")
+                return True, queued_skill
+            arg_text = rest.strip()
+
+        _ensure_cli_elevated_approver(
+            agent,
+            default=selected_mode == "on",
+            skip_for_full=selected_mode == "full",
+        )
         result = agent.run_elevated_command(
-            args.strip(),
+            arg_text,
             reason="CLI /elevated directive",
+            _skip_approval=selected_mode == "full",
         )
         if result.stdout:
             console.print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
@@ -356,12 +392,43 @@ def _handle_slash_command(
             "  /skills        — list available skills\n"
             "  /workspace     — show workspace info\n"
             "  /elevated <cmd> — run an approved host command\n"
+            "  /elevated on|ask|full|off — set session bash elevation\n"
             "  /clear         — clear session context\n"
             "  /quit          — exit\n"
         )
         return True, queued_skill
 
     return False, queued_skill
+
+
+def _ensure_cli_elevated_approver(
+    agent,
+    *,
+    default: bool = False,
+    skip_for_full: bool = False,
+) -> None:
+    """Install an interactive approver for CLI elevated execution if needed."""
+    if skip_for_full:
+        return
+    from agnoclaw.runtime import InteractivePermissionApprover
+
+    permissions = agent.admin_list_permissions()
+    if not permissions.get("has_approver"):
+        agent.set_permission_approver(InteractivePermissionApprover(default=default))
+
+
+def _set_cli_elevated_mode(agent, mode: str) -> str:
+    """Set session-wide elevated mode and install the matching CLI approver."""
+    from agnoclaw.runtime import normalize_elevated_session_mode
+
+    normalized = normalize_elevated_session_mode(mode).value
+    if normalized in {"ask", "on"}:
+        _ensure_cli_elevated_approver(
+            agent,
+            default=normalized == "on",
+        )
+    agent.set_elevated_mode(normalized)
+    return normalized
 
 
 # ── agnoclaw tui ──────────────────────────────────────────────────────────────

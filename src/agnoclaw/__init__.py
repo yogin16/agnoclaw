@@ -53,6 +53,7 @@ from .runtime import (
     AllowAllPolicyEngine,
     ElevatedCommandRequest,
     ElevatedCommandResult,
+    ElevatedSessionMode,
     EventSinkMode,
     ExecutionContext,
     GuardrailViolation,
@@ -104,6 +105,7 @@ __all__ = [
     "EventSinkMode",
     "ElevatedCommandRequest",
     "ElevatedCommandResult",
+    "ElevatedSessionMode",
     "ExecutionContext",
     "GuardrailViolation",
     "HarnessAgent",  # backward compat

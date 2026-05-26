@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -74,6 +75,7 @@ def get_default_tools(
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
     backend: RuntimeBackend | None = None,
+    command_executor_wrapper: Callable[[CommandExecutor], CommandExecutor] | None = None,
 ) -> list:
     """
     Build the default tool suite based on configuration.
@@ -110,6 +112,8 @@ def get_default_tools(
         workspace_dir=tool_workspace_dir,
         sandbox_dir=tool_sandbox_dir,
     )
+    if command_executor_wrapper is not None:
+        resolved_command_executor = command_executor_wrapper(resolved_command_executor)
     resolved_browser_backend = resolved_backend.browser_backend
 
     tools.append(

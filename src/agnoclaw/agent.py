@@ -86,6 +86,7 @@ from .runtime import (
     EventSinkMode,
     ElevatedCommandRequest,
     ElevatedCommandResult,
+    ElevatedSessionMode,
     ExecutionContext,
     HarnessError,
     LifecycleHook,
@@ -111,12 +112,19 @@ from .runtime import (
     ToolCallResult,
     apply_redactions,
     build_event,
+    normalize_elevated_session_mode,
     normalize_permission_mode,
 )
 from .skills.backends import SkillInstallApprover
 from .skills.registry import SkillRegistry
 from .tools import PlanSignalToolkit, get_default_tools
-from .tools.backends import LocalCommandExecutor
+from .tools.backends import (
+    BackgroundCommandHandle,
+    BackgroundCommandOutput,
+    CommandExecutor,
+    CommandResult,
+    LocalCommandExecutor,
+)
 from .workspace import Workspace
 
 logger = logging.getLogger("agnoclaw.agent")
@@ -335,6 +343,154 @@ class HarnessSession:
         return HarnessRun(result=result)
 
 
+class _ElevatedSessionCommandExecutor:
+    """Route CLI session bash calls through the elevated host path when enabled."""
+
+    def __init__(
+        self,
+        *,
+        harness: AgentHarness,
+        sandbox_executor: CommandExecutor,
+        host_executor: CommandExecutor,
+    ) -> None:
+        self._harness = harness
+        self._sandbox_executor = sandbox_executor
+        self._host_executor = host_executor
+        self._elevated_task_ids: set[str] = set()
+        self.workspace_dir = getattr(sandbox_executor, "workspace_dir", None)
+
+    def _mode(self) -> ElevatedSessionMode:
+        return self._harness._elevated_session_mode
+
+    def _skip_approval(self) -> bool:
+        return self._mode() == ElevatedSessionMode.FULL
+
+    def _metadata(self) -> dict[str, Any]:
+        return {
+            "source": "elevated_session",
+            "elevated_mode": self._mode().value,
+        }
+
+    def run(
+        self,
+        *,
+        command: str,
+        workdir: str | None,
+        timeout_seconds: int | None,
+    ) -> CommandResult:
+        if self._mode() == ElevatedSessionMode.OFF:
+            return self._sandbox_executor.run(
+                command=command,
+                workdir=workdir,
+                timeout_seconds=timeout_seconds,
+            )
+
+        result = self._harness.run_elevated_command(
+            command,
+            reason="Session elevated bash tool call.",
+            working_dir=workdir,
+            timeout_seconds=timeout_seconds,
+            metadata=self._metadata(),
+            _skip_approval=self._skip_approval(),
+        )
+        return CommandResult(
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.exit_code,
+            duration_ms=result.duration_ms,
+        )
+
+    def start(
+        self,
+        *,
+        command: str,
+        workdir: str | None,
+        description: str | None = None,
+    ) -> BackgroundCommandHandle:
+        if self._mode() == ElevatedSessionMode.OFF:
+            return self._sandbox_executor.start(
+                command=command,
+                workdir=workdir,
+                description=description,
+            )
+
+        request, context = self._harness._build_elevated_command_request(
+            command,
+            reason=description or "Session elevated background bash tool call.",
+            working_dir=workdir,
+            timeout_seconds=None,
+            context=None,
+            metadata={**self._metadata(), "background": True},
+        )
+        tool_request = self._harness._elevated_tool_request(request)
+        payload = self._harness._elevated_request_payload(request)
+        self._harness._authorize_elevated_command_sync(
+            request=request,
+            tool_request=tool_request,
+            context=context,
+            payload=payload,
+            skip_approval=self._skip_approval(),
+        )
+        self._harness._emit_event_sync(
+            event_type="elevated.command.started",
+            run_id=request.run_id,
+            context=context,
+            payload={**payload, "background": True},
+        )
+        try:
+            handle = self._host_executor.start(
+                command=request.command,
+                workdir=request.working_dir,
+                description=description,
+            )
+        except Exception as exc:
+            self._harness._emit_event_sync(
+                event_type="elevated.command.failed",
+                run_id=request.run_id,
+                context=context,
+                payload={**payload, "background": True, "error": str(exc)},
+            )
+            raise
+        self._elevated_task_ids.add(handle.task_id)
+        self._harness._emit_event_sync(
+            event_type="elevated.command.completed",
+            run_id=request.run_id,
+            context=context,
+            payload={
+                **payload,
+                "background": True,
+                "task_id": handle.task_id,
+                "status": handle.status,
+                "log_path": handle.log_path,
+            },
+        )
+        return handle
+
+    def output(
+        self,
+        *,
+        task_id: str,
+        max_chars: int = 8000,
+        tail: bool = True,
+    ) -> BackgroundCommandOutput:
+        if task_id in self._elevated_task_ids:
+            return self._host_executor.output(
+                task_id=task_id,
+                max_chars=max_chars,
+                tail=tail,
+            )
+        return self._sandbox_executor.output(
+            task_id=task_id,
+            max_chars=max_chars,
+            tail=tail,
+        )
+
+    def kill(self, *, task_id: str, force: bool = False) -> str:
+        if task_id in self._elevated_task_ids:
+            return self._host_executor.kill(task_id=task_id, force=force)
+        return self._sandbox_executor.kill(task_id=task_id, force=force)
+
+
 class AgentHarness:
     """
     A hackable, model-agnostic agent harness built on Agno.
@@ -544,6 +700,7 @@ class AgentHarness:
             ),
         )
         self._plan_mode_restore_permission_mode: PermissionMode | None = None
+        self._elevated_session_mode = ElevatedSessionMode.OFF
 
         # Legacy compat: model_id / extra_tools / extra_instructions
         if model_id is not None:
@@ -675,6 +832,11 @@ class AgentHarness:
                 workspace_dir=self.workspace.path,
                 sandbox_dir=self.sandbox_dir,
                 backend=effective_backend,
+                command_executor_wrapper=lambda executor: _ElevatedSessionCommandExecutor(
+                    harness=self,
+                    sandbox_executor=executor,
+                    host_executor=self._elevated_command_executor,
+                ),
             )
         if _tools:
             _all_tools.extend(_tools)
@@ -1140,6 +1302,16 @@ class AgentHarness:
         if require_approver is not None:
             self._permission_controller.require_approver = bool(require_approver)
 
+    def set_elevated_mode(self, mode: str | ElevatedSessionMode) -> str:
+        """Set session-wide elevated execution mode for bash tool calls."""
+        self._elevated_session_mode = normalize_elevated_session_mode(mode)
+        return self._elevated_session_mode.value
+
+    @property
+    def elevated_mode(self) -> str:
+        """Current session-wide elevated execution mode."""
+        return self._elevated_session_mode.value
+
     @property
     def permission_mode(self) -> str:
         """Current runtime permission mode."""
@@ -1243,6 +1415,7 @@ class AgentHarness:
         controller = self._permission_controller
         return {
             "mode": controller.current_mode().value,
+            "elevated_mode": self.elevated_mode,
             "require_approver": controller.require_approver,
             "has_approver": controller.approver is not None,
             "preapproved_tools": sorted(controller._approved_tools),
@@ -1382,6 +1555,7 @@ class AgentHarness:
         timeout_seconds: int | None = None,
         context: ExecutionContext | None = None,
         metadata: dict[str, Any] | None = None,
+        _skip_approval: bool = False,
     ) -> ElevatedCommandResult:
         """Run a host-elevated command after explicit approval and audit events."""
         request, ctx = self._build_elevated_command_request(
@@ -1394,22 +1568,13 @@ class AgentHarness:
         )
         tool_request = self._elevated_tool_request(request)
         payload = self._elevated_request_payload(request)
-        self._emit_event_sync(
-            event_type="elevated.command.requested",
-            run_id=request.run_id,
-            context=ctx,
-            payload=payload,
-        )
         try:
-            self._run_elevated_preflight_sync(
+            self._authorize_elevated_command_sync(
                 request=request,
                 tool_request=tool_request,
                 context=ctx,
-            )
-            self._approve_elevated_command_sync(
-                request=request,
-                tool_request=tool_request,
-                context=ctx,
+                payload=payload,
+                skip_approval=_skip_approval,
             )
             self._emit_event_sync(
                 event_type="elevated.command.started",
@@ -1496,6 +1661,7 @@ class AgentHarness:
         timeout_seconds: int | None = None,
         context: ExecutionContext | None = None,
         metadata: dict[str, Any] | None = None,
+        _skip_approval: bool = False,
     ) -> ElevatedCommandResult:
         """Async variant of run_elevated_command."""
         request, ctx = self._build_elevated_command_request(
@@ -1508,22 +1674,13 @@ class AgentHarness:
         )
         tool_request = self._elevated_tool_request(request)
         payload = self._elevated_request_payload(request)
-        await self._emit_event_async(
-            event_type="elevated.command.requested",
-            run_id=request.run_id,
-            context=ctx,
-            payload=payload,
-        )
         try:
-            await self._run_elevated_preflight_async(
+            await self._authorize_elevated_command_async(
                 request=request,
                 tool_request=tool_request,
                 context=ctx,
-            )
-            await self._approve_elevated_command_async(
-                request=request,
-                tool_request=tool_request,
-                context=ctx,
+                payload=payload,
+                skip_approval=_skip_approval,
             )
             await self._emit_event_async(
                 event_type="elevated.command.started",
@@ -1671,6 +1828,74 @@ class AgentHarness:
                 "timeout_seconds": request.timeout_seconds,
             },
             metadata={"elevated": True, **request.metadata},
+        )
+
+    def _authorize_elevated_command_sync(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+        payload: dict[str, Any],
+        skip_approval: bool = False,
+    ) -> None:
+        self._emit_event_sync(
+            event_type="elevated.command.requested",
+            run_id=request.run_id,
+            context=context,
+            payload=payload,
+        )
+        self._run_elevated_preflight_sync(
+            request=request,
+            tool_request=tool_request,
+            context=context,
+        )
+        if skip_approval:
+            self._emit_event_sync(
+                event_type="elevated.command.approval_skipped",
+                run_id=request.run_id,
+                context=context,
+                payload={**payload, "reason_code": "ELEVATED_FULL_MODE"},
+            )
+            return
+        self._approve_elevated_command_sync(
+            request=request,
+            tool_request=tool_request,
+            context=context,
+        )
+
+    async def _authorize_elevated_command_async(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+        payload: dict[str, Any],
+        skip_approval: bool = False,
+    ) -> None:
+        await self._emit_event_async(
+            event_type="elevated.command.requested",
+            run_id=request.run_id,
+            context=context,
+            payload=payload,
+        )
+        await self._run_elevated_preflight_async(
+            request=request,
+            tool_request=tool_request,
+            context=context,
+        )
+        if skip_approval:
+            await self._emit_event_async(
+                event_type="elevated.command.approval_skipped",
+                run_id=request.run_id,
+                context=context,
+                payload={**payload, "reason_code": "ELEVATED_FULL_MODE"},
+            )
+            return
+        await self._approve_elevated_command_async(
+            request=request,
+            tool_request=tool_request,
+            context=context,
         )
 
     def _run_elevated_preflight_sync(

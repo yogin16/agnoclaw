@@ -6,11 +6,13 @@ import pytest
 
 from agnoclaw.runtime.hooks import ToolCallRequest
 from agnoclaw.runtime.permissions import (
+    ElevatedSessionMode,
     InteractivePermissionApprover,
     PermissionController,
     PermissionMode,
     PermissionRequest,
     classify_tool,
+    normalize_elevated_session_mode,
     normalize_permission_mode,
 )
 from agnoclaw.runtime.policy import PolicyAction
@@ -262,6 +264,14 @@ def test_set_mode_and_current():
     assert ctrl.current_mode() == PermissionMode.BYPASS
     ctrl.set_mode("plan")
     assert ctrl.current_mode() == PermissionMode.PLAN
+
+
+def test_normalize_elevated_session_mode_aliases():
+    assert normalize_elevated_session_mode("on") == ElevatedSessionMode.ON
+    assert normalize_elevated_session_mode("enable") == ElevatedSessionMode.ON
+    assert normalize_elevated_session_mode("ask") == ElevatedSessionMode.ASK
+    assert normalize_elevated_session_mode("full") == ElevatedSessionMode.FULL
+    assert normalize_elevated_session_mode("off") == ElevatedSessionMode.OFF
 
 
 # ── PermissionRequest dataclass ─────────────────────────────────────────

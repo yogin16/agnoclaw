@@ -40,12 +40,14 @@ from .hooks import (
 from .permissions import (
     ElevatedCommandRequest,
     ElevatedCommandResult,
+    ElevatedSessionMode,
     InteractivePermissionApprover,
     PermissionApprover,
     PermissionController,
     PermissionMode,
     PermissionRequest,
     classify_tool,
+    normalize_elevated_session_mode,
     normalize_permission_mode,
 )
 from .policy import (
@@ -79,6 +81,7 @@ __all__ = [
     "ExecutionContext",
     "ElevatedCommandRequest",
     "ElevatedCommandResult",
+    "ElevatedSessionMode",
     "HarnessError",
     "HarnessEvent",
     "InMemoryEventSink",
@@ -118,4 +121,5 @@ __all__ = [
     "classify_tool",
     "create_agentos_app",
     "normalize_permission_mode",
+    "normalize_elevated_session_mode",
 ]

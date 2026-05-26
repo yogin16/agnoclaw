@@ -22,6 +22,15 @@ class PermissionMode(StrEnum):
     DONT_ASK = "dont_ask"
 
 
+class ElevatedSessionMode(StrEnum):
+    """Session-wide elevated execution modes for interactive CLI sessions."""
+
+    OFF = "off"
+    ASK = "ask"
+    ON = "on"
+    FULL = "full"
+
+
 _MODE_ALIASES = {
     "bypasspermissions": PermissionMode.BYPASS,
     "bypass_permissions": PermissionMode.BYPASS,
@@ -32,6 +41,25 @@ _MODE_ALIASES = {
     "dont_ask": PermissionMode.DONT_ASK,
     "default": PermissionMode.DEFAULT,
     "bypass": PermissionMode.BYPASS,
+}
+
+_ELEVATED_MODE_ALIASES = {
+    "0": ElevatedSessionMode.OFF,
+    "false": ElevatedSessionMode.OFF,
+    "no": ElevatedSessionMode.OFF,
+    "off": ElevatedSessionMode.OFF,
+    "disable": ElevatedSessionMode.OFF,
+    "disabled": ElevatedSessionMode.OFF,
+    "ask": ElevatedSessionMode.ASK,
+    "prompt": ElevatedSessionMode.ASK,
+    "1": ElevatedSessionMode.ON,
+    "true": ElevatedSessionMode.ON,
+    "yes": ElevatedSessionMode.ON,
+    "on": ElevatedSessionMode.ON,
+    "enable": ElevatedSessionMode.ON,
+    "enabled": ElevatedSessionMode.ON,
+    "full": ElevatedSessionMode.FULL,
+    "always": ElevatedSessionMode.FULL,
 }
 
 
@@ -157,6 +185,21 @@ def normalize_permission_mode(value: str | PermissionMode) -> PermissionMode:
         return _MODE_ALIASES[raw]
     valid = ", ".join(sorted(m.value for m in PermissionMode))
     raise ValueError(f"Invalid permission mode: {value!r}. Use one of: {valid}")
+
+
+def normalize_elevated_session_mode(
+    value: str | ElevatedSessionMode,
+) -> ElevatedSessionMode:
+    """Normalize aliases and validate elevated session mode values."""
+    if isinstance(value, ElevatedSessionMode):
+        return value
+    raw = str(value or "").strip().lower()
+    if raw in _ELEVATED_MODE_ALIASES:
+        return _ELEVATED_MODE_ALIASES[raw]
+    valid = ", ".join(mode.value for mode in ElevatedSessionMode)
+    raise ValueError(
+        f"Invalid elevated session mode: {value!r}. Use one of: {valid}"
+    )
 
 
 def classify_tool(tool_name: str) -> tuple[str, bool]:

@@ -64,7 +64,7 @@ Deferred by design:
 | Plan-mode runtime read-only | Permission-layer enforcement | Permission/safety enforcement | **Implemented** | Low | Harness |
 | Interactive approval UX | Native in-product approval flow | Approval + elevated flow | **Implemented** (terminal approver + AgentOS bridge) | ~~Medium~~ Done | Harness |
 | Background shell lifecycle | `BashOutput`, `KillShell` | Exec task lifecycle | **Implemented (opt-in)** (`bash_start/output/kill`) | Medium | Harness |
-| Elevated execution path | Bypass/elevation semantics | Elevated mode (`!`) | **Partial** (SDK + CLI `/elevated <cmd>`; no session-wide modes yet) | High | Harness |
+| Elevated execution path | Bypass/elevation semantics | Elevated mode (`!`) | **Implemented** (SDK + CLI `/elevated` modes) | ~~High~~ Done | Harness |
 | Tool boundary policy interception | Pre/post tool controls | Hooks around command/tool lifecycle | **Implemented** | Low | Harness |
 | Runtime guardrails | Permission/sandbox controls | Sandboxing/security controls | **Implemented (path/network)** | Low | Harness |
 | Built-in runtime backend abstraction | Tool family can target one alternate runtime plane | Exec/files/browser/skills bind to sandbox/container workspace | **Implemented** (`RuntimeBackend`) | ~~High~~ Done | Harness |
@@ -119,7 +119,8 @@ Newly closed or reduced gaps (v0.8 preview):
    `arun_elevated_command()` provide host-local command execution with explicit
    reason capture, guardrail and policy preflight, permission approver gating,
    `elevated.command.*` audit events, an interactive terminal permission
-   approver, and a CLI `/elevated <cmd>` directive.
+   approver, a CLI `/elevated <cmd>` directive, and session-wide
+   `/elevated on|ask|full|off` modes for subsequent bash tool calls.
 7. **Structured plan UX signals** — `AskUserQuestion` and `ExitPlanMode` are
    available as plan-mode-safe tools, with SDK methods for recording/emitting
    plan question and completion signals.
@@ -147,7 +148,6 @@ Previously closed:
    enable/disable, trigger, and run history.
 
 Still open in this area:
-- Session-wide `/elevated on|ask|full` directive flow
 - Cross-session/background task persistence and queueing semantics
 - Hosted scheduler API management beyond AgentOS passthrough
 
@@ -159,9 +159,9 @@ Still open in this area:
 
 1. Elevated execution path
 - SDK-level elevated command execution now has an explicit request/result
-  contract, approval gate, policy/guardrail preflight, and audit event schema.
-  CLI `/elevated <cmd>` runs a single approved host command. Session-wide
-  `/elevated on|ask|full` defaults remain open.
+  contract, approval gate, policy/guardrail preflight, audit event schema,
+  single-command CLI execution, and session-wide CLI elevated defaults for
+  subsequent bash tool calls.
 
 2. Hook-pack system + broader lifecycle coverage
 - Session/message/compaction lifecycle checkpoints now exist for harness and

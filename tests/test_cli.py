@@ -271,6 +271,7 @@ def test_handle_slash_elevated_uses_interactive_approver_when_missing():
     agent.run_elevated_command.assert_called_once_with(
         "printf ok",
         reason="CLI /elevated directive",
+        _skip_approval=False,
     )
 
 
@@ -289,7 +290,49 @@ def test_handle_slash_elevated_preserves_existing_approver():
 
     assert handled is True
     agent.set_permission_approver.assert_not_called()
-    agent.run_elevated_command.assert_called_once()
+    agent.run_elevated_command.assert_called_once_with(
+        "id",
+        reason="CLI /elevated directive",
+        _skip_approval=False,
+    )
+
+
+def test_handle_slash_elevated_sets_session_mode_and_approver():
+    agent = MagicMock()
+    agent.admin_list_permissions.return_value = {"has_approver": False}
+
+    handled, queued = _handle_slash_command("/elevated on", agent, None)
+
+    assert handled is True
+    assert queued is None
+    agent.set_elevated_mode.assert_called_once_with("on")
+    agent.set_permission_approver.assert_called_once()
+    approver = agent.set_permission_approver.call_args.args[0]
+    assert approver.default is True
+    agent.run_elevated_command.assert_not_called()
+
+
+def test_handle_slash_elevated_full_command_skips_approver():
+    from types import SimpleNamespace
+
+    agent = MagicMock()
+    agent.admin_list_permissions.return_value = {"has_approver": True}
+    agent.run_elevated_command.return_value = SimpleNamespace(
+        stdout="",
+        stderr="",
+        exit_code=0,
+    )
+
+    handled, _ = _handle_slash_command("/elevated full id", agent, None)
+
+    assert handled is True
+    agent.set_permission_approver.assert_not_called()
+    agent.set_elevated_mode.assert_called_once_with("full")
+    agent.run_elevated_command.assert_called_once_with(
+        "id",
+        reason="CLI /elevated directive",
+        _skip_approval=True,
+    )
 
 
 # ── agnoclaw pack ─────────────────────────────────────────────────────────────

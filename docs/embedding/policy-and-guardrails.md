@@ -109,12 +109,16 @@ result = harness.run_elevated_command(
 )
 ```
 
-In `agnoclaw chat --sync`, `/elevated <command>` runs the same path and installs
-an `InteractivePermissionApprover` automatically when no approver is configured.
+In `agnoclaw chat`, `/elevated <command>` runs the same path and installs an
+`InteractivePermissionApprover` automatically when no approver is configured.
+`/elevated on|ask|full|off` sets a session-wide elevated mode for later bash
+tool calls. `ask` and `on` still prompt; `full` skips the permission prompt but
+keeps guardrail checks, policy checks, and audit events.
 
 Elevated commands emit:
 - `elevated.command.requested`
 - `elevated.command.approved`
+- `elevated.command.approval_skipped`
 - `elevated.command.rejected`
 - `elevated.command.started`
 - `elevated.command.completed`

@@ -125,6 +125,58 @@ def test_set_permission_approver(tmp_path):
     assert harness._permission_controller.require_approver is True
 
 
+def test_set_elevated_mode(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+
+    assert harness.elevated_mode == "off"
+    assert harness.set_elevated_mode("on") == "on"
+    assert harness.elevated_mode == "on"
+    assert harness.admin_list_permissions()["elevated_mode"] == "on"
+
+
+def test_session_elevated_full_routes_bash_through_host_path(tmp_path):
+    sink = InMemoryEventSink()
+    harness, mock_agent = _make_harness(tmp_path, event_sink=sink)
+    bash = next(tool for tool in mock_agent.tools if getattr(tool, "name", None) == "bash")
+
+    harness.set_elevated_mode("full")
+    output = bash.entrypoint("printf elevated-tool")
+
+    assert output == "elevated-tool"
+    event_types = [event.event_type for event in sink.events]
+    assert event_types == [
+        "elevated.command.requested",
+        "policy.decision",
+        "elevated.command.approval_skipped",
+        "elevated.command.started",
+        "policy.decision",
+        "elevated.command.completed",
+    ]
+    assert sink.events[0].payload["metadata"]["source"] == "elevated_session"
+    assert sink.events[0].payload["metadata"]["elevated_mode"] == "full"
+
+
+def test_session_elevated_ask_uses_permission_approver(tmp_path):
+    sink = InMemoryEventSink()
+    approver = MagicMock()
+    approver.approve.return_value = True
+    harness, mock_agent = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        permission_approver=approver,
+    )
+    bash = next(tool for tool in mock_agent.tools if getattr(tool, "name", None) == "bash")
+
+    harness.set_elevated_mode("ask")
+    output = bash.entrypoint("printf ask-mode")
+
+    assert output == "ask-mode"
+    permission_request = approver.approve.call_args.args[0]
+    assert permission_request.tool_name == "bash.elevated"
+    assert permission_request.category == "elevated_exec"
+    assert permission_request.arguments["command"] == "printf ask-mode"
+
+
 def test_add_lifecycle_hook_and_session_created_checkpoint(tmp_path):
     harness, _ = _make_harness(tmp_path)
     seen = []

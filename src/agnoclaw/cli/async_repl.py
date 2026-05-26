@@ -76,7 +76,8 @@ class AsyncREPL:
                 f"Workspace: [dim]{self._agent.workspace.path}[/dim]\n"
                 f"Type [bold]/quit[/bold] or [bold]Ctrl+C[/bold] to exit. "
                 f"[bold]/skill <name>[/bold] to activate a skill. "
-                f"[bold]/clear[/bold] to reset session."
+                f"[bold]/clear[/bold] to reset session. "
+                f"[bold]/elevated on|ask|full|off[/bold] to set host execution."
                 + (
                     "\n[dim]Heartbeat: active[/dim]"
                     if self._enable_heartbeat and self._daemon
