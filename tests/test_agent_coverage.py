@@ -13,6 +13,8 @@ from agnoclaw.runtime import (
     ExecutionContext,
     InMemoryEventSink,
     LifecycleHookRequest,
+    PlanExitSignal,
+    PlanQuestionSignal,
     PolicyDecision,
 )
 from agnoclaw.runtime.errors import HarnessError
@@ -191,6 +193,40 @@ async def test_async_lifecycle_hook_updates_request(tmp_path):
 
     assert isinstance(result, LifecycleHookRequest)
     assert result.metadata == {"done": True, "async": True}
+
+
+def test_plan_signal_methods_emit_events_and_exit_plan_mode(tmp_path):
+    sink = InMemoryEventSink()
+    harness, _ = _make_harness(
+        tmp_path,
+        event_sink=sink,
+        permission_mode="default",
+    )
+    harness.enter_plan_mode()
+
+    question = harness.ask_user_question(
+        "Which implementation path?",
+        options=["Small", "Complete"],
+        allow_freeform=False,
+    )
+    completed = harness.signal_plan_completion(
+        "Implement the complete path.",
+        plan_path="implementation.plan.md",
+    )
+
+    assert isinstance(question, PlanQuestionSignal)
+    assert isinstance(completed, PlanExitSignal)
+    assert harness.permission_mode == "default"
+    assert harness.plan_signals() == [question, completed]
+    assert [event.event_type for event in sink.events] == [
+        "plan.question.requested",
+        "plan.completed",
+    ]
+    assert sink.events[0].payload["options"] == ["Small", "Complete"]
+    assert sink.events[1].payload["plan_path"] == "implementation.plan.md"
+
+    harness.clear_plan_signals()
+    assert harness.plan_signals() == []
 
 
 def test_run_elevated_command_requires_approver(tmp_path):

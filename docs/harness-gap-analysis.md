@@ -80,7 +80,7 @@ Deferred by design:
 | Skill metadata compatibility | AgentSkills + CC frontmatter | OpenClaw metadata and install specs | **Implemented** | Low | Harness |
 | Skill `context: fork` execution | Skill fork contexts | Fork-style skill execution | **Implemented** (routes to subagent) | ~~Medium~~ Done | Harness |
 | Skill `command-dispatch` execution | Tool-level skill execution paths | Direct dispatch metadata | **Implemented** (direct tool invocation) | ~~Medium~~ Done | Harness |
-| Structured plan UX tools | `AskUserQuestion`, `ExitPlanMode` tool | Guided workflow patterns | **Missing** | Medium | Harness |
+| Structured plan UX tools | `AskUserQuestion`, `ExitPlanMode` tool | Guided workflow patterns | **Implemented** (plan signal toolkit + harness signal methods) | ~~Medium~~ Done | Harness |
 | Notebook tools | Notebook read/edit tools | N/A | **Implemented** (NotebookToolkit) | ~~Medium~~ Done | Harness |
 | MCP parity | MCP tools/resources/search | MCP integrations | **Implemented** (MCPToolkit: stdio + SSE) | ~~Deferred~~ Done | Harness |
 | Browser tools | Playwright browser automation | Browser use tools | **Implemented** (BrowserToolkit, optional extra) | ~~N/A~~ Done | Harness |
@@ -119,6 +119,9 @@ Newly closed or reduced gaps (v0.8 preview):
    `arun_elevated_command()` provide host-local command execution with explicit
    reason capture, guardrail and policy preflight, permission approver gating,
    and `elevated.command.*` audit events.
+7. **Structured plan UX signals** — `AskUserQuestion` and `ExitPlanMode` are
+   available as plan-mode-safe tools, with SDK methods for recording/emitting
+   plan question and completion signals.
 
 Newly closed or reduced gaps (v0.3):
 1. **Browser toolkit** — Playwright-based with navigate, click, type, screenshot, snapshot, scroll, fill_form, close.
@@ -184,8 +187,9 @@ Still open in this area:
 4. ~~Hierarchical workspace context loading~~ **DONE**
 - ~~Deterministic layer precedence (global -> project -> workspace/path).~~
 
-5. Plan UX tooling
-- Add harness-level tools/signals for structured user questions and explicit plan completion.
+5. ~~Plan UX tooling~~ **DONE**
+- ~~Add harness-level tools/signals for structured user questions and explicit
+  plan completion.~~
 
 6. ~~Notebook tools~~ **DONE**
 - ~~Add read/edit support for notebook-centric workflows.~~

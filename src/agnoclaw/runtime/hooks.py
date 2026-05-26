@@ -77,6 +77,28 @@ class LifecycleHookRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class PlanQuestionSignal:
+    """Structured request for user input during planning."""
+
+    signal_id: str
+    question: str
+    options: list[str] = field(default_factory=list)
+    allow_freeform: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PlanExitSignal:
+    """Structured signal that a plan is ready for review."""
+
+    signal_id: str
+    summary: str
+    plan_path: str | None = None
+    ready_for_approval: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @runtime_checkable
 class PreRunHook(Protocol):
     """Pre-run hook protocol."""

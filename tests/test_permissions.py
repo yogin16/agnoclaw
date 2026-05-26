@@ -62,6 +62,13 @@ def test_classify_read_only():
     assert read_only is True
 
 
+def test_classify_plan_signals_as_read_only():
+    for tool_name in ("AskUserQuestion", "ExitPlanMode"):
+        cat, read_only = classify_tool(tool_name)
+        assert cat == "read"
+        assert read_only is True
+
+
 def test_classify_file_edit():
     cat, read_only = classify_tool("write_file")
     assert cat == "file_edit"

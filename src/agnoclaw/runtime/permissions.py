@@ -46,6 +46,10 @@ READ_ONLY_TOOLS = frozenset(
         "read_progress",
         "read_features",
         "bash_output",
+        "AskUserQuestion",
+        "ExitPlanMode",
+        "ask_user_question",
+        "exit_plan_mode",
     }
 )
 

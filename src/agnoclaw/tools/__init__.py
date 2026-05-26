@@ -28,7 +28,13 @@ from .backends import (
 from .bash import BashToolkit, make_bash_tool
 from .browser_backends import BrowserBackend, LocalPlaywrightBrowserBackend
 from .files import FilesToolkit
-from .tasks import ProgressToolkit, SubagentDefinition, TodoToolkit, make_subagent_tool
+from .tasks import (
+    PlanSignalToolkit,
+    ProgressToolkit,
+    SubagentDefinition,
+    TodoToolkit,
+    make_subagent_tool,
+)
 from .web import WebToolkit
 
 logger = logging.getLogger("agnoclaw.tools")
@@ -42,6 +48,7 @@ __all__ = [
     "LocalPlaywrightBrowserBackend",
     "LocalCommandExecutor",
     "LocalWorkspaceAdapter",
+    "PlanSignalToolkit",
     "RuntimeBackend",
     "WorkspaceAdapter",
     "WebToolkit",
@@ -141,6 +148,7 @@ def get_default_tools(
 
     # Planning (always enabled — context engineering)
     tools.append(TodoToolkit())
+    tools.append(PlanSignalToolkit())
 
     # Multi-window project tracking (always enabled)
     tools.append(ProgressToolkit(project_dir=tool_workspace_dir))

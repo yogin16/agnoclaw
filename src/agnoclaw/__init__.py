@@ -64,6 +64,8 @@ from .runtime import (
     LifecycleHookRequest,
     PermissionController,
     PermissionMode,
+    PlanExitSignal,
+    PlanQuestionSignal,
     PolicyAction,
     PolicyDecision,
     RuntimeGuardrails,
@@ -81,6 +83,7 @@ from .tools import (
     LocalCommandExecutor,
     LocalPlaywrightBrowserBackend,
     LocalWorkspaceAdapter,
+    PlanSignalToolkit,
     WorkspaceAdapter,
 )
 from .tools.tasks import SubagentDefinition
@@ -121,8 +124,11 @@ __all__ = [
     "PackProvides",
     "PackTrust",
     "PackTrustError",
+    "PlanExitSignal",
+    "PlanQuestionSignal",
     "PermissionController",
     "PermissionMode",
+    "PlanSignalToolkit",
     "PolicyAction",
     "PolicyDecision",
     "RuntimeBackend",

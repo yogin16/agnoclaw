@@ -1,7 +1,8 @@
 """Tests for the tool suite (bash, files, web, tasks)."""
 
+import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -691,6 +692,44 @@ def test_todo_toolkit_delete_nonexistent():
     assert "error" in result.lower() or "not found" in result.lower()
 
 
+# PlanSignalToolkit tests
+
+
+def test_plan_signal_toolkit_records_user_question():
+    from agnoclaw.runtime import PlanQuestionSignal
+    from agnoclaw.tools.tasks import PlanSignalToolkit
+
+    toolkit = PlanSignalToolkit()
+    result = toolkit.functions["AskUserQuestion"].entrypoint(
+        "Which path?",
+        options='["Small", "Complete"]',
+        allow_freeform=False,
+    )
+    payload = json.loads(result)
+
+    assert payload["signal"] == "AskUserQuestion"
+    assert payload["options"] == ["Small", "Complete"]
+    assert payload["allow_freeform"] is False
+    assert isinstance(toolkit.signals[0], PlanQuestionSignal)
+
+
+def test_plan_signal_toolkit_records_exit_plan_mode():
+    from agnoclaw.runtime import PlanExitSignal
+    from agnoclaw.tools.tasks import PlanSignalToolkit
+
+    toolkit = PlanSignalToolkit()
+    result = toolkit.functions["ExitPlanMode"].entrypoint(
+        "Implement the approved plan.",
+        plan_path="work.plan.md",
+    )
+    payload = json.loads(result)
+
+    assert payload["signal"] == "ExitPlanMode"
+    assert payload["summary"] == "Implement the approved plan."
+    assert payload["plan_path"] == "work.plan.md"
+    assert isinstance(toolkit.signals[0], PlanExitSignal)
+
+
 # ── get_default_tools tests ──────────────────────────────────────────────
 
 
@@ -722,6 +761,16 @@ def test_get_default_tools_includes_todos():
     cfg = HarnessConfig()
     tools = get_default_tools(cfg)
     assert any(isinstance(t, TodoToolkit) for t in tools)
+
+
+def test_get_default_tools_includes_plan_signals():
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.tasks import PlanSignalToolkit
+
+    tools = get_default_tools(HarnessConfig())
+
+    assert any(isinstance(t, PlanSignalToolkit) for t in tools)
 
 
 def test_get_default_tools_respects_disable_bash():

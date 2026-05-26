@@ -91,6 +91,8 @@ from .runtime import (
     LifecycleHook,
     LifecycleHookRequest,
     NullEventSink,
+    PlanExitSignal,
+    PlanQuestionSignal,
     PermissionApprover,
     PermissionController,
     PermissionMode,
@@ -113,7 +115,7 @@ from .runtime import (
 )
 from .skills.backends import SkillInstallApprover
 from .skills.registry import SkillRegistry
-from .tools import get_default_tools
+from .tools import PlanSignalToolkit, get_default_tools
 from .tools.backends import LocalCommandExecutor
 from .workspace import Workspace
 
@@ -710,6 +712,9 @@ class AgentHarness:
                 )
 
         self._attach_tool_runtime_hooks(_all_tools)
+        self._plan_signal_toolkit = self._find_plan_signal_toolkit(_all_tools)
+        if self._plan_signal_toolkit is None:
+            self._plan_signal_toolkit = PlanSignalToolkit()
 
         # Resolve learning flags before building system prompt
         _enable_learning = (
@@ -873,6 +878,13 @@ class AgentHarness:
                 if name:
                     names.add(str(name))
         return names
+
+    @staticmethod
+    def _find_plan_signal_toolkit(tools: list[Any]) -> PlanSignalToolkit | None:
+        for tool in tools:
+            if isinstance(tool, PlanSignalToolkit):
+                return tool
+        return None
 
     def _context_provider_instructions(self) -> str | None:
         if not self._context_providers:
@@ -4695,6 +4707,85 @@ class AgentHarness:
             )
         self._plan_mode_restore_permission_mode = None
         self._set_system_prompt(session_id=self.session_id)
+
+    def ask_user_question(
+        self,
+        question: str,
+        *,
+        options: list[str] | tuple[str, ...] | str | None = None,
+        allow_freeform: bool = True,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> PlanQuestionSignal:
+        """Record and emit a structured planning question signal."""
+        signal = self._plan_signal_toolkit.record_question(
+            question,
+            options=options,
+            allow_freeform=allow_freeform,
+            metadata=metadata,
+        )
+        ctx = context.with_metadata(metadata) if context else self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata=metadata,
+        )
+        self._emit_event_sync(
+            event_type="plan.question.requested",
+            run_id=signal.signal_id,
+            context=ctx,
+            payload={
+                "signal_id": signal.signal_id,
+                "question": signal.question,
+                "options": list(signal.options),
+                "allow_freeform": signal.allow_freeform,
+                "metadata": dict(signal.metadata),
+            },
+        )
+        return signal
+
+    def signal_plan_completion(
+        self,
+        summary: str,
+        *,
+        plan_path: str | None = None,
+        ready_for_approval: bool = True,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> PlanExitSignal:
+        """Record a structured plan-complete signal and exit plan mode."""
+        signal = self._plan_signal_toolkit.record_exit(
+            summary,
+            plan_path=plan_path,
+            ready_for_approval=ready_for_approval,
+            metadata=metadata,
+        )
+        self.exit_plan_mode()
+        ctx = context.with_metadata(metadata) if context else self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata=metadata,
+        )
+        self._emit_event_sync(
+            event_type="plan.completed",
+            run_id=signal.signal_id,
+            context=ctx,
+            payload={
+                "signal_id": signal.signal_id,
+                "summary": signal.summary,
+                "plan_path": signal.plan_path,
+                "ready_for_approval": signal.ready_for_approval,
+                "metadata": dict(signal.metadata),
+            },
+        )
+        return signal
+
+    def plan_signals(self) -> list[PlanQuestionSignal | PlanExitSignal]:
+        """Return captured plan question/completion signals."""
+        return list(self._plan_signal_toolkit.signals)
+
+    def clear_plan_signals(self) -> None:
+        """Clear captured plan signals."""
+        self._plan_signal_toolkit.clear()
 
     def add_tool(self, tool) -> None:
         """Add a tool or toolkit to the agent."""

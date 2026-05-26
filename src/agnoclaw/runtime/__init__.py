@@ -26,6 +26,8 @@ from .guardrails import (
 from .hooks import (
     LifecycleHook,
     LifecycleHookRequest,
+    PlanExitSignal,
+    PlanQuestionSignal,
     PostRunHook,
     PreRunHook,
     PromptEnvelope,
@@ -84,6 +86,8 @@ __all__ = [
     "LifecycleHook",
     "LifecycleHookRequest",
     "NullEventSink",
+    "PlanExitSignal",
+    "PlanQuestionSignal",
     "PolicyAction",
     "PolicyDecision",
     "PolicyEngine",
