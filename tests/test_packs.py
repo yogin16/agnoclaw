@@ -8,6 +8,7 @@ import pytest
 
 from agnoclaw import AgentHarness, HarnessConfig, HarnessError, InMemoryEventSink
 from agnoclaw.packs import (
+    PackError,
     PackTrustError,
     inspect_pack,
     install_pack,
@@ -188,6 +189,63 @@ requires_code_execution = true
     assert len(loaded.pre_run_hooks) == 1
 
 
+def test_load_pack_collects_lifecycle_hooks(tmp_path):
+    pack = _write_pack(
+        tmp_path,
+        """
+name = "lifecycle-pack"
+
+[provides]
+hooks = ["lifecycle_pack_events.hooks:register"]
+
+[trust]
+requires_code_execution = true
+""",
+    )
+    module_dir = pack / "lifecycle_pack_events"
+    module_dir.mkdir()
+    (module_dir / "__init__.py").write_text("", encoding="utf-8")
+    (module_dir / "hooks.py").write_text(
+        "def register():\n"
+        "    def on_end(event, context):\n"
+        "        event.metadata['ended'] = True\n"
+        "        return event\n"
+        "    return {'lifecycle_hooks': {'session.end.completed': [on_end]}}\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_pack(pack, trusted=True)
+
+    assert list(loaded.lifecycle_hooks) == ["session.end.completed"]
+    assert len(loaded.lifecycle_hooks["session.end.completed"]) == 1
+
+
+def test_load_pack_rejects_non_callable_lifecycle_hook(tmp_path):
+    pack = _write_pack(
+        tmp_path,
+        """
+name = "bad-lifecycle-pack"
+
+[provides]
+hooks = ["bad_lifecycle_pack.hooks:register"]
+
+[trust]
+requires_code_execution = true
+""",
+    )
+    module_dir = pack / "bad_lifecycle_pack"
+    module_dir.mkdir()
+    (module_dir / "__init__.py").write_text("", encoding="utf-8")
+    (module_dir / "hooks.py").write_text(
+        "def register():\n"
+        "    return {'lifecycle_hooks': {'session.end.completed': ['bad']}}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PackError, match="list of callables"):
+        load_pack(pack, trusted=True)
+
+
 def test_harness_emits_pack_hook_events(tmp_path):
     pack = _write_pack(
         tmp_path,
@@ -248,6 +306,57 @@ requires_code_execution = true
         "pack.hook.started",
         "pack.hook.completed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_harness_emits_pack_lifecycle_hook_events(tmp_path):
+    pack = _write_pack(
+        tmp_path,
+        """
+name = "lifecycle-pack"
+
+[provides]
+hooks = ["lifecycle_pack.hooks:register"]
+
+[trust]
+requires_code_execution = true
+""",
+    )
+    module_dir = pack / "lifecycle_pack"
+    module_dir.mkdir()
+    (module_dir / "__init__.py").write_text("", encoding="utf-8")
+    (module_dir / "hooks.py").write_text(
+        "def register():\n"
+        "    def on_end(event, context):\n"
+        "        event.metadata['ended'] = True\n"
+        "        return event\n"
+        "    return {'session_end_hooks': [on_end]}\n",
+        encoding="utf-8",
+    )
+    sink = InMemoryEventSink()
+
+    with patch("agnoclaw.agent.Agent") as agent_cls:
+        mock_agent = MagicMock()
+        mock_agent.system_message = ""
+        agent_cls.return_value = mock_agent
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                workspace_dir=tmp_path / "workspace",
+                config=HarnessConfig(),
+                include_default_tools=False,
+                packs=[pack],
+                trusted_packs=True,
+                event_sink=sink,
+            )
+    result = await harness.end_session(generate_summary=False)
+
+    assert result is None
+    assert [event.event_type for event in sink.events] == [
+        "pack.hook.started",
+        "pack.hook.completed",
+    ]
+    assert sink.events[0].payload["kind"] == "lifecycle"
+    assert sink.events[0].payload["lifecycle_event"] == "session.end.completed"
 
 
 def test_harness_runs_pack_policies_and_emits_events(tmp_path):

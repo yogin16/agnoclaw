@@ -109,8 +109,9 @@ Newly closed or reduced gaps (v0.8 preview):
    through harness permission, policy, and event emission.
 4. **Pack v1 preview** — Pack manifests can be inspected without executing code,
    installed from local paths or `git+` URLs, trusted explicitly, removed, and
-   loaded into the harness. Pack-provided hooks and policies emit lifecycle
-   events, and pack policies compose after the harness policy engine.
+   loaded into the harness. Pack-provided run hooks, lifecycle hooks, and
+   policies emit lifecycle events, and pack policies compose after the harness
+   policy engine.
 5. **SDK ergonomics** — `AgentHarness.create()`, `session().send()`, and remote
    client helpers provide a programmatic harness-shaped API over existing
    `run/arun` behavior.
@@ -152,9 +153,9 @@ Still open in this area:
 - Add explicit elevated command contract, approval gate, and audit event schema.
 
 2. Hook-pack system + broader lifecycle coverage
-- Add workspace/project hook discovery and more checkpoints
-  (session/message/compact/worktree equivalents). Pack-provided run hooks now emit
-  events, but broader lifecycle coverage remains open.
+- Session/message/compaction lifecycle checkpoints now exist for harness and
+  pack hooks. Workspace/project hook discovery and worktree-specific checkpoints
+  remain open.
 
 3. Sandbox provider abstraction beyond tool backends
 - Keep current guardrails and injected exec/files backends; add full runtime sandbox providers and mode semantics.

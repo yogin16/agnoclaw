@@ -70,6 +70,7 @@ class LoadedPack:
     skills_dirs: list[Path] = field(default_factory=list)
     pre_run_hooks: list[Callable] = field(default_factory=list)
     post_run_hooks: list[Callable] = field(default_factory=list)
+    lifecycle_hooks: dict[str, list[Callable]] = field(default_factory=dict)
     context_providers: list[Any] = field(default_factory=list)
     policies: list[Any] = field(default_factory=list)
 
@@ -228,6 +229,21 @@ def load_pack(path: str | Path, *, trusted: bool = False) -> LoadedPack:
                 if isinstance(item, dict):
                     loaded.pre_run_hooks.extend(item.get("pre_run_hooks", []) or [])
                     loaded.post_run_hooks.extend(item.get("post_run_hooks", []) or [])
+                    for event_type, hooks in (item.get("lifecycle_hooks") or {}).items():
+                        loaded.lifecycle_hooks.setdefault(str(event_type), []).extend(
+                            _callable_list(hooks)
+                        )
+                    for key, event_type in (
+                        ("session_start_hooks", "session.created"),
+                        ("session_end_hooks", "session.end.completed"),
+                        ("compaction_hooks", "session.compaction.completed"),
+                        ("message_hooks", "message.received"),
+                    ):
+                        hooks = item.get(key)
+                        if hooks:
+                            loaded.lifecycle_hooks.setdefault(event_type, []).extend(
+                                _callable_list(hooks)
+                            )
                 elif isinstance(item, (list, tuple)):
                     loaded.pre_run_hooks.extend(item)
                 else:
@@ -259,6 +275,19 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple)):
         return [str(item) for item in value]
     raise PackError(f"Expected string or list, got {type(value).__name__}")
+
+
+def _callable_list(value: Any) -> list[Callable]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        hooks = list(value)
+        if not all(callable(item) for item in hooks):
+            raise PackError("Expected callable or list of callables")
+        return hooks
+    if callable(value):
+        return [value]
+    raise PackError(f"Expected callable or list of callables, got {type(value).__name__}")
 
 
 def _resolve_pack_paths(manifest: PackManifest, values: list[str]) -> list[Path]:

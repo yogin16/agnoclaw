@@ -8,7 +8,7 @@ from agno.exceptions import AgentRunException
 
 from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
-from agnoclaw.runtime import InMemoryEventSink
+from agnoclaw.runtime import ExecutionContext, InMemoryEventSink, LifecycleHookRequest
 from agnoclaw.runtime.errors import HarnessError
 
 
@@ -104,6 +104,86 @@ def test_add_post_run_hook(tmp_path):
     hook = MagicMock()
     harness.add_post_run_hook(hook)
     assert hook in harness._post_run_hooks
+
+
+def test_add_lifecycle_hook_and_session_created_checkpoint(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    seen = []
+
+    def hook(event, context):
+        seen.append((event.event_type, context.session_id))
+        event.metadata["seen"] = True
+        return event
+
+    harness.add_lifecycle_hook("session.created", hook)
+    session = harness.session(session_id="session-1")
+
+    assert session.session_id == "session-1"
+    assert seen == [("session.created", "session-1")]
+
+
+@pytest.mark.asyncio
+async def test_session_end_lifecycle_checkpoint(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    seen = []
+
+    def hook(event, context):
+        seen.append((event.event_type, context.session_id, dict(event.metadata)))
+        return event
+
+    harness.add_lifecycle_hook("session.end.completed", hook)
+
+    result = await harness.end_session(generate_summary=False)
+
+    assert result is None
+    assert seen == [
+        (
+            "session.end.completed",
+            harness.session_id,
+            {
+                "session_id": harness.session_id,
+                "summary_generated": False,
+                "created_files": [],
+            },
+        )
+    ]
+
+
+def test_lifecycle_hook_invalid_return_raises(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    harness.add_lifecycle_hook("session.created", lambda event, context: "bad")
+    context = ExecutionContext.create(
+        user_id=None,
+        session_id=None,
+        workspace_id=str(harness.workspace.path),
+    )
+
+    with pytest.raises(HarnessError, match="Lifecycle hook"):
+        harness._run_lifecycle_hooks_sync("session.created", context=context)
+
+
+@pytest.mark.asyncio
+async def test_async_lifecycle_hook_updates_request(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    context = ExecutionContext.create(
+        user_id=None,
+        session_id=None,
+        workspace_id=str(harness.workspace.path),
+    )
+
+    async def hook(event, context):
+        event.metadata["async"] = True
+        return event
+
+    harness.add_lifecycle_hook("session.end.completed", hook)
+    result = await harness._run_lifecycle_hooks_async(
+        "session.end.completed",
+        context=context,
+        metadata={"done": True},
+    )
+
+    assert isinstance(result, LifecycleHookRequest)
+    assert result.metadata == {"done": True, "async": True}
 
 
 # ── _apply_redactions_to_object ─────────────────────────────────────────

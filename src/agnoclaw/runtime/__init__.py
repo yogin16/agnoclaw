@@ -24,6 +24,8 @@ from .guardrails import (
     RuntimeGuardrails,
 )
 from .hooks import (
+    LifecycleHook,
+    LifecycleHookRequest,
     PostRunHook,
     PreRunHook,
     PromptEnvelope,
@@ -75,6 +77,8 @@ __all__ = [
     "InMemoryEventSink",
     "InMemorySchedulerBackend",
     "JsonSchedulerBackend",
+    "LifecycleHook",
+    "LifecycleHookRequest",
     "NullEventSink",
     "PolicyAction",
     "PolicyDecision",

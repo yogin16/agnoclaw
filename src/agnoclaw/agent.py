@@ -86,6 +86,8 @@ from .runtime import (
     EventSinkMode,
     ExecutionContext,
     HarnessError,
+    LifecycleHook,
+    LifecycleHookRequest,
     NullEventSink,
     PermissionApprover,
     PermissionController,
@@ -515,6 +517,7 @@ class AgentHarness:
         )
         self._pre_run_hooks: list[PreRunHook] = list(pre_run_hooks or [])
         self._post_run_hooks: list[PostRunHook] = list(post_run_hooks or [])
+        self._lifecycle_hooks: dict[str, list[LifecycleHook]] = {}
         permission_mode_value = permission_mode or self.config.permission_mode
         require_approver = (
             permission_require_approver
@@ -619,6 +622,15 @@ class AgentHarness:
                     self._wrap_pack_post_hook(loaded_pack.manifest.name, hook)
                     for hook in loaded_pack.post_run_hooks
                 )
+                for event_type, hooks in loaded_pack.lifecycle_hooks.items():
+                    self._lifecycle_hooks.setdefault(event_type, []).extend(
+                        self._wrap_pack_lifecycle_hook(
+                            loaded_pack.manifest.name,
+                            event_type,
+                            hook,
+                        )
+                        for hook in hooks
+                    )
                 self._context_providers.extend(loaded_pack.context_providers)
                 self._policy_engines.extend(
                     (f"pack:{loaded_pack.manifest.name}", policy)
@@ -2639,6 +2651,181 @@ class AgentHarness:
 
         return _wrapped
 
+    def _wrap_pack_lifecycle_hook(
+        self,
+        pack_name: str,
+        event_type: str,
+        hook: LifecycleHook,
+    ) -> LifecycleHook:
+        hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+
+        async def _await_result(
+            result: Awaitable[LifecycleHookRequest | None],
+            event: LifecycleHookRequest,
+            context,
+        ):
+            try:
+                resolved = await result
+            except Exception as exc:
+                await self._emit_event_async(
+                    event_type="pack.hook.failed",
+                    run_id=event.run_id or "",
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "lifecycle",
+                        "lifecycle_event": event_type,
+                        "error": str(exc),
+                    },
+                )
+                raise
+            await self._emit_event_async(
+                event_type="pack.hook.completed",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "pack": pack_name,
+                    "hook": hook_name,
+                    "kind": "lifecycle",
+                    "lifecycle_event": event_type,
+                },
+            )
+            return resolved
+
+        def _wrapped(
+            event: LifecycleHookRequest,
+            context,
+        ) -> LifecycleHookRequest | None | Awaitable[LifecycleHookRequest | None]:
+            self._emit_event_sync(
+                event_type="pack.hook.started",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "pack": pack_name,
+                    "hook": hook_name,
+                    "kind": "lifecycle",
+                    "lifecycle_event": event_type,
+                },
+            )
+            try:
+                result = hook(event, context)
+            except Exception as exc:
+                self._emit_event_sync(
+                    event_type="pack.hook.failed",
+                    run_id=event.run_id or "",
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "lifecycle",
+                        "lifecycle_event": event_type,
+                        "error": str(exc),
+                    },
+                )
+                raise
+            if inspect.isawaitable(result):
+                return _await_result(result, event, context)
+            self._emit_event_sync(
+                event_type="pack.hook.completed",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "pack": pack_name,
+                    "hook": hook_name,
+                    "kind": "lifecycle",
+                    "lifecycle_event": event_type,
+                },
+            )
+            return result
+
+        return _wrapped
+
+    def add_lifecycle_hook(self, event_type: str, hook: LifecycleHook) -> None:
+        """Register a generic lifecycle hook for a named checkpoint."""
+        self._lifecycle_hooks.setdefault(event_type, []).append(hook)
+
+    def _run_lifecycle_hooks_sync(
+        self,
+        event_type: str,
+        *,
+        context: ExecutionContext,
+        run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LifecycleHookRequest:
+        current = LifecycleHookRequest(
+            event_type=event_type,
+            run_id=run_id,
+            metadata=dict(metadata or {}),
+        )
+        for hook in self._lifecycle_hooks.get(event_type, []):
+            hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+            try:
+                maybe_result = self._resolve_sync_value(
+                    hook(current, context),
+                    operation=f"lifecycle_hook:{event_type}:{hook_name}",
+                )
+            except Exception as exc:
+                raise HarnessError(
+                    code="HOOK_LIFECYCLE_FAILED",
+                    category="hook",
+                    message=f"Lifecycle hook failed: {event_type}:{hook_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if maybe_result is None:
+                continue
+            if not isinstance(maybe_result, LifecycleHookRequest):
+                raise HarnessError(
+                    code="HOOK_LIFECYCLE_INVALID_RETURN",
+                    category="hook",
+                    message=(
+                        f"Lifecycle hook {event_type}:{hook_name} must return "
+                        "LifecycleHookRequest or None"
+                    ),
+                    retryable=False,
+                )
+            current = maybe_result
+        return current
+
+    async def _run_lifecycle_hooks_async(
+        self,
+        event_type: str,
+        *,
+        context: ExecutionContext,
+        run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LifecycleHookRequest:
+        current = LifecycleHookRequest(
+            event_type=event_type,
+            run_id=run_id,
+            metadata=dict(metadata or {}),
+        )
+        for hook in self._lifecycle_hooks.get(event_type, []):
+            hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+            try:
+                maybe_result = await self._resolve_async_value(hook(current, context))
+            except Exception as exc:
+                raise HarnessError(
+                    code="HOOK_LIFECYCLE_FAILED",
+                    category="hook",
+                    message=f"Lifecycle hook failed: {event_type}:{hook_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if maybe_result is None:
+                continue
+            if not isinstance(maybe_result, LifecycleHookRequest):
+                raise HarnessError(
+                    code="HOOK_LIFECYCLE_INVALID_RETURN",
+                    category="hook",
+                    message=(
+                        f"Lifecycle hook {event_type}:{hook_name} must return "
+                        "LifecycleHookRequest or None"
+                    ),
+                    retryable=False,
+                )
+            current = maybe_result
+        return current
+
     def _run_pre_hooks_sync(
         self,
         *,
@@ -3055,6 +3242,17 @@ class AgentHarness:
         )
         if max_turns is not None:
             run_input.metadata.setdefault("max_turns", int(max_turns))
+        self._run_lifecycle_hooks_sync(
+            "message.received",
+            context=ctx,
+            run_id=run_id,
+            metadata={
+                "message": message,
+                "skill": skill,
+                "stream": stream,
+                "stream_events": stream_events,
+            },
+        )
         base_prompt = self._agent.system_message
         stream_cleanup_deferred = False
 
@@ -3496,6 +3694,17 @@ class AgentHarness:
         )
         if max_turns is not None:
             run_input.metadata.setdefault("max_turns", int(max_turns))
+        await self._run_lifecycle_hooks_async(
+            "message.received",
+            context=ctx,
+            run_id=run_id,
+            metadata={
+                "message": message,
+                "skill": skill,
+                "stream": stream,
+                "stream_events": stream_events,
+            },
+        )
         base_prompt = self._agent.system_message
         stream_cleanup_deferred = False
 
@@ -3932,6 +4141,19 @@ class AgentHarness:
         metadata: dict[str, Any] | None = None,
     ) -> HarnessSession:
         """Return a lightweight SDK session facade over this harness."""
+        context = self._build_execution_context(
+            user_id=user_id or self.user_id,
+            session_id=session_id or self.session_id,
+            metadata=metadata,
+        )
+        self._run_lifecycle_hooks_sync(
+            "session.created",
+            context=context,
+            metadata={
+                "session_id": session_id or self.session_id,
+                "workspace_id": workspace_id or str(self.workspace.path),
+            },
+        )
         return HarnessSession(
             self,
             user_id=user_id,
@@ -4101,6 +4323,16 @@ class AgentHarness:
         if hasattr(self._agent, "session_id"):
             self._agent.session_id = session
         self._set_system_prompt(session_id=session)
+        context = self._build_execution_context(
+            user_id=self.user_id,
+            session_id=session,
+            metadata={"lifecycle": "session.cleared"},
+        )
+        self._run_lifecycle_hooks_sync(
+            "session.cleared",
+            context=context,
+            metadata={"session_id": session},
+        )
         return session
 
     def save_session_summary(self, summary: str) -> None:
@@ -4194,6 +4426,16 @@ class AgentHarness:
 
         This is a manual escape hatch — Agno v2.5.x does not auto-compact.
         """
+        context = self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata={"lifecycle": "session.compaction"},
+        )
+        await self._run_lifecycle_hooks_async(
+            "session.compaction.started",
+            context=context,
+            metadata={"session_id": self.session_id},
+        )
         # Step 1: Ask the agent to write important facts to memory
         # Route through harness's arun() so hooks/policy/events are enforced.
         flush_prompt = (
@@ -4221,6 +4463,14 @@ class AgentHarness:
                 await self._on_compaction(summary)
             except Exception:
                 logger.exception("on_compaction callback failed")
+        await self._run_lifecycle_hooks_async(
+            "session.compaction.completed",
+            context=context,
+            metadata={
+                "session_id": self.session_id,
+                "summary_generated": summary is not None,
+            },
+        )
 
     async def end_session(self, generate_summary: bool = True) -> str | None:
         """
@@ -4230,6 +4480,19 @@ class AgentHarness:
         fires the on_session_end callback so the platform can persist it, and
         returns the summary text.
         """
+        context = self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata={"lifecycle": "session.end"},
+        )
+        await self._run_lifecycle_hooks_async(
+            "session.end.started",
+            context=context,
+            metadata={
+                "session_id": self.session_id,
+                "generate_summary": generate_summary,
+            },
+        )
         summary = None
         if generate_summary:
             summary = await self._generate_session_summary()
@@ -4245,6 +4508,15 @@ class AgentHarness:
                     logger.exception("on_session_end callback failed")
         finally:
             self._cleanup_sandbox_dir()
+        await self._run_lifecycle_hooks_async(
+            "session.end.completed",
+            context=context,
+            metadata={
+                "session_id": self.session_id,
+                "summary_generated": summary is not None,
+                "created_files": created_files,
+            },
+        )
         return summary
 
     def close(self) -> None:

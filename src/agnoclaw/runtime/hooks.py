@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass
@@ -67,11 +68,24 @@ class RunResultEnvelope:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class LifecycleHookRequest:
+    """Generic lifecycle checkpoint payload for pack and harness hooks."""
+
+    event_type: str
+    run_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @runtime_checkable
 class PreRunHook(Protocol):
     """Pre-run hook protocol."""
 
-    def __call__(self, run_input: RunInput, context) -> RunInput | None | Awaitable[RunInput | None]:
+    def __call__(
+        self,
+        run_input: RunInput,
+        context,
+    ) -> RunInput | None | Awaitable[RunInput | None]:
         ...
 
 
@@ -85,4 +99,16 @@ class PostRunHook(Protocol):
         result: RunResultEnvelope,
         context,
     ) -> RunResultEnvelope | None | Awaitable[RunResultEnvelope | None]:
+        ...
+
+
+@runtime_checkable
+class LifecycleHook(Protocol):
+    """Generic lifecycle hook protocol."""
+
+    def __call__(
+        self,
+        event: LifecycleHookRequest,
+        context,
+    ) -> LifecycleHookRequest | None | Awaitable[LifecycleHookRequest | None]:
         ...
