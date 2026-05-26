@@ -114,9 +114,14 @@ def test_build_includes_session_id(builder):
 
 
 def test_build_includes_sandbox_when_configured(tmp_path):
-    builder = SystemPromptBuilder(tmp_path, sandbox_dir=tmp_path / "sandbox")
+    builder = SystemPromptBuilder(
+        tmp_path,
+        sandbox_dir=tmp_path / "sandbox",
+        sandbox_mode="read_only",
+    )
     prompt = builder.build()
     assert "Session sandbox:" in prompt
+    assert "Sandbox mode: read_only" in prompt
 
 
 def test_build_no_session_id_by_default(builder):

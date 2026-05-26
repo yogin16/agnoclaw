@@ -52,9 +52,15 @@ from .sections import (
 class SystemPromptBuilder:
     """Assembles the full system prompt from layered sections."""
 
-    def __init__(self, workspace_dir: Path, sandbox_dir: Path | None = None):
+    def __init__(
+        self,
+        workspace_dir: Path,
+        sandbox_dir: Path | None = None,
+        sandbox_mode: str | None = None,
+    ):
         self.workspace_dir = workspace_dir
         self.sandbox_dir = sandbox_dir
+        self.sandbox_mode = sandbox_mode
         self._custom_sections: list[str] = []
 
     def add_section(self, content: str) -> "SystemPromptBuilder":
@@ -138,6 +144,8 @@ class SystemPromptBuilder:
             ]
             if self.sandbox_dir is not None:
                 runtime_lines.append(f"Session sandbox: {self.sandbox_dir}")
+                if self.sandbox_mode:
+                    runtime_lines.append(f"Sandbox mode: {self.sandbox_mode}")
             if session_id:
                 runtime_lines.append(f"Session ID: {session_id}")
             parts.append("# Runtime\n\n" + "\n".join(runtime_lines))

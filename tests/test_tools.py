@@ -877,6 +877,107 @@ def test_get_default_tools_sandbox_routes_relative_file_ops_and_allows_workspace
     assert (workspace_dir / "workspace.txt").read_text(encoding="utf-8") == "workspace"
 
 
+def test_get_default_tools_read_only_sandbox_blocks_workspace_writes(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+    (workspace_dir / "input.txt").write_text("alpha", encoding="utf-8")
+
+    tools = get_default_tools(
+        HarnessConfig(),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+        sandbox_mode="read_only",
+    )
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+
+    assert "alpha" in files.read_file(str(workspace_dir / "input.txt"))
+    assert files.write_file("scratch.txt", "sandbox").startswith("Written")
+
+    result = files.write_file(str(workspace_dir / "output.txt"), "workspace")
+
+    assert "Workspace is read-only" in result
+    assert (sandbox_dir / "scratch.txt").read_text(encoding="utf-8") == "sandbox"
+    assert not (workspace_dir / "output.txt").exists()
+
+
+def test_get_default_tools_read_only_sandbox_blocks_workspace_bash_workdir(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.bash import BashToolError
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+
+    tools = get_default_tools(
+        HarnessConfig(enable_bash=True),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+        sandbox_mode="read_only",
+    )
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+
+    with pytest.raises(BashToolError, match="Workspace is read-only"):
+        bash.entrypoint("pwd", working_dir=str(workspace_dir))
+
+
+def test_get_default_tools_full_sandbox_mode_uses_workspace_surface(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+
+    tools = get_default_tools(
+        HarnessConfig(enable_bash=True),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+        sandbox_mode="full",
+    )
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+
+    assert files.workspace_dir == workspace_dir.resolve()
+
+    files.write_file("workspace.txt", "workspace")
+    bash.entrypoint("printf bash > bash.txt")
+
+    assert (workspace_dir / "workspace.txt").read_text(encoding="utf-8") == "workspace"
+    assert (workspace_dir / "bash.txt").read_text(encoding="utf-8") == "bash"
+    assert not (sandbox_dir / "workspace.txt").exists()
+
+
+def test_runtime_backend_sandbox_mode_applies_when_tools_do_not_override(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+    backend = RuntimeBackend(sandbox_mode="read-only")
+
+    tools = get_default_tools(
+        HarnessConfig(),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+        backend=backend,
+    )
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+
+    result = files.write_file(str(workspace_dir / "blocked.txt"), "nope")
+
+    assert "Workspace is read-only" in result
+    assert backend.sandbox_mode.value == "read_only"
+
+
 def test_get_default_tools_sandboxed_bash_can_read_workspace_and_write_both_outputs(tmp_path):
     import sys
 

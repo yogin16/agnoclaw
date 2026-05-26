@@ -11,11 +11,49 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
 _MAX_READ_SIZE = 50 * 1024 * 1024  # 50MB guard for read_file
+
+
+class SandboxMode(str, Enum):
+    """Session sandbox filesystem modes for built-in files/bash tools."""
+
+    WORKSPACE_WRITE = "workspace_write"
+    READ_ONLY = "read_only"
+    FULL = "full"
+
+
+_SANDBOX_MODE_ALIASES = {
+    "workspace": SandboxMode.WORKSPACE_WRITE,
+    "workspace-write": SandboxMode.WORKSPACE_WRITE,
+    "workspace_write": SandboxMode.WORKSPACE_WRITE,
+    "rw": SandboxMode.WORKSPACE_WRITE,
+    "read-only": SandboxMode.READ_ONLY,
+    "read_only": SandboxMode.READ_ONLY,
+    "readonly": SandboxMode.READ_ONLY,
+    "ro": SandboxMode.READ_ONLY,
+    "full": SandboxMode.FULL,
+    "host": SandboxMode.FULL,
+    "none": SandboxMode.FULL,
+}
+
+
+def normalize_sandbox_mode(mode: str | SandboxMode | None) -> SandboxMode:
+    """Normalize public sandbox mode aliases into a stable enum."""
+    if mode is None:
+        return SandboxMode.WORKSPACE_WRITE
+    if isinstance(mode, SandboxMode):
+        return mode
+    key = str(mode).strip().lower()
+    try:
+        return _SANDBOX_MODE_ALIASES[key]
+    except KeyError:
+        allowed = ", ".join(sorted(_SANDBOX_MODE_ALIASES))
+        raise ValueError(f"Invalid sandbox_mode={mode!r}. Use one of: {allowed}") from None
 
 
 @dataclass(frozen=True)
@@ -137,6 +175,14 @@ def _session_path_error(path: str, *, workspace_dir: Path, sandbox_dir: Path) ->
     )
 
 
+def _workspace_read_only_error(path: str, *, workspace_dir: Path, sandbox_dir: Path) -> str:
+    return (
+        "Workspace is read-only in sandbox_mode='read_only'. "
+        f"Write inside sandbox {sandbox_dir} or switch to workspace_write/full: {path} "
+        f"(workspace {workspace_dir})"
+    )
+
+
 class SessionSandboxCommandExecutor:
     """Wrap a command executor so default/relative work happens in a session sandbox."""
 
@@ -146,10 +192,12 @@ class SessionSandboxCommandExecutor:
         *,
         workspace_dir: str | Path,
         sandbox_dir: str | Path,
+        sandbox_mode: str | SandboxMode = SandboxMode.WORKSPACE_WRITE,
     ) -> None:
         self._executor = executor
         self._workspace_dir = Path(workspace_dir).expanduser().resolve(strict=False)
         self._sandbox_dir = Path(sandbox_dir).expanduser().resolve(strict=False)
+        self._sandbox_mode = normalize_sandbox_mode(sandbox_mode)
         self.workspace_dir = str(self._sandbox_dir)
         self._ensure_sandbox_exists()
 
@@ -198,7 +246,17 @@ class SessionSandboxCommandExecutor:
         candidate = Path(workdir).expanduser()
         if candidate.is_absolute():
             resolved = candidate.resolve(strict=False)
-            if _is_within(resolved, self._sandbox_dir) or _is_within(resolved, self._workspace_dir):
+            if _is_within(resolved, self._sandbox_dir):
+                return str(resolved)
+            if _is_within(resolved, self._workspace_dir):
+                if self._sandbox_mode is SandboxMode.READ_ONLY:
+                    raise RuntimeError(
+                        _workspace_read_only_error(
+                            workdir,
+                            workspace_dir=self._workspace_dir,
+                            sandbox_dir=self._sandbox_dir,
+                        )
+                    )
                 return str(resolved)
             raise RuntimeError(
                 _session_path_error(
@@ -236,10 +294,12 @@ class SessionSandboxWorkspaceAdapter:
         *,
         workspace_dir: str | Path,
         sandbox_dir: str | Path,
+        sandbox_mode: str | SandboxMode = SandboxMode.WORKSPACE_WRITE,
     ) -> None:
         self._adapter = adapter
         self._workspace_dir = Path(workspace_dir).expanduser().resolve(strict=False)
         self._sandbox_dir = Path(sandbox_dir).expanduser().resolve(strict=False)
+        self._sandbox_mode = normalize_sandbox_mode(sandbox_mode)
         self.workspace_dir = self._sandbox_dir
         self._sandbox_dir.mkdir(parents=True, exist_ok=True)
 
@@ -253,6 +313,7 @@ class SessionSandboxWorkspaceAdapter:
     def write_file(self, path: str, content: str) -> str:
         try:
             resolved = self._resolve_path(path)
+            self._ensure_write_allowed(path, resolved)
         except ValueError as exc:
             return f"[error] {exc}"
         return self._adapter.write_file(path=str(resolved), content=content)
@@ -260,6 +321,7 @@ class SessionSandboxWorkspaceAdapter:
     def edit_file(self, path: str, old_string: str, new_string: str) -> str:
         try:
             resolved = self._resolve_path(path)
+            self._ensure_write_allowed(path, resolved)
         except ValueError as exc:
             return f"[error] {exc}"
         return self._adapter.edit_file(
@@ -271,6 +333,7 @@ class SessionSandboxWorkspaceAdapter:
     def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str:
         try:
             resolved = self._resolve_path(path)
+            self._ensure_write_allowed(path, resolved)
         except ValueError as exc:
             return f"[error] {exc}"
         return self._adapter.multi_edit_file(path=str(resolved), edits=edits)
@@ -340,6 +403,20 @@ class SessionSandboxWorkspaceAdapter:
             )
         return resolved
 
+    def _ensure_write_allowed(self, path: str, resolved: Path) -> None:
+        if self._sandbox_mode is not SandboxMode.READ_ONLY:
+            return
+        if _is_within(resolved, self._sandbox_dir):
+            return
+        if _is_within(resolved, self._workspace_dir):
+            raise ValueError(
+                _workspace_read_only_error(
+                    path,
+                    workspace_dir=self._workspace_dir,
+                    sandbox_dir=self._sandbox_dir,
+                )
+            )
+
 
 def bind_session_sandbox(
     *,
@@ -347,10 +424,12 @@ def bind_session_sandbox(
     workspace_adapter: WorkspaceAdapter,
     workspace_dir: str | Path,
     sandbox_dir: str | Path | None,
+    sandbox_mode: str | SandboxMode | None = None,
 ) -> tuple[CommandExecutor, WorkspaceAdapter]:
     """Wrap backend adapters so relative/default tool operations use `sandbox_dir`."""
 
-    if sandbox_dir is None:
+    mode = normalize_sandbox_mode(sandbox_mode)
+    if sandbox_dir is None or mode is SandboxMode.FULL:
         return command_executor, workspace_adapter
 
     return (
@@ -358,11 +437,13 @@ def bind_session_sandbox(
             command_executor,
             workspace_dir=workspace_dir,
             sandbox_dir=sandbox_dir,
+            sandbox_mode=mode,
         ),
         SessionSandboxWorkspaceAdapter(
             workspace_adapter,
             workspace_dir=workspace_dir,
             sandbox_dir=sandbox_dir,
+            sandbox_mode=mode,
         ),
     )
 
@@ -685,8 +766,14 @@ class LocalWorkspaceAdapter:
             else Path.cwd().resolve()
         )
 
+    def _resolve_path(self, path: str | Path) -> Path:
+        candidate = Path(path).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return (self.workspace_dir / candidate).resolve(strict=False)
+
     def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
-        file_path = Path(path).expanduser()
+        file_path = self._resolve_path(path)
         if not file_path.exists():
             return f"[error] File not found: {path}"
         if not file_path.is_file():
@@ -712,7 +799,7 @@ class LocalWorkspaceAdapter:
             return f"[error] Could not read {path}: {exc}"
 
     def write_file(self, path: str, content: str) -> str:
-        file_path = Path(path).expanduser()
+        file_path = self._resolve_path(path)
         try:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
@@ -722,7 +809,7 @@ class LocalWorkspaceAdapter:
             return f"[error] Could not write {path}: {exc}"
 
     def edit_file(self, path: str, old_string: str, new_string: str) -> str:
-        file_path = Path(path).expanduser()
+        file_path = self._resolve_path(path)
         if not file_path.exists():
             return f"[error] File not found: {path}. Read the file first."
 
@@ -746,7 +833,7 @@ class LocalWorkspaceAdapter:
             return f"[error] Could not edit {path}: {exc}"
 
     def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str:
-        file_path = Path(path).expanduser()
+        file_path = self._resolve_path(path)
         if not file_path.exists():
             return f"[error] File not found: {path}. Read the file first."
         if not edits:
@@ -785,7 +872,7 @@ class LocalWorkspaceAdapter:
         path: str | None = None,
     ) -> str:
         directory = base_dir or path
-        search_dir = Path(directory).expanduser() if directory else self.workspace_dir
+        search_dir = self._resolve_path(directory) if directory else self.workspace_dir
         if not search_dir.exists():
             return f"[error] Directory not found: {search_dir}"
 
@@ -814,7 +901,7 @@ class LocalWorkspaceAdapter:
         context_lines: int = 0,
         max_results: int = 50,
     ) -> str:
-        search_path = Path(path).expanduser() if path else self.workspace_dir
+        search_path = self._resolve_path(path) if path else self.workspace_dir
         flags = re.IGNORECASE if case_insensitive else 0
         try:
             compiled = re.compile(pattern, flags)
@@ -870,7 +957,7 @@ class LocalWorkspaceAdapter:
         return output
 
     def list_dir(self, path: str | None = None) -> str:
-        dir_path = Path(path).expanduser() if path else self.workspace_dir
+        dir_path = self._resolve_path(path) if path else self.workspace_dir
         if not dir_path.exists():
             return f"[error] Directory not found: {dir_path}"
         if not dir_path.is_dir():

@@ -77,7 +77,7 @@ from agno.run.agent import RunOutput, RunOutputEvent
 from agno.tools.function import Function
 from agno.tools.toolkit import Toolkit
 
-from .backends import RuntimeBackend
+from .backends import RuntimeBackend, SandboxMode, normalize_sandbox_mode
 from .config import HarnessConfig, get_config
 from .prompts.system import SystemPromptBuilder
 from .runtime import (
@@ -513,6 +513,8 @@ class AgentHarness:
         user_id: User identifier for per-user memory.
         workspace_dir: Workspace path override. Defaults to ~/.agnoclaw/workspace.
         sandbox_dir: Session scratch path. Defaults to a temp dir per harness instance.
+        sandbox_mode: Session sandbox mode for default files/bash tools:
+                      "workspace_write" (default), "read_only", or "full".
         include_default_tools: Whether to include the built-in default tool suite.
         tools: Additional tools to add alongside the defaults.
         instructions: Additional instructions appended to the system prompt.
@@ -568,6 +570,7 @@ class AgentHarness:
         user_id: str | None = None,
         workspace_dir: str | Path | None = None,
         sandbox_dir: str | Path | None = None,
+        sandbox_mode: str | SandboxMode | None = None,
         include_default_tools: bool = True,
         tools: list | None = None,
         instructions: str | None = None,
@@ -743,6 +746,9 @@ class AgentHarness:
         self.sandbox_dir = self._resolve_sandbox_dir(sandbox_dir, session_id=session_id)
         effective_backend = backend or RuntimeBackend()
         resolved_backend = effective_backend.resolve(workspace_dir=self.workspace.path)
+        self._sandbox_mode = normalize_sandbox_mode(
+            sandbox_mode if sandbox_mode is not None else resolved_backend.sandbox_mode
+        )
         self._session_command_executor = resolved_backend.command_executor
         self._elevated_command_executor = LocalCommandExecutor(
             workspace_dir=self.workspace.path
@@ -818,6 +824,7 @@ class AgentHarness:
         self._prompt_builder = SystemPromptBuilder(
             self.workspace.path,
             sandbox_dir=self.sandbox_dir,
+            sandbox_mode=self._sandbox_mode.value,
         )
 
         # Context budget monitoring
@@ -835,6 +842,7 @@ class AgentHarness:
                 subagents=subagents,
                 workspace_dir=self.workspace.path,
                 sandbox_dir=self.sandbox_dir,
+                sandbox_mode=self._sandbox_mode,
                 backend=effective_backend,
                 command_executor_wrapper=lambda executor: _ElevatedSessionCommandExecutor(
                     harness=self,
@@ -1317,6 +1325,11 @@ class AgentHarness:
         return self._elevated_session_mode.value
 
     @property
+    def sandbox_mode(self) -> str:
+        """Current default tool sandbox mode."""
+        return self._sandbox_mode.value
+
+    @property
     def permission_mode(self) -> str:
         """Current runtime permission mode."""
         return self._permission_controller.current_mode().value
@@ -1356,6 +1369,7 @@ class AgentHarness:
             "session_id": self.session_id,
             "workspace_id": str(self.workspace.path),
             "sandbox_dir": str(self.sandbox_dir),
+            "sandbox_mode": self._sandbox_mode.value,
             "event_sink": self._event_sink.__class__.__name__,
             "event_sink_mode": self._event_sink_mode.value,
             "policy_engine": self._policy_engine.__class__.__name__,
@@ -1455,6 +1469,7 @@ class AgentHarness:
         return {
             "session_id": session_id or self.session_id,
             "sandbox_dir": str(self.sandbox_dir),
+            "sandbox_mode": self._sandbox_mode.value,
             "exists": self.sandbox_dir.exists(),
             "file_count": len(files),
             "total_bytes": sum(int(item["size_bytes"]) for item in files),

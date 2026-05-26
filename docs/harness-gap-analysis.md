@@ -68,7 +68,7 @@ Deferred by design:
 | Tool boundary policy interception | Pre/post tool controls | Hooks around command/tool lifecycle | **Implemented** | Low | Harness |
 | Runtime guardrails | Permission/sandbox controls | Sandboxing/security controls | **Implemented (path/network)** | Low | Harness |
 | Built-in runtime backend abstraction | Tool family can target one alternate runtime plane | Exec/files/browser/skills bind to sandbox/container workspace | **Implemented** (`RuntimeBackend`) | ~~High~~ Done | Harness |
-| Sandbox provider abstraction | Multiple runtime permission/sandbox modes | Sandboxing modes (`workspace-write/read-only/full`) | **Partial** (single backend contract exists; first-party `LLMSandboxBackend` ships, other provider adapters still open) | High | Harness |
+| Sandbox provider abstraction | Multiple runtime permission/sandbox modes | Sandboxing modes (`workspace-write/read-only/full`) | **Implemented (core)** (`RuntimeBackend`, first-party `LLMSandboxBackend`, and explicit session sandbox modes) | ~~High~~ Done | Harness |
 | Hook breadth and packaging | 17 events + multiple hook types | Plugin hook packs + lifecycle events | **Implemented** (run/tool/lifecycle + workspace hooks) | ~~High~~ Done | Harness |
 | Scheduler | None | Heartbeat + Cron | **Implemented** | Low | Harness |
 | Persistent cron management | N/A | Durable job management | **Partial** (in-memory jobs) | Medium | Harness |
@@ -132,6 +132,9 @@ Newly closed or reduced gaps (v0.8 preview):
    `hooks/*.json` command hooks are discovered into lifecycle checkpoints,
    receive worktree/workspace metadata through environment variables, can return
    JSON metadata, and emit `workspace.hook.*` audit events.
+10. **Session sandbox modes** — Built-in files/bash tools now support explicit
+   `workspace_write`, `read_only`, and `full` sandbox modes, with mode metadata
+   exposed in runtime/admin surfaces and inherited by spawned subagents.
 
 Newly closed or reduced gaps (v0.3):
 1. **Browser toolkit** — Playwright-based with navigate, click, type, screenshot, snapshot, scroll, fill_form, close.
@@ -176,8 +179,8 @@ Still open in this area:
   pack hooks. Workspace/project/global command hook discovery now exists for
   lifecycle checkpoints and includes worktree-specific metadata.
 
-3. Sandbox provider abstraction beyond tool backends
-- Keep current guardrails and injected exec/files backends; add full runtime sandbox providers and mode semantics.
+3. ~~Sandbox provider abstraction beyond tool backends~~ **DONE**
+- ~~Keep current guardrails and injected exec/files backends; add full runtime sandbox providers and mode semantics.~~
 
 ### Medium
 
@@ -219,9 +222,14 @@ Still open in this area:
 Claude Code:
 - https://docs.anthropic.com/en/docs/claude-code
 - https://docs.anthropic.com/en/docs/claude-code/settings
+- https://docs.anthropic.com/en/docs/claude-code/iam
+- https://docs.anthropic.com/en/docs/claude-code/security
 - https://docs.anthropic.com/en/docs/claude-code/hooks
 
 OpenClaw:
+- https://openclawlab.com/en/docs/tools/elevated/
+- https://open-claw.bot/docs/gateway/sandboxing/
+- https://open-claw.bot/docs/gateway/sandbox-vs-tool-policy-vs-elevated/
 - https://docs.openclaw.ai/architecture
 - https://docs.openclaw.ai/automation/hooks
 - https://docs.openclaw.ai/automation/cron-jobs

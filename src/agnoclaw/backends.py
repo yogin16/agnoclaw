@@ -14,7 +14,9 @@ from .tools.backends import (
     CommandExecutor,
     LocalCommandExecutor,
     LocalWorkspaceAdapter,
+    SandboxMode,
     WorkspaceAdapter,
+    normalize_sandbox_mode,
 )
 from .tools.browser_backends import BrowserBackend
 
@@ -27,6 +29,7 @@ class ResolvedRuntimeBackend:
     workspace_adapter: WorkspaceAdapter
     skill_runtime: SkillRuntimeBackend
     browser_backend: BrowserBackend | None = None
+    sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE
 
 
 class RuntimeBackend:
@@ -44,6 +47,7 @@ class RuntimeBackend:
         command_executor: CommandExecutor | None = None,
         workspace_adapter: WorkspaceAdapter | None = None,
         browser_backend: BrowserBackend | None = None,
+        sandbox_mode: str | SandboxMode | None = None,
     ) -> None:
         if (command_executor is None) != (workspace_adapter is None):
             raise ValueError(
@@ -53,6 +57,12 @@ class RuntimeBackend:
         self._command_executor = command_executor
         self._workspace_adapter = workspace_adapter
         self._browser_backend = browser_backend
+        self._sandbox_mode = normalize_sandbox_mode(sandbox_mode)
+
+    @property
+    def sandbox_mode(self) -> SandboxMode:
+        """Default session sandbox mode for built-in files/bash tools."""
+        return self._sandbox_mode
 
     def uses_host_runtime(self) -> bool:
         """Return True only for the default host-local backend mode."""
@@ -78,6 +88,7 @@ class RuntimeBackend:
                 workspace_dir=workspace_path,
                 command_executor=command_executor,
             ),
+            sandbox_mode=self.sandbox_mode,
             browser_backend=self.resolve_browser_backend(),
         )
 

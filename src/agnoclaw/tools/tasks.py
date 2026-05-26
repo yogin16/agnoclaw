@@ -531,6 +531,7 @@ def _build_subagent_tools(
     tool_names: list[str] | None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
+    sandbox_mode: str | None = None,
     backend: RuntimeBackend | None = None,
 ) -> list:
     """Build tool instances for a subagent from tool name list."""
@@ -554,12 +555,27 @@ def _build_subagent_tools(
     resolved_command_executor = None
     resolved_workspace_adapter = None
     if resolved_backend is not None:
+        from agnoclaw.tools.backends import normalize_sandbox_mode
+
+        effective_sandbox_mode = normalize_sandbox_mode(
+            sandbox_mode if sandbox_mode is not None else resolved_backend.sandbox_mode
+        )
         resolved_command_executor, resolved_workspace_adapter = bind_session_sandbox(
             command_executor=resolved_backend.command_executor,
             workspace_adapter=resolved_backend.workspace_adapter,
             workspace_dir=resolved_workspace,
             sandbox_dir=resolved_sandbox,
+            sandbox_mode=effective_sandbox_mode,
         )
+        tool_surface_dir = Path(
+            getattr(
+                resolved_workspace_adapter,
+                "workspace_dir",
+                resolved_sandbox or resolved_workspace,
+            )
+        ).expanduser().resolve(strict=False)
+    else:
+        tool_surface_dir = resolved_sandbox or resolved_workspace
     if "all" in names or "web" in names:
         from agnoclaw.tools.web import WebToolkit
         agent_tools.append(WebToolkit())
@@ -567,7 +583,7 @@ def _build_subagent_tools(
         from agnoclaw.tools.files import FilesToolkit
         agent_tools.append(
             FilesToolkit(
-                workspace_dir=resolved_sandbox or resolved_workspace,
+                workspace_dir=tool_surface_dir,
                 adapter=resolved_workspace_adapter,
             )
         )
@@ -575,7 +591,7 @@ def _build_subagent_tools(
         from agnoclaw.tools.bash import make_bash_tool
         agent_tools.append(
             make_bash_tool(
-                workspace_dir=resolved_sandbox or resolved_workspace,
+                workspace_dir=tool_surface_dir,
                 executor=resolved_command_executor,
             )
         )
@@ -601,6 +617,7 @@ def _run_subagent(
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
+    sandbox_mode: str | None = None,
     config=None,
     backend: RuntimeBackend | None = None,
 ) -> str:
@@ -623,6 +640,7 @@ def _run_subagent(
             tool_names,
             workspace_dir=workspace_dir,
             sandbox_dir=sandbox_dir,
+            sandbox_mode=sandbox_mode,
             backend=backend,
         ),
         instructions=instructions,
@@ -660,6 +678,7 @@ async def _arun_subagent(
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
+    sandbox_mode: str | None = None,
     config=None,
     backend: RuntimeBackend | None = None,
 ) -> str:
@@ -682,6 +701,7 @@ async def _arun_subagent(
             tool_names,
             workspace_dir=workspace_dir,
             sandbox_dir=sandbox_dir,
+            sandbox_mode=sandbox_mode,
             backend=backend,
         ),
         instructions=instructions,
@@ -717,6 +737,7 @@ def make_subagent_tool(
     subagents: dict[str, SubagentDefinition] | None = None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
+    sandbox_mode: str | None = None,
     config=None,
     backend: RuntimeBackend | None = None,
 ):
@@ -732,6 +753,7 @@ def make_subagent_tool(
                    invoke them by name via the `agent_name` parameter.
         workspace_dir: Workspace root propagated to spawned files/bash tools.
         sandbox_dir: Session sandbox propagated to spawned files/bash tools.
+        sandbox_mode: Session sandbox mode propagated to spawned files/bash tools.
         config: HarnessConfig propagated for model/provider and runtime settings.
     """
     _subagents = subagents or {}
@@ -800,6 +822,7 @@ def make_subagent_tool(
                 tool_names,
                 workspace_dir=workspace_dir,
                 sandbox_dir=sandbox_dir,
+                sandbox_mode=sandbox_mode,
                 config=config,
                 backend=backend,
             )

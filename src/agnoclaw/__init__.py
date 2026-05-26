@@ -24,7 +24,7 @@ With skills:
 """
 
 from .agent import AgentHarness, HarnessAgent  # HarnessAgent = backward compat alias
-from .backends import RuntimeBackend
+from .backends import RuntimeBackend, SandboxMode, normalize_sandbox_mode
 from .config import HarnessConfig, get_config
 from .packs import (
     LoadedPack,
@@ -137,6 +137,7 @@ __all__ = [
     "PolicyDecision",
     "RuntimeBackend",
     "RuntimeGuardrails",
+    "SandboxMode",
     "SchedulerBackend",
     "SchedulerJob",
     "SchedulerRunRecord",
@@ -146,6 +147,7 @@ __all__ = [
     "as_agentos_agent",
     "create_agentos_app",
     "get_config",
+    "normalize_sandbox_mode",
     "SubagentDefinition",
     "WorkspaceAdapter",
     "Workspace",

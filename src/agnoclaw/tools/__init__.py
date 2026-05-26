@@ -23,8 +23,10 @@ from .backends import (
     CommandExecutor,
     LocalCommandExecutor,
     LocalWorkspaceAdapter,
+    SandboxMode,
     WorkspaceAdapter,
     bind_session_sandbox,
+    normalize_sandbox_mode,
 )
 from .bash import BashToolkit, make_bash_tool
 from .browser_backends import BrowserBackend, LocalPlaywrightBrowserBackend
@@ -51,6 +53,7 @@ __all__ = [
     "LocalWorkspaceAdapter",
     "PlanSignalToolkit",
     "RuntimeBackend",
+    "SandboxMode",
     "WorkspaceAdapter",
     "WebToolkit",
     "TodoToolkit",
@@ -58,6 +61,7 @@ __all__ = [
     "make_subagent_tool",
     "SubagentDefinition",
     "get_default_tools",
+    "normalize_sandbox_mode",
 ]
 
 
@@ -74,6 +78,7 @@ def get_default_tools(
     subagents: dict[str, SubagentDefinition] | None = None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
+    sandbox_mode: str | SandboxMode | None = None,
     backend: RuntimeBackend | None = None,
     command_executor_wrapper: Callable[[CommandExecutor], CommandExecutor] | None = None,
 ) -> list:
@@ -85,6 +90,7 @@ def get_default_tools(
         subagents: Named subagent definitions to register with the SubagentTool.
         workspace_dir: Explicit workspace root for filesystem/shell/project tools.
         sandbox_dir: Optional session-scoped scratch root for files/bash tools.
+        sandbox_mode: Session sandbox mode: workspace_write, read_only, or full.
 
     Returns a list of tools and toolkits ready to pass to AgentHarness.
     """
@@ -106,19 +112,31 @@ def get_default_tools(
     effective_backend = backend or RuntimeBackend()
     tools = []
     resolved_backend = effective_backend.resolve(workspace_dir=tool_workspace_dir)
+    effective_sandbox_mode = normalize_sandbox_mode(
+        sandbox_mode if sandbox_mode is not None else resolved_backend.sandbox_mode
+    )
     resolved_command_executor, resolved_workspace_adapter = bind_session_sandbox(
         command_executor=resolved_backend.command_executor,
         workspace_adapter=resolved_backend.workspace_adapter,
         workspace_dir=tool_workspace_dir,
         sandbox_dir=tool_sandbox_dir,
+        sandbox_mode=effective_sandbox_mode,
     )
     if command_executor_wrapper is not None:
         resolved_command_executor = command_executor_wrapper(resolved_command_executor)
     resolved_browser_backend = resolved_backend.browser_backend
 
+    tool_surface_dir = Path(
+        getattr(
+            resolved_workspace_adapter,
+            "workspace_dir",
+            tool_sandbox_dir or tool_workspace_dir,
+        )
+    ).expanduser().resolve(strict=False)
+
     tools.append(
         FilesToolkit(
-            workspace_dir=tool_sandbox_dir or tool_workspace_dir,
+            workspace_dir=tool_surface_dir,
             adapter=resolved_workspace_adapter,
         )
     )
@@ -129,7 +147,7 @@ def get_default_tools(
             tools.append(
                 BashToolkit(
                     timeout=cfg.bash_timeout_seconds,
-                    workspace_dir=tool_sandbox_dir or tool_workspace_dir,
+                    workspace_dir=tool_surface_dir,
                     executor=resolved_command_executor,
                 )
             )
@@ -137,7 +155,7 @@ def get_default_tools(
             tools.append(
                 make_bash_tool(
                     timeout=cfg.bash_timeout_seconds,
-                    workspace_dir=tool_sandbox_dir or tool_workspace_dir,
+                    workspace_dir=tool_surface_dir,
                     executor=resolved_command_executor,
                 )
             )
@@ -163,6 +181,7 @@ def get_default_tools(
         subagents=subagents,
         workspace_dir=tool_workspace_dir,
         sandbox_dir=tool_sandbox_dir,
+        sandbox_mode=effective_sandbox_mode,
         config=cfg,
         backend=effective_backend,
     ))
