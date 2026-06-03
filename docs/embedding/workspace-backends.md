@@ -32,6 +32,42 @@ If you do not pass `backend=...`, `agnoclaw` uses host-local implementations for
 
 This is the default local developer experience.
 
+## Session sandbox modes
+
+`sandbox_dir` controls where the built-in files/bash tools do relative/default
+work. `sandbox_mode` controls how those tools may interact with the workspace.
+
+Available modes:
+
+- `workspace_write` (default): relative/default paths run inside `sandbox_dir`,
+  while explicit absolute paths inside either the sandbox or workspace are
+  allowed. This preserves the existing local developer behavior.
+- `read_only`: relative/default file writes still go to `sandbox_dir`, and
+  explicit workspace reads/searches are allowed. File writes/edits to absolute
+  workspace paths are rejected. Bash commands may use the sandbox as their
+  working directory; setting the bash working directory to the workspace is
+  rejected because the harness cannot make arbitrary host shell writes read-only.
+- `full`: disables the session sandbox wrapper for built-in files/bash tools.
+  Relative/default file and shell operations run on the workspace surface.
+
+You can set the mode at either the harness/tool boundary or on the backend:
+
+```python
+from agnoclaw import AgentHarness, RuntimeBackend
+
+agent = AgentHarness(
+    workspace_dir="/srv/workspace",
+    sandbox_dir="/tmp/agnoclaw-session",
+    sandbox_mode="read_only",
+)
+
+backend = RuntimeBackend(sandbox_mode="full")
+```
+
+These modes are independent from permission prompts, policy checks, guardrails,
+and elevated execution. They only describe the filesystem surface exposed to the
+built-in files/bash wrappers.
+
 ## Custom backend rules
 
 Custom backends should be passed as a single object.

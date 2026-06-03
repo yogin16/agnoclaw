@@ -4,7 +4,7 @@ Unified comparison of `agnoclaw` harness core against:
 - Claude Code (v2.1.50 patterns)
 - OpenClaw (docs/repo patterns, February 2026)
 
-Last updated: 2026-03-20
+Last updated: 2026-05-26
 
 ---
 
@@ -42,6 +42,11 @@ Deferred by design:
 - Media toolkit (image + PDF reading, optional extra)
 - Notebook toolkit (Jupyter .ipynb read/edit/add)
 - Plugin system (entry-point-based discovery + explicit module paths)
+- Pack system v1 preview (manifest inspection/loading, install/list/trust/remove CLI,
+  trusted code registrations, hook and policy event emission)
+- Agno context provider bridge (tools, instructions, lifecycle, dependencies)
+- Optional AgentOS export (`as_agentos_agent`, `create_agentos_app`) with
+  harness-owned admin/debug routes
 - Hierarchical workspace (global → project → workspace layering)
 - Skill `context: fork` enforcement (routes to isolated subagent)
 - Skill `command-dispatch: tool` enforcement (bypasses LLM, invokes tool directly)
@@ -57,22 +62,25 @@ Deferred by design:
 |---|---|---|---|---|---|
 | Permission modes | `default/acceptEdits/plan/dontAsk/bypassPermissions` | Approval + exec modes | **Implemented (core)** | Medium | Harness |
 | Plan-mode runtime read-only | Permission-layer enforcement | Permission/safety enforcement | **Implemented** | Low | Harness |
-| Interactive approval UX | Native in-product approval flow | Approval + elevated flow | **Partial** (approver interface exists; no built-in interactive adapter in harness) | Medium | Harness |
-| Background shell lifecycle | `BashOutput`, `KillShell` | Exec task lifecycle | **Implemented (opt-in)** (`bash_start/output/kill`) | Medium | Harness |
-| Elevated execution path | Bypass/elevation semantics | Elevated mode (`!`) | **Missing** | High | Harness |
+| Interactive approval UX | Native in-product approval flow | Approval + elevated flow | **Implemented** (terminal approver + AgentOS bridge) | ~~Medium~~ Done | Harness |
+| Background shell lifecycle | `BashOutput`, `KillShell` | Exec task lifecycle | **Implemented (opt-in)** (`bash_start/output/kill` + task metadata) | Medium | Harness |
+| Elevated execution path | Bypass/elevation semantics | Elevated mode (`!`) | **Implemented** (SDK + CLI `/elevated` modes) | ~~High~~ Done | Harness |
 | Tool boundary policy interception | Pre/post tool controls | Hooks around command/tool lifecycle | **Implemented** | Low | Harness |
 | Runtime guardrails | Permission/sandbox controls | Sandboxing/security controls | **Implemented (path/network)** | Low | Harness |
 | Built-in runtime backend abstraction | Tool family can target one alternate runtime plane | Exec/files/browser/skills bind to sandbox/container workspace | **Implemented** (`RuntimeBackend`) | ~~High~~ Done | Harness |
-| Sandbox provider abstraction | Multiple runtime permission/sandbox modes | Sandboxing modes (`workspace-write/read-only/full`) | **Partial** (single backend contract exists; first-party `LLMSandboxBackend` ships, other provider adapters still open) | High | Harness |
-| Hook breadth and packaging | 17 events + multiple hook types | Plugin hook packs + lifecycle events | **Partial** (run + tool path) | High | Harness |
+| Sandbox provider abstraction | Multiple runtime permission/sandbox modes | Sandboxing modes (`workspace-write/read-only/full`) | **Implemented (core)** (`RuntimeBackend`, first-party `LLMSandboxBackend`, and explicit session sandbox modes) | ~~High~~ Done | Harness |
+| Hook breadth and packaging | 17 events + multiple hook types | Plugin hook packs + lifecycle events | **Implemented** (run/tool/lifecycle + workspace hooks) | ~~High~~ Done | Harness |
 | Scheduler | None | Heartbeat + Cron | **Implemented** | Low | Harness |
-| Persistent cron management | N/A | Durable job management | **Partial** (in-memory jobs) | Medium | Harness |
+| Persistent cron management | N/A | Durable job management | **Implemented** (`SchedulerBackend`, JSON persistence, CLI CRUD/trigger/history) | ~~Medium~~ Done | Harness |
+| AgentOS runtime export | Hosted API/runtime adapter | Gateway/API runtime | **Implemented (adapter)** (AgentProtocol facade + optional admin routes; approvals/scheduler/MCP reuse AgentOS) | ~~Medium~~ Done | Harness |
+| Context provider bridge | N/A | Source-scoped integrations | **Implemented** (Agno providers expose bounded tools + instructions) | Low | Harness |
+| Pack install/trust lifecycle | N/A | Plugin/package ecosystem | **Implemented (v1)** (local/git install, inspect, trust, remove; marketplace is a non-goal) | ~~Medium~~ Done | Harness |
 | Workspace core files | CLAUDE.md hierarchy | AGENTS/SOUL/IDENTITY/USER/etc | **Implemented** (OpenClaw-style files) | Low | Harness |
 | Hierarchical workspace layering | Hierarchical CLAUDE.md/rules loading | Layered behavior files | **Implemented** (global → project → workspace) | ~~Medium~~ Done | Harness |
 | Skill metadata compatibility | AgentSkills + CC frontmatter | OpenClaw metadata and install specs | **Implemented** | Low | Harness |
 | Skill `context: fork` execution | Skill fork contexts | Fork-style skill execution | **Implemented** (routes to subagent) | ~~Medium~~ Done | Harness |
 | Skill `command-dispatch` execution | Tool-level skill execution paths | Direct dispatch metadata | **Implemented** (direct tool invocation) | ~~Medium~~ Done | Harness |
-| Structured plan UX tools | `AskUserQuestion`, `ExitPlanMode` tool | Guided workflow patterns | **Missing** | Medium | Harness |
+| Structured plan UX tools | `AskUserQuestion`, `ExitPlanMode` tool | Guided workflow patterns | **Implemented** (plan signal toolkit + harness signal methods) | ~~Medium~~ Done | Harness |
 | Notebook tools | Notebook read/edit tools | N/A | **Implemented** (NotebookToolkit) | ~~Medium~~ Done | Harness |
 | MCP parity | MCP tools/resources/search | MCP integrations | **Implemented** (MCPToolkit: stdio + SSE) | ~~Deferred~~ Done | Harness |
 | Browser tools | Playwright browser automation | Browser use tools | **Implemented** (BrowserToolkit, optional extra) | ~~N/A~~ Done | Harness |
@@ -84,6 +92,49 @@ Deferred by design:
 ---
 
 ## What Changed Recently
+
+Newly closed or reduced gaps (v0.8 preview):
+1. **Agno context providers** — `AgentHarness` accepts providers, adds bounded
+   provider tools/instructions, supports async setup/close, and preserves policy,
+   permission, guardrail, and event boundaries.
+2. **AgentOS export** — Harnesses can be wrapped as AgentOS-compatible agents and
+   registered through `create_agentos_app()` without bypassing `AgentHarness`.
+   `approvals=True` installs an AgentOS-backed permission approver, scheduler
+   metadata emits a harness event, and runtime metadata records AgentOS
+   scheduler/MCP/approval configuration.
+3. **Harness admin/debug routes** — Optional `/agnoclaw` routes expose capabilities,
+   runtime metadata, in-memory events, sandbox listing/download/snapshot/reset,
+   skills, packs, policies, and permissions. Routes include AgentOS auth plus
+   agnoclaw admin/debug scope checks when authorization is enabled. Reset routes
+   through harness permission, policy, and event emission.
+4. **Pack v1 preview** — Pack manifests can be inspected without executing code,
+   installed from local paths or `git+` URLs, trusted explicitly, removed, and
+   loaded into the harness. Pack-provided run hooks, lifecycle hooks, and
+   policies emit lifecycle events, and pack policies compose after the harness
+   policy engine.
+5. **SDK ergonomics** — `AgentHarness.create()`, `session().send()`, and remote
+   client helpers provide a programmatic harness-shaped API over existing
+   `run/arun` behavior.
+6. **Elevated command contract** — `run_elevated_command()` /
+   `arun_elevated_command()` provide host-local command execution with explicit
+   reason capture, guardrail and policy preflight, permission approver gating,
+   `elevated.command.*` audit events, an interactive terminal permission
+   approver, a CLI `/elevated <cmd>` directive, and session-wide
+   `/elevated on|ask|full|off` modes for subsequent bash tool calls.
+7. **Structured plan UX signals** — `AskUserQuestion` and `ExitPlanMode` are
+   available as plan-mode-safe tools, with SDK methods for recording/emitting
+   plan question and completion signals.
+8. **Local background task metadata** — `LocalCommandExecutor` persists
+   background task IDs, PIDs, output log paths, working directories, and command
+   metadata so a fresh executor instance can read output/status and terminate
+   known host tasks by task ID.
+9. **Workspace/project hook discovery** — Global, project, and workspace
+   `hooks/*.json` command hooks are discovered into lifecycle checkpoints,
+   receive worktree/workspace metadata through environment variables, can return
+   JSON metadata, and emit `workspace.hook.*` audit events.
+10. **Session sandbox modes** — Built-in files/bash tools now support explicit
+   `workspace_write`, `read_only`, and `full` sandbox modes, with mode metadata
+   exposed in runtime/admin surfaces and inherited by spawned subagents.
 
 Newly closed or reduced gaps (v0.3):
 1. **Browser toolkit** — Playwright-based with navigate, click, type, screenshot, snapshot, scroll, fill_form, close.
@@ -102,10 +153,16 @@ Previously closed:
 1. Runtime permission modes are now implemented in the harness core.
 2. Plan mode now enforces read-only behavior at runtime, not prompt-only.
 3. Background shell lifecycle tools now exist (`bash_start`, `bash_output`, `bash_kill`).
+4. Persistent scheduler backend abstraction now exists for embedded runtimes
+   (`SchedulerBackend`, `InMemorySchedulerBackend`, `JsonSchedulerBackend`).
+5. First-class local scheduler CLI now manages persisted schedule CRUD,
+   enable/disable, trigger, and run history.
 
-Still open in this area:
-- Built-in interactive approval adapter and elevated command flow
-- Cross-session/background task persistence and queueing semantics
+Open by design / platform-owned:
+- Hosted queueing beyond local background task metadata belongs in AgentOS or a
+  product control plane, not `agnoclaw-core`.
+- Hosted scheduler API management beyond AgentOS passthrough remains an AgentOS
+  responsibility; the harness owns embedded scheduler storage and CLI helpers.
 
 ---
 
@@ -113,30 +170,42 @@ Still open in this area:
 
 ### High
 
-1. Elevated execution path
-- Add explicit elevated command contract, approval gate, and audit event schema.
+1. ~~Elevated execution path~~ **DONE**
+- ~~SDK-level elevated command execution now has an explicit request/result
+  contract, approval gate, policy/guardrail preflight, audit event schema,
+  single-command CLI execution, and session-wide CLI elevated defaults for
+  subsequent bash tool calls.~~
 
-2. Hook-pack system + broader lifecycle coverage
-- Add workspace/project hook discovery and more checkpoints (session/message/compact/worktree equivalents).
+2. ~~Hook-pack system + broader lifecycle coverage~~ **DONE**
+- ~~Session/message/compaction lifecycle checkpoints now exist for harness and
+  pack hooks. Workspace/project/global command hook discovery now exists for
+  lifecycle checkpoints and includes worktree-specific metadata.~~
 
-3. Sandbox provider abstraction beyond tool backends
-- Keep current guardrails and injected exec/files backends; add full runtime sandbox providers and mode semantics.
+3. ~~Sandbox provider abstraction beyond tool backends~~ **DONE**
+- ~~Keep current guardrails and injected exec/files backends; add full runtime sandbox providers and mode semantics.~~
 
 ### Medium
 
-1. Persistent scheduler state + cron CRUD surface
-- Persist jobs and run metadata; add first-class CLI management.
+1. ~~Persistent scheduler state + cron CRUD surface~~ **DONE**
+- Persisted job/run storage and daemon CRUD helpers are implemented through the
+  scheduler backend contract; local CLI management is implemented with
+  `agnoclaw schedule`.
 
-2. ~~Skill runtime parity for `context: fork` and `command-dispatch`~~ **DONE**
+2. ~~AgentOS approval bridge~~ **DONE**
+- ~~Map AgentOS approval records/resolution into `PermissionController` approval
+  requests so hosted approvals can satisfy harness permission prompts.~~
+
+3. ~~Skill runtime parity for `context: fork` and `command-dispatch`~~ **DONE**
 - ~~Enforce parsed skill metadata in runtime execution.~~
 
-3. ~~Hierarchical workspace context loading~~ **DONE**
+4. ~~Hierarchical workspace context loading~~ **DONE**
 - ~~Deterministic layer precedence (global -> project -> workspace/path).~~
 
-4. Plan UX tooling
-- Add harness-level tools/signals for structured user questions and explicit plan completion.
+5. ~~Plan UX tooling~~ **DONE**
+- ~~Add harness-level tools/signals for structured user questions and explicit
+  plan completion.~~
 
-5. ~~Notebook tools~~ **DONE**
+6. ~~Notebook tools~~ **DONE**
 - ~~Add read/edit support for notebook-centric workflows.~~
 
 ---
@@ -155,9 +224,14 @@ Still open in this area:
 Claude Code:
 - https://docs.anthropic.com/en/docs/claude-code
 - https://docs.anthropic.com/en/docs/claude-code/settings
+- https://docs.anthropic.com/en/docs/claude-code/iam
+- https://docs.anthropic.com/en/docs/claude-code/security
 - https://docs.anthropic.com/en/docs/claude-code/hooks
 
 OpenClaw:
+- https://openclawlab.com/en/docs/tools/elevated/
+- https://open-claw.bot/docs/gateway/sandboxing/
+- https://open-claw.bot/docs/gateway/sandbox-vs-tool-policy-vs-elevated/
 - https://docs.openclaw.ai/architecture
 - https://docs.openclaw.ai/automation/hooks
 - https://docs.openclaw.ai/automation/cron-jobs
@@ -169,6 +243,14 @@ OpenClaw:
 - https://docs.openclaw.ai/skills/skills-config
 - https://docs.openclaw.ai/agents/sub-agents
 - https://raw.githubusercontent.com/openclaw/openclaw/main/README.md
+
+Agno:
+- https://docs.agno.com/agent-os/overview
+- https://docs.agno.com/agent-os/mcp/mcp
+- https://docs.agno.com/agent-os/multi-framework/overview
+- https://docs.agno.com/hitl/approval
+- https://docs.agno.com/runtime/context
+- https://docs.agno.com/runtime/scheduling
 
 ---
 

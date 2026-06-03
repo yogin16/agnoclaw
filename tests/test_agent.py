@@ -474,6 +474,25 @@ def test_agent_harness_passes_backend_to_default_tools(tmp_path):
     assert mock_tools.call_args[1]["backend"] is backend
 
 
+def test_agent_harness_passes_sandbox_mode_to_default_tools(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    with patch("agnoclaw.agent.Agent", return_value=MagicMock()):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            with patch("agnoclaw.agent.get_default_tools", return_value=[]) as mock_tools:
+                harness = AgentHarness(
+                    workspace_dir=tmp_path,
+                    config=HarnessConfig(),
+                    sandbox_mode="ro",
+                )
+
+    assert harness.sandbox_mode == "read_only"
+    assert mock_tools.call_args[1]["sandbox_mode"].value == "read_only"
+    assert harness.admin_runtime_info()["sandbox_mode"] == "read_only"
+    assert harness.admin_sandbox_info()["sandbox_mode"] == "read_only"
+
+
 def test_agent_harness_forwards_structured_output_options(tmp_path):
     from agnoclaw.agent import AgentHarness
     from agnoclaw.config import HarnessConfig

@@ -1,5 +1,13 @@
 """v0.2 harness runtime contracts."""
 
+from .agentos import (
+    AgentOSClaimKeys,
+    AgentOSContextAdapter,
+    AgentOSHarnessAgent,
+    AgentOSPermissionApprover,
+    as_agentos_agent,
+    create_agentos_app,
+)
 from .context import ExecutionContext
 from .errors import AgnoAuthError, AgnoConfigError, HarnessError
 from .events import (
@@ -11,7 +19,15 @@ from .events import (
     NullEventSink,
     build_event,
 )
+from .guardrails import (
+    GuardrailViolation,
+    RuntimeGuardrails,
+)
 from .hooks import (
+    LifecycleHook,
+    LifecycleHookRequest,
+    PlanExitSignal,
+    PlanQuestionSignal,
     PostRunHook,
     PreRunHook,
     PromptEnvelope,
@@ -21,13 +37,18 @@ from .hooks import (
     ToolCallRequest,
     ToolCallResult,
 )
-from .guardrails import (
-    GuardrailViolation,
-    RuntimeGuardrails,
-)
-from .agentos import (
-    AgentOSClaimKeys,
-    AgentOSContextAdapter,
+from .permissions import (
+    ElevatedCommandRequest,
+    ElevatedCommandResult,
+    ElevatedSessionMode,
+    InteractivePermissionApprover,
+    PermissionApprover,
+    PermissionController,
+    PermissionMode,
+    PermissionRequest,
+    classify_tool,
+    normalize_elevated_session_mode,
+    normalize_permission_mode,
 )
 from .policy import (
     AllowAllPolicyEngine,
@@ -37,29 +58,41 @@ from .policy import (
     RedactionRule,
     apply_redactions,
 )
-from .permissions import (
-    PermissionApprover,
-    PermissionController,
-    PermissionMode,
-    PermissionRequest,
-    classify_tool,
-    normalize_permission_mode,
+from .scheduler import (
+    InMemorySchedulerBackend,
+    JsonSchedulerBackend,
+    SchedulerBackend,
+    SchedulerJob,
+    SchedulerRunRecord,
+    scheduler_store_path,
 )
 
 __all__ = [
     "AllowAllPolicyEngine",
     "AgentOSClaimKeys",
     "AgentOSContextAdapter",
+    "AgentOSHarnessAgent",
+    "AgentOSPermissionApprover",
     "AgnoAuthError",
     "AgnoConfigError",
     "EVENT_VERSION",
     "EventSink",
     "EventSinkMode",
     "ExecutionContext",
+    "ElevatedCommandRequest",
+    "ElevatedCommandResult",
+    "ElevatedSessionMode",
     "HarnessError",
     "HarnessEvent",
     "InMemoryEventSink",
+    "InMemorySchedulerBackend",
+    "InteractivePermissionApprover",
+    "JsonSchedulerBackend",
+    "LifecycleHook",
+    "LifecycleHookRequest",
     "NullEventSink",
+    "PlanExitSignal",
+    "PlanQuestionSignal",
     "PolicyAction",
     "PolicyDecision",
     "PolicyEngine",
@@ -75,11 +108,18 @@ __all__ = [
     "RuntimeGuardrails",
     "RunInput",
     "RunResultEnvelope",
+    "SchedulerBackend",
+    "SchedulerJob",
+    "SchedulerRunRecord",
+    "scheduler_store_path",
     "SkillLoadRequest",
     "ToolCallRequest",
     "ToolCallResult",
     "apply_redactions",
+    "as_agentos_agent",
     "build_event",
     "classify_tool",
+    "create_agentos_app",
     "normalize_permission_mode",
+    "normalize_elevated_session_mode",
 ]

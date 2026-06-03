@@ -162,6 +162,73 @@ async def main():
 asyncio.run(main())
 ```
 
+### v0.8 features (context providers, elevated, packs, sandbox, plan signals, AgentOS, lifecycle hooks, scheduler persistence)
+
+```python
+# Context provider (extends Agno's ContextProvider ABC)
+from agno.context.provider import ContextProvider
+from agno.context.provider import Answer, Status
+from agnoclaw import AgentHarness
+
+class MyProvider(ContextProvider):
+    def __init__(self):
+        super().__init__(id="my_provider", name="My Provider")
+
+    def query(self, question: str, *, run_context=None) -> Answer:
+        return Answer(answer=f"result for {question}")
+
+    async def aquery(self, question: str, *, run_context=None) -> Answer:
+        return self.query(question, run_context=run_context)
+
+    def status(self) -> Status:
+        return Status(available=True, details="ready")
+
+    async def astatus(self) -> Status:
+        return self.status()
+
+    def instructions(self) -> str:
+        return "Use my_query to search my data."
+
+harness = await AgentHarness.create(
+    context_providers=[MyProvider()],
+)
+
+# Elevated commands
+harness.set_elevated_mode("full")
+result = harness.run_elevated_command("sudo systemctl status", reason="Check service")
+
+# Sandbox modes
+harness = AgentHarness(sandbox_mode="read_only")
+
+# Plan signals
+harness.enter_plan_mode()
+harness.ask_user_question("Which DB?", options=["PG", "SQLite"])
+harness.signal_plan_completion("Use PG.", plan_path="plan.md")
+
+# Pack system
+from agnoclaw import inspect_pack, load_pack
+manifest = inspect_pack("./my-pack")     # no code executed
+pack = load_pack("./my-pack", trusted=True)
+
+# Lifecycle hooks
+harness.add_lifecycle_hook("run.started", lambda e, ctx: print(e.event_type))
+
+# AgentOS export
+from agnoclaw.runtime import create_agentos_app
+app = create_agentos_app([harness], scheduler=True, approvals=True)
+
+# Scheduler persistence
+from agnoclaw.runtime import JsonSchedulerBackend, SchedulerJob
+backend = JsonSchedulerBackend("~/.agnoclaw/schedules.json")
+backend.upsert_job(SchedulerJob(name="daily", schedule="0 8 * * *", prompt="Report"))
+
+# SDK ergonomics
+run = await harness.session(session_id="s1").send("Hello")
+async for event in run.events(): print(event)
+```
+
+See [`cookbook/`](cookbook/) for complete runnable examples of each feature.
+
 ---
 
 ## Tools
@@ -302,6 +369,28 @@ agnoclaw heartbeat install-service
 
 # Uninstall the service
 agnoclaw heartbeat install-service --uninstall
+
+# Schedule management (persistent, SQLite-backed)
+agnoclaw schedule list                         # list all scheduled jobs
+agnoclaw schedule add daily-report             # add a job
+  --schedule '0 8 * * *' --prompt 'Generate report' --skill report
+agnoclaw schedule show daily-report            # show job details
+agnoclaw schedule enable daily-report          # enable a job
+agnoclaw schedule disable daily-report         # disable a job
+agnoclaw schedule trigger daily-report         # trigger a job immediately
+agnoclaw schedule runs daily-report            # view run history
+agnoclaw schedule remove daily-report          # delete a job
+
+# Pack management
+agnoclaw pack list                             # list installed packs
+agnoclaw pack inspect path/to/pack             # inspect pack manifest
+agnoclaw pack install path/to/pack             # install a pack
+agnoclaw pack trust my-pack                    # trust a pack for code execution
+agnoclaw pack remove my-pack                   # remove a pack
+
+# Elevated commands (session modes)
+# /elevated on|ask|full|off — set session-wide elevated mode for bash calls
+# Use inside the REPL or TUI via the /elevated directive
 ```
 
 ---
@@ -816,12 +905,18 @@ agnoclaw/
 │   │   └── registry.py    # Discovery + selective injection + gate checks
 │   ├── heartbeat/
 │   │   └── daemon.py      # HeartbeatDaemon + CronJob (interval + cron expressions)
-│   ├── runtime/           # v0.2 runtime contracts
-│   │   ├── hooks.py       # PreRunHook, PostRunHook
+│   ├── runtime/           # v0.2+ runtime contracts
+│   │   ├── hooks.py       # PreRunHook, PostRunHook, LifecycleHook
 │   │   ├── policy.py      # PolicyEngine, PolicyDecision
 │   │   ├── events.py      # EventSink (observability)
 │   │   ├── guardrails.py  # Input/output guardrails
-│   │   └── permissions.py # Permission modes (bypass, accept_edits, plan)
+│   │   ├── permissions.py # Permission modes + elevated commands
+│   │   ├── scheduler.py   # SchedulerBackend, JsonSchedulerBackend
+│   │   ├── agentos.py     # AgentOS export adapter
+│   │   ├── context.py     # ExecutionContext
+│   │   └── errors.py      # Runtime error types
+│   ├── packs.py           # Pack system (manifest, load, install, trust)
+│   ├── remote.py          # RemoteHarnessClient
 │   ├── cli/
 │   │   ├── main.py        # Click CLI (init, chat, run, tui, skill, heartbeat, workspace)
 │   │   └── async_repl.py  # Async REPL with heartbeat notifications
@@ -840,15 +935,26 @@ agnoclaw/
 │   └── self-improving-agent/  # Capture corrections/errors → .learnings/
 ├── docs/
 │   └── harness-gap-analysis.md # Unified Claude Code + OpenClaw harness gap status
-└── examples/              # 20 runnable examples
-    ├── ollama_local.py    # Local inference (no API key)
-    ├── openclaw_style.py  # Full OpenClaw-style setup
-    ├── openclaw_skills.py # Skill hub creation and usage
-    ├── progress_tracking.py   # ProgressToolkit lifecycle
-    ├── cron_jobs.py           # CronJob scheduler + service install
-    ├── self_improving_agent.py # .learnings/ capture + promotion pattern
-    ├── claude_code_tools.py   # CC gap analysis + MultiEdit demo
-    └── ...
+├── examples/              # 27 runnable examples
+│   ├── ollama_local.py    # Local inference (no API key)
+│   ├── openclaw_style.py  # Full OpenClaw-style setup
+│   ├── openclaw_skills.py # Skill hub creation and usage
+│   ├── progress_tracking.py   # ProgressToolkit lifecycle
+│   ├── cron_jobs.py           # CronJob scheduler + service install
+│   ├── self_improving_agent.py # .learnings/ capture + promotion pattern
+│   ├── claude_code_tools.py   # CC gap analysis + MultiEdit demo
+│   └── ...
+└── cookbook/              # v0.8 feature cookbook (10 examples)
+    ├── 01_context_providers.py     # Duck-typed providers + async setup
+    ├── 02_agentos_export.py        # AgentOS FastAPI app export
+    ├── 03_elevated_commands.py     # Elevated execution modes
+    ├── 04_plan_signals.py          # Structured plan UX signals
+    ├── 05_sandbox_modes.py         # Session sandbox modes
+    ├── 06_pack_system.py           # Pack manifest, load, install, trust
+    ├── 07_lifecycle_hooks.py       # Sync/async lifecycle hooks
+    ├── 08_remote_client.py         # RemoteHarnessClient
+    ├── 09_sdk_ergonomics.py        # create() + session().send()
+    └── 10_scheduler_persistence.py # JsonSchedulerBackend + CRUD
 ```
 
 ---

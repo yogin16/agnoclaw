@@ -154,6 +154,7 @@ You are in **plan mode**. In this mode:
 
 1. **Research and explore only.** Use read, search, and fetch tools to understand the task.
    Do NOT write, edit, create files, run shell commands, or make any changes.
+   Use AskUserQuestion if structured clarification is needed before planning.
 
 2. **Write a plan file.** Save your implementation plan to a `.plan.md` file in the workspace.
    The plan must include:
@@ -163,8 +164,8 @@ You are in **plan mode**. In this mode:
    - Key decisions and trade-offs
    - Any open questions for the user
 
-3. **Exit plan mode.** When your plan is complete, use the ExitPlanMode signal (or inform the
-   user the plan is ready). Do NOT begin implementation until the user approves.
+3. **Exit plan mode.** When your plan is complete, use ExitPlanMode to present
+   the plan for review. Do NOT begin implementation until the user approves.
 
 4. **No implementation in plan mode.** If you discover implementation details while researching,
    record them in the plan — do not execute them.

@@ -9,6 +9,7 @@ Commands:
     agnoclaw skill inspect     Show a skill's full content
     agnoclaw heartbeat start   Start heartbeat daemon
     agnoclaw heartbeat trigger Run one heartbeat check now
+    agnoclaw schedule list     Manage persisted scheduler jobs
     agnoclaw workspace show    Show workspace directory and files
     agnoclaw workspace init    Initialize workspace
 """
@@ -31,6 +32,19 @@ except ImportError as e:
     ) from e
 
 console = Console()
+
+_ELEVATED_MODE_WORDS = {
+    "ask",
+    "on",
+    "full",
+    "off",
+    "status",
+    "enable",
+    "disable",
+    "enabled",
+    "disabled",
+    "always",
+}
 
 
 def _build_agent(
@@ -65,16 +79,34 @@ def cli():
 
 # ── Global options (shared across subcommands) ─────────────────────────────────
 
-MODEL_OPT = click.option("--model", "-m", default=None, help="Model ID (e.g. claude-sonnet-4-6, gpt-4o)")
-PROVIDER_OPT = click.option("--provider", "-p", default=None, help="Provider (anthropic, openai, google, groq, ollama...)")
+MODEL_OPT = click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model ID (e.g. claude-sonnet-4-6, gpt-4o)",
+)
+PROVIDER_OPT = click.option(
+    "--provider",
+    "-p",
+    default=None,
+    help="Provider (anthropic, openai, google, groq, ollama...)",
+)
 SESSION_OPT = click.option("--session", "-s", default=None, help="Session ID for persistence")
 WORKSPACE_OPT = click.option("--workspace", "-w", default=None, help="Workspace directory path")
-DEBUG_OPT = click.option("--debug", is_flag=True, default=False, help="Enable debug mode (show tool calls)")
+DEBUG_OPT = click.option(
+    "--debug",
+    is_flag=True,
+    default=False,
+    help="Enable debug mode (show tool calls)",
+)
 SKILL_OPT = click.option("--skill", default=None, help="Activate a skill for this run (skill name)")
 PERMISSION_MODE_OPT = click.option(
     "--permission-mode",
     default=None,
-    type=click.Choice(["bypass", "default", "accept_edits", "plan", "dont_ask"], case_sensitive=False),
+    type=click.Choice(
+        ["bypass", "default", "accept_edits", "plan", "dont_ask"],
+        case_sensitive=False,
+    ),
     help="Runtime permission mode for tool calls.",
 )
 
@@ -149,9 +181,15 @@ def init(workspace):
         "# Tool Preferences",
         "",
         f"- Preferred model for this workspace: `{model_input.strip()}`",
-        f"- Shell usage preference: `{'enabled' if enable_bash else 'avoid unless explicitly needed'}`",
+        (
+            "- Shell usage preference: "
+            f"`{'enabled' if enable_bash else 'avoid unless explicitly needed'}`"
+        ),
         "- Note: this file is advisory workspace context for the agent.",
-        "- Actual runtime configuration comes from constructor args, environment variables, or `.agnoclaw.toml`.",
+        (
+            "- Actual runtime configuration comes from constructor args, environment "
+            "variables, or `.agnoclaw.toml`."
+        ),
     ]
     ws.write_file("tools", "\n".join(tools_lines) + "\n")
 
@@ -159,7 +197,8 @@ def init(workspace):
     console.print(
         f"  SOUL.md, USER.md, IDENTITY.md, TOOLS.md written\n"
         f"  Preferred model recorded: [cyan]{model_input.strip()}[/cyan]\n"
-        f"  Shell preference recorded: [cyan]{'enabled' if enable_bash else 'avoid unless needed'}[/cyan]\n"
+        "  Shell preference recorded: "
+        f"[cyan]{'enabled' if enable_bash else 'avoid unless needed'}[/cyan]\n"
         f"\nRun [bold]agnoclaw chat[/bold] to start."
     )
 
@@ -302,18 +341,94 @@ def _handle_slash_command(
             console.print(f"  [dim]{name.upper()}.md[/dim]: {len(content)} chars")
         return True, queued_skill
 
+    if cmd == "/elevated":
+        arg_text = args.strip()
+        if not arg_text:
+            permissions = agent.admin_list_permissions()
+            mode = permissions.get("elevated_mode", "off")
+            console.print(f"[cyan]Elevated mode: {mode}[/cyan]")
+            console.print(
+                "[dim]Usage: /elevated <cmd> or "
+                "/elevated on|ask|full|off [cmd][/dim]"
+            )
+            return True, queued_skill
+
+        first, _, rest = arg_text.partition(" ")
+        selected_mode = None
+        if first.lower() in _ELEVATED_MODE_WORDS:
+            if first.lower() == "status":
+                permissions = agent.admin_list_permissions()
+                mode = permissions.get("elevated_mode", "off")
+                console.print(f"[cyan]Elevated mode: {mode}[/cyan]")
+                return True, queued_skill
+            selected_mode = _set_cli_elevated_mode(agent, first.lower())
+            if not rest.strip():
+                console.print(f"[cyan]Elevated mode: {selected_mode}[/cyan]")
+                return True, queued_skill
+            arg_text = rest.strip()
+
+        _ensure_cli_elevated_approver(
+            agent,
+            default=selected_mode == "on",
+            skip_for_full=selected_mode == "full",
+        )
+        result = agent.run_elevated_command(
+            arg_text,
+            reason="CLI /elevated directive",
+            _skip_approval=selected_mode == "full",
+        )
+        if result.stdout:
+            console.print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            stderr_end = "" if result.stderr.endswith("\n") else "\n"
+            console.print(f"[red]{result.stderr}[/red]", end=stderr_end)
+        console.print(f"[dim]exit code: {result.exit_code}[/dim]")
+        return True, queued_skill
+
     if cmd in ("/help", "/?"):
         console.print(
             "[bold]Chat commands:[/bold]\n"
             "  /skill <name>  — queue a skill for the next message\n"
             "  /skills        — list available skills\n"
             "  /workspace     — show workspace info\n"
+            "  /elevated <cmd> — run an approved host command\n"
+            "  /elevated on|ask|full|off — set session bash elevation\n"
             "  /clear         — clear session context\n"
             "  /quit          — exit\n"
         )
         return True, queued_skill
 
     return False, queued_skill
+
+
+def _ensure_cli_elevated_approver(
+    agent,
+    *,
+    default: bool = False,
+    skip_for_full: bool = False,
+) -> None:
+    """Install an interactive approver for CLI elevated execution if needed."""
+    if skip_for_full:
+        return
+    from agnoclaw.runtime import InteractivePermissionApprover
+
+    permissions = agent.admin_list_permissions()
+    if not permissions.get("has_approver"):
+        agent.set_permission_approver(InteractivePermissionApprover(default=default))
+
+
+def _set_cli_elevated_mode(agent, mode: str) -> str:
+    """Set session-wide elevated mode and install the matching CLI approver."""
+    from agnoclaw.runtime import normalize_elevated_session_mode
+
+    normalized = normalize_elevated_session_mode(mode).value
+    if normalized in {"ask", "on"}:
+        _ensure_cli_elevated_approver(
+            agent,
+            default=normalized == "on",
+        )
+    agent.set_elevated_mode(normalized)
+    return normalized
 
 
 # ── agnoclaw tui ──────────────────────────────────────────────────────────────
@@ -421,12 +536,355 @@ def skill_install(path_or_url, workspace):
         skill_name = src.name
         dest = ws.skills_dir() / skill_name
         if dest.exists():
-            console.print(f"[yellow]Skill '{skill_name}' already exists at {dest}. Overwrite? [y/N][/yellow]")
+            console.print(
+                f"[yellow]Skill '{skill_name}' already exists at {dest}. "
+                "Overwrite? [y/N][/yellow]"
+            )
             if input().strip().lower() != "y":
                 return
 
         shutil.copytree(src, dest, dirs_exist_ok=True)
         console.print(f"[green]Installed skill '{skill_name}' to {dest}[/green]")
+
+
+# ── agnoclaw pack ─────────────────────────────────────────────────────────────
+
+@cli.group()
+def pack():
+    """Manage and inspect agnoclaw packs."""
+    pass
+
+
+@pack.command("list")
+@click.option("--root", type=click.Path(path_type=Path), default=None, help="Pack store root.")
+def pack_list(root):
+    """List installed packs."""
+    from agnoclaw.packs import is_pack_trusted, list_installed_packs
+
+    packs = list_installed_packs(root=root)
+    if not packs:
+        console.print("[dim]No packs installed.[/dim]")
+        return
+
+    table = Table(title="Installed Packs", border_style="dim")
+    table.add_column("Name", style="cyan bold")
+    table.add_column("Version")
+    table.add_column("Trusted", justify="center")
+    table.add_column("Description")
+    for manifest in packs:
+        table.add_row(
+            manifest.name,
+            manifest.version,
+            "yes" if is_pack_trusted(manifest.root) else "no",
+            manifest.description,
+        )
+    console.print(table)
+
+
+@pack.command("inspect")
+@click.argument("path", type=click.Path(path_type=Path))
+def pack_inspect(path):
+    """Inspect a pack manifest without executing pack code."""
+    from agnoclaw.packs import PackError, inspect_pack, is_pack_trusted
+
+    try:
+        manifest = inspect_pack(path)
+    except PackError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+
+    console.print(Panel(
+        f"[bold cyan]{manifest.name}[/bold cyan] v{manifest.version}\n"
+        f"[dim]{manifest.description or 'No description'}[/dim]\n\n"
+        f"Root: {manifest.root}\n"
+        f"Trusted locally: {'yes' if is_pack_trusted(manifest.root) else 'no'}\n"
+        f"Requires code execution: {manifest.trust.requires_code_execution}\n"
+        f"Default trust: {manifest.trust.default}",
+        title="Pack",
+        border_style="cyan",
+    ))
+
+    provides = Table(title="Provides", border_style="dim")
+    provides.add_column("Type", style="cyan")
+    provides.add_column("Entries")
+    for label, entries in (
+        ("skills", manifest.provides.skills),
+        ("tools", manifest.provides.tools),
+        ("hooks", manifest.provides.hooks),
+        ("context providers", manifest.provides.context_providers),
+        ("policies", manifest.provides.policies),
+        ("commands", manifest.provides.commands),
+    ):
+        provides.add_row(label, ", ".join(entries) or "none")
+    console.print(provides)
+
+
+@pack.command("install")
+@click.argument("source")
+@click.option("--root", type=click.Path(path_type=Path), default=None, help="Pack store root.")
+@click.option("--overwrite", is_flag=True, default=False, help="Replace an existing pack.")
+def pack_install(source, root, overwrite):
+    """Install a local or git+ pack."""
+    from agnoclaw.packs import PackError, install_pack
+
+    try:
+        manifest = install_pack(source, root=root, overwrite=overwrite)
+    except PackError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Installed pack '{manifest.name}' to {manifest.root}[/green]")
+
+
+@pack.command("trust")
+@click.argument("name")
+@click.option("--root", type=click.Path(path_type=Path), default=None, help="Pack store root.")
+def pack_trust(name, root):
+    """Trust an installed pack for code-executing registrations."""
+    from agnoclaw.packs import PackError, trust_pack
+
+    try:
+        manifest = trust_pack(name, root=root)
+    except PackError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Trusted pack '{manifest.name}'[/green]")
+
+
+@pack.command("remove")
+@click.argument("name")
+@click.option("--root", type=click.Path(path_type=Path), default=None, help="Pack store root.")
+def pack_remove(name, root):
+    """Remove an installed pack."""
+    from agnoclaw.packs import remove_pack
+
+    if remove_pack(name, root=root):
+        console.print(f"[green]Removed pack '{name}'[/green]")
+        return
+    console.print(f"[yellow]Pack not installed: {name}[/yellow]")
+
+
+# ── agnoclaw schedule ─────────────────────────────────────────────────────────
+
+SCHEDULE_STORE_OPT = click.option(
+    "--store",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Scheduler JSON store path. Defaults to ~/.agnoclaw/schedules.json.",
+)
+
+
+def _scheduler_backend(store: Path | None):
+    from agnoclaw.runtime import JsonSchedulerBackend, scheduler_store_path
+
+    return JsonSchedulerBackend(scheduler_store_path(store))
+
+
+@cli.group()
+def schedule():
+    """Manage embedded scheduler jobs."""
+    pass
+
+
+@schedule.command("list")
+@SCHEDULE_STORE_OPT
+@click.option("--enabled", is_flag=True, default=False, help="Show only enabled jobs.")
+@click.option("--disabled", is_flag=True, default=False, help="Show only disabled jobs.")
+def schedule_list(store, enabled, disabled):
+    """List local scheduler jobs."""
+    if enabled and disabled:
+        console.print("[red]Use only one of --enabled or --disabled.[/red]")
+        sys.exit(1)
+    backend = _scheduler_backend(store)
+    enabled_filter = True if enabled else False if disabled else None
+    jobs = backend.list_jobs(enabled=enabled_filter)
+    if not jobs:
+        console.print("[dim]No scheduler jobs found.[/dim]")
+        return
+
+    table = Table(title="Scheduler Jobs", border_style="dim")
+    table.add_column("Name", style="cyan bold")
+    table.add_column("Schedule")
+    table.add_column("Enabled", justify="center")
+    table.add_column("Skill")
+    table.add_column("Isolated", justify="center")
+    table.add_column("Prompt")
+    for job in jobs:
+        table.add_row(
+            job.name,
+            job.schedule,
+            "yes" if job.enabled else "no",
+            job.skill or "",
+            "yes" if job.isolated else "no",
+            job.prompt[:80] + ("..." if len(job.prompt) > 80 else ""),
+        )
+    console.print(table)
+
+
+@schedule.command("add")
+@click.argument("name")
+@click.option("--schedule", "schedule_expr", required=True, help="Cron expression or interval.")
+@click.option("--prompt", required=True, help="Prompt to run when the job fires.")
+@click.option("--skill", default=None, help="Skill to activate for this job.")
+@click.option("--isolated", is_flag=True, default=False, help="Run in a fresh session.")
+@click.option("--model", "model_id", default=None, help="Model override for this job.")
+@click.option("--provider", default=None, help="Provider override for this job.")
+@click.option("--disabled", is_flag=True, default=False, help="Create disabled.")
+@SCHEDULE_STORE_OPT
+def schedule_add(name, schedule_expr, prompt, skill, isolated, model_id, provider, disabled, store):
+    """Create or update a local scheduler job."""
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+
+    if HeartbeatDaemon._seconds_until_next(schedule_expr) < 0 and len(schedule_expr.split()) < 5:
+        console.print(
+            f"[red]Invalid schedule '{schedule_expr}'. Use an interval like '30m' "
+            "or a 5-field cron expression.[/red]"
+        )
+        sys.exit(1)
+
+    backend = _scheduler_backend(store)
+    job = CronJob(
+        name=name,
+        schedule=schedule_expr,
+        prompt=prompt,
+        skill=skill,
+        isolated=isolated,
+        model_id=model_id,
+        provider=provider,
+        enabled=not disabled,
+    )
+    stored = backend.upsert_job(job.to_scheduler_job())
+    console.print(
+        f"[green]Saved schedule '{stored.name}' "
+        f"({'enabled' if stored.enabled else 'disabled'})[/green]"
+    )
+
+
+@schedule.command("show")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+def schedule_show(name, store):
+    """Show a local scheduler job."""
+    backend = _scheduler_backend(store)
+    job = backend.get_job(name)
+    if job is None:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        sys.exit(1)
+    console.print(Panel(
+        f"[bold cyan]{job.name}[/bold cyan]\n"
+        f"Schedule: {job.schedule}\n"
+        f"Enabled: {job.enabled}\n"
+        f"Skill: {job.skill or 'none'}\n"
+        f"Isolated: {job.isolated}\n"
+        f"Model: {job.model_id or 'default'}\n"
+        f"Provider: {job.provider or 'default'}\n"
+        f"Created: {job.created_at}\n"
+        f"Updated: {job.updated_at}\n\n"
+        f"{job.prompt}",
+        title="Schedule",
+        border_style="cyan",
+    ))
+
+
+@schedule.command("remove")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+def schedule_remove(name, store):
+    """Delete a local scheduler job."""
+    backend = _scheduler_backend(store)
+    if backend.delete_job(name):
+        console.print(f"[green]Removed schedule '{name}'[/green]")
+        return
+    console.print(f"[yellow]Schedule not found: {name}[/yellow]")
+
+
+@schedule.command("enable")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+def schedule_enable(name, store):
+    """Enable a local scheduler job."""
+    backend = _scheduler_backend(store)
+    if backend.set_job_enabled(name, True) is None:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Enabled schedule '{name}'[/green]")
+
+
+@schedule.command("disable")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+def schedule_disable(name, store):
+    """Disable a local scheduler job."""
+    backend = _scheduler_backend(store)
+    if backend.set_job_enabled(name, False) is None:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Disabled schedule '{name}'[/green]")
+
+
+@schedule.command("runs")
+@click.argument("name", required=False)
+@click.option("--limit", default=20, show_default=True, type=int, help="Maximum runs to show.")
+@SCHEDULE_STORE_OPT
+def schedule_runs(name, limit, store):
+    """List scheduler run history."""
+    backend = _scheduler_backend(store)
+    runs = backend.list_runs(job_name=name, limit=limit)
+    if not runs:
+        console.print("[dim]No scheduler runs found.[/dim]")
+        return
+
+    table = Table(title="Scheduler Runs", border_style="dim")
+    table.add_column("Run ID", style="cyan")
+    table.add_column("Job")
+    table.add_column("Status")
+    table.add_column("Started")
+    table.add_column("Finished")
+    table.add_column("Result")
+    for run in runs:
+        result = run.error or run.output or ""
+        table.add_row(
+            run.run_id,
+            run.job_name,
+            run.status,
+            run.started_at,
+            run.finished_at or "",
+            result[:80] + ("..." if len(result) > 80 else ""),
+        )
+    console.print(table)
+
+
+@schedule.command("trigger")
+@click.argument("name")
+@SCHEDULE_STORE_OPT
+@WORKSPACE_OPT
+@PERMISSION_MODE_OPT
+@MODEL_OPT
+@PROVIDER_OPT
+def schedule_trigger(name, store, workspace, permission_mode, model, provider):
+    """Run a local scheduler job immediately and record run history."""
+    from agnoclaw.heartbeat import HeartbeatDaemon
+
+    backend = _scheduler_backend(store)
+    job = backend.get_job(name)
+    if job is None:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        sys.exit(1)
+
+    agent = _build_agent(
+        model or job.model_id,
+        provider or job.provider,
+        None,
+        workspace,
+        False,
+        permission_mode,
+    )
+    daemon = HeartbeatDaemon(agent, scheduler_backend=backend)
+    console.print(f"[dim]Triggering schedule '{name}'...[/dim]")
+    result = asyncio.run(daemon.trigger_cron(name))
+    if result is None:
+        console.print("[yellow]Schedule completed without output.[/yellow]")
+        return
+    console.print(result)
 
 
 # ── agnoclaw hub ─────────────────────────────────────────────────────────────
@@ -588,7 +1046,13 @@ def heartbeat():
 @PROVIDER_OPT
 @WORKSPACE_OPT
 @PERMISSION_MODE_OPT
-@click.option("--interval", "-i", default=None, type=int, help="Check interval in minutes (overrides config)")
+@click.option(
+    "--interval",
+    "-i",
+    default=None,
+    type=int,
+    help="Check interval in minutes (overrides config)",
+)
 def heartbeat_start(model, provider, workspace, permission_mode, interval):
     """Start the heartbeat daemon (runs until Ctrl+C)."""
     from agnoclaw import AgentHarness
@@ -669,7 +1133,14 @@ def heartbeat_trigger(model, provider, workspace, permission_mode):
 @MODEL_OPT
 @PROVIDER_OPT
 @WORKSPACE_OPT
-@click.option("--interval", "-i", default=30, type=int, show_default=True, help="Heartbeat interval in minutes")
+@click.option(
+    "--interval",
+    "-i",
+    default=30,
+    type=int,
+    show_default=True,
+    help="Heartbeat interval in minutes",
+)
 @click.option("--uninstall", is_flag=True, default=False, help="Remove the installed service")
 def heartbeat_install_service(model, provider, workspace, interval, uninstall):
     """Register heartbeat as a launchd (macOS) or systemd (Linux) persistent service.
@@ -683,7 +1154,10 @@ def heartbeat_install_service(model, provider, workspace, interval, uninstall):
     os_name = platform.system().lower()
     agnoclaw_bin = shutil.which("agnoclaw")
     if not agnoclaw_bin:
-        console.print("[red]agnoclaw binary not found on PATH. Install with 'pip install agnoclaw' or 'uv tool install agnoclaw'.[/red]")
+        console.print(
+            "[red]agnoclaw binary not found on PATH. Install with "
+            "'pip install agnoclaw' or 'uv tool install agnoclaw'.[/red]"
+        )
         return
 
     if os_name == "darwin":
@@ -691,7 +1165,11 @@ def heartbeat_install_service(model, provider, workspace, interval, uninstall):
     elif os_name == "linux":
         _manage_systemd_service(agnoclaw_bin, workspace, interval, uninstall, model, provider)
     else:
-        console.print(f"[yellow]Service install not supported on {platform.system()}. Run 'agnoclaw heartbeat start' manually in a persistent session (tmux/screen).[/yellow]")
+        console.print(
+            f"[yellow]Service install not supported on {platform.system()}. "
+            "Run 'agnoclaw heartbeat start' manually in a persistent session "
+            "(tmux/screen).[/yellow]"
+        )
 
 
 def _manage_launchd_service(
@@ -872,7 +1350,16 @@ def workspace_show(workspace):
     table.add_column("Status")
     table.add_column("Size")
 
-    for logical_name in ("agents", "soul", "identity", "user", "memory", "tools", "heartbeat", "boot"):
+    for logical_name in (
+        "agents",
+        "soul",
+        "identity",
+        "user",
+        "memory",
+        "tools",
+        "heartbeat",
+        "boot",
+    ):
         from agnoclaw.workspace import WORKSPACE_FILES
         filename = WORKSPACE_FILES.get(logical_name, f"{logical_name.upper()}.md")
         path = ws.path / filename

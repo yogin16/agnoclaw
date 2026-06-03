@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
-from typing import Awaitable, Protocol, runtime_checkable
+import json
+from collections.abc import Awaitable
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any, Protocol, runtime_checkable
 
 from .hooks import ToolCallRequest
 from .policy import PolicyAction, PolicyDecision
 
 
-class PermissionMode(str, Enum):
+class PermissionMode(StrEnum):
     """Supported runtime permission modes."""
 
     BYPASS = "bypass"
@@ -18,6 +20,15 @@ class PermissionMode(str, Enum):
     ACCEPT_EDITS = "accept_edits"
     PLAN = "plan"
     DONT_ASK = "dont_ask"
+
+
+class ElevatedSessionMode(StrEnum):
+    """Session-wide elevated execution modes for interactive CLI sessions."""
+
+    OFF = "off"
+    ASK = "ask"
+    ON = "on"
+    FULL = "full"
 
 
 _MODE_ALIASES = {
@@ -30,6 +41,25 @@ _MODE_ALIASES = {
     "dont_ask": PermissionMode.DONT_ASK,
     "default": PermissionMode.DEFAULT,
     "bypass": PermissionMode.BYPASS,
+}
+
+_ELEVATED_MODE_ALIASES = {
+    "0": ElevatedSessionMode.OFF,
+    "false": ElevatedSessionMode.OFF,
+    "no": ElevatedSessionMode.OFF,
+    "off": ElevatedSessionMode.OFF,
+    "disable": ElevatedSessionMode.OFF,
+    "disabled": ElevatedSessionMode.OFF,
+    "ask": ElevatedSessionMode.ASK,
+    "prompt": ElevatedSessionMode.ASK,
+    "1": ElevatedSessionMode.ON,
+    "true": ElevatedSessionMode.ON,
+    "yes": ElevatedSessionMode.ON,
+    "on": ElevatedSessionMode.ON,
+    "enable": ElevatedSessionMode.ON,
+    "enabled": ElevatedSessionMode.ON,
+    "full": ElevatedSessionMode.FULL,
+    "always": ElevatedSessionMode.FULL,
 }
 
 
@@ -45,11 +75,16 @@ READ_ONLY_TOOLS = frozenset(
         "read_progress",
         "read_features",
         "bash_output",
+        "AskUserQuestion",
+        "ExitPlanMode",
+        "ask_user_question",
+        "exit_plan_mode",
     }
 )
 
 FILE_EDIT_TOOLS = frozenset({"write_file", "edit_file", "multi_edit_file"})
 EXEC_TOOLS = frozenset({"bash", "bash_start", "bash_kill"})
+ELEVATED_EXEC_TOOLS = frozenset({"bash.elevated", "elevated_bash"})
 SUBAGENT_TOOLS = frozenset({"spawn_subagent"})
 
 
@@ -63,12 +98,82 @@ class PermissionRequest:
     arguments: dict
 
 
+@dataclass
+class ElevatedCommandRequest:
+    """Host-elevated command request that must pass approval and policy gates."""
+
+    run_id: str
+    command: str
+    reason: str
+    working_dir: str | None = None
+    timeout_seconds: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ElevatedCommandResult:
+    """Normalized result from a host-elevated command execution."""
+
+    run_id: str
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_ms: int | None = None
+    working_dir: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @runtime_checkable
 class PermissionApprover(Protocol):
     """Approver for default/accept-edits permission prompts."""
 
     def approve(self, request: PermissionRequest, context) -> bool | Awaitable[bool]:
         ...
+
+
+class InteractivePermissionApprover:
+    """Interactive terminal approver for runtime permission requests."""
+
+    def __init__(
+        self,
+        *,
+        input_fn=input,
+        output_fn=print,
+        default: bool = False,
+    ) -> None:
+        self.input_fn = input_fn
+        self.output_fn = output_fn
+        self.default = default
+
+    def approve(self, request: PermissionRequest, context) -> bool:
+        self.output_fn("\nPermission approval requested:")
+        self.output_fn(f"  tool: {request.tool_name}")
+        self.output_fn(f"  category: {request.category}")
+        run_id = getattr(request, "run_id", None)
+        if run_id:
+            self.output_fn(f"  run: {run_id}")
+        session_id = getattr(context, "session_id", None)
+        if session_id:
+            self.output_fn(f"  session: {session_id}")
+        if request.arguments:
+            serialized = json.dumps(
+                request.arguments,
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+                indent=2,
+            )
+            self.output_fn("  arguments:")
+            self.output_fn(serialized)
+        prompt = "Approve this action? [Y/n] " if self.default else "Approve this action? [y/N] "
+        try:
+            answer = str(self.input_fn(prompt)).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if not answer:
+            return self.default
+        return answer in {"y", "yes"}
 
 
 def normalize_permission_mode(value: str | PermissionMode) -> PermissionMode:
@@ -82,9 +187,26 @@ def normalize_permission_mode(value: str | PermissionMode) -> PermissionMode:
     raise ValueError(f"Invalid permission mode: {value!r}. Use one of: {valid}")
 
 
+def normalize_elevated_session_mode(
+    value: str | ElevatedSessionMode,
+) -> ElevatedSessionMode:
+    """Normalize aliases and validate elevated session mode values."""
+    if isinstance(value, ElevatedSessionMode):
+        return value
+    raw = str(value or "").strip().lower()
+    if raw in _ELEVATED_MODE_ALIASES:
+        return _ELEVATED_MODE_ALIASES[raw]
+    valid = ", ".join(mode.value for mode in ElevatedSessionMode)
+    raise ValueError(
+        f"Invalid elevated session mode: {value!r}. Use one of: {valid}"
+    )
+
+
 def classify_tool(tool_name: str) -> tuple[str, bool]:
     """Return (category, is_read_only) for a tool name."""
     name = str(tool_name or "").strip()
+    if name in ELEVATED_EXEC_TOOLS:
+        return ("elevated_exec", False)
     if name in FILE_EDIT_TOOLS:
         return ("file_edit", False)
     if name in EXEC_TOOLS:
@@ -186,7 +308,8 @@ class PermissionController:
                 return PolicyDecision.deny(
                     reason_code="PERMISSION_APPROVER_REQUIRED",
                     message=(
-                        f"Tool '{request.tool_name}' requires approval, but no approver is configured."
+                        f"Tool '{request.tool_name}' requires approval, but no "
+                        "approver is configured."
                     ),
                 )
             return PolicyDecision(
@@ -231,4 +354,3 @@ class PermissionController:
         if category in set(str(v) for v in approved_categories):
             return True
         return False
-

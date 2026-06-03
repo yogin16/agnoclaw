@@ -57,8 +57,10 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import shlex
 import shutil
+import subprocess
 import tempfile
 import warnings
 import weakref
@@ -70,26 +72,35 @@ from typing import Any
 from uuid import uuid4
 
 from agno.agent import Agent
+from agno.context.provider import ContextProvider
 from agno.exceptions import AgentRunException
 from agno.run.agent import RunOutput, RunOutputEvent
 from agno.tools.function import Function
 from agno.tools.toolkit import Toolkit
 
-from .backends import RuntimeBackend
+from .backends import RuntimeBackend, SandboxMode, normalize_sandbox_mode
 from .config import HarnessConfig, get_config
 from .prompts.system import SystemPromptBuilder
 from .runtime import (
     AgnoAuthError,
     AgnoConfigError,
     AllowAllPolicyEngine,
+    ElevatedCommandRequest,
+    ElevatedCommandResult,
+    ElevatedSessionMode,
     EventSink,
     EventSinkMode,
     ExecutionContext,
     HarnessError,
+    LifecycleHook,
+    LifecycleHookRequest,
     NullEventSink,
     PermissionApprover,
     PermissionController,
     PermissionMode,
+    PermissionRequest,
+    PlanExitSignal,
+    PlanQuestionSignal,
     PolicyAction,
     PolicyDecision,
     PolicyEngine,
@@ -104,11 +115,19 @@ from .runtime import (
     ToolCallResult,
     apply_redactions,
     build_event,
+    normalize_elevated_session_mode,
     normalize_permission_mode,
 )
 from .skills.backends import SkillInstallApprover
 from .skills.registry import SkillRegistry
-from .tools import get_default_tools
+from .tools import PlanSignalToolkit, get_default_tools
+from .tools.backends import (
+    BackgroundCommandHandle,
+    BackgroundCommandOutput,
+    CommandExecutor,
+    CommandResult,
+    LocalCommandExecutor,
+)
 from .workspace import Workspace
 
 logger = logging.getLogger("agnoclaw.agent")
@@ -260,6 +279,221 @@ def _make_db(config: HarnessConfig):
         )
 
 
+class HarnessRun:
+    """Small SDK wrapper around a harness run result or event stream."""
+
+    def __init__(
+        self,
+        *,
+        result: Any = None,
+        stream: AsyncIterator[Any] | Iterator[Any] | None = None,
+    ) -> None:
+        self.result = result
+        self._stream = stream
+
+    async def events(self) -> AsyncIterator[Any]:
+        """Yield run events from sync or async harness streams."""
+        if self._stream is None:
+            return
+        if hasattr(self._stream, "__aiter__"):
+            async for event in self._stream:  # type: ignore[union-attr]
+                yield event
+            return
+        for event in self._stream:
+            yield event
+
+
+class HarnessSession:
+    """Per-session SDK facade over AgentHarness.run/arun."""
+
+    def __init__(
+        self,
+        harness: AgentHarness,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.harness = harness
+        self.user_id = user_id
+        self.workspace_id = workspace_id or str(harness.workspace.path)
+        self.session_id = session_id
+        self.metadata = dict(metadata or {})
+
+    def _context(self, metadata: dict[str, Any] | None = None) -> ExecutionContext:
+        merged = dict(self.metadata)
+        if metadata:
+            merged.update(metadata)
+        return ExecutionContext.create(
+            user_id=self.user_id or self.harness.user_id,
+            session_id=self.session_id or self.harness.session_id,
+            workspace_id=self.workspace_id,
+            metadata=merged,
+        )
+
+    async def send(self, message: str, *, stream: bool = False, **kwargs) -> HarnessRun:
+        """Send a message through this session and return a run wrapper."""
+        metadata = kwargs.pop("metadata", None)
+        result = await self.harness.arun(
+            message,
+            stream=stream,
+            context=self._context(metadata),
+            **kwargs,
+        )
+        if stream:
+            return HarnessRun(stream=result)  # type: ignore[arg-type]
+        return HarnessRun(result=result)
+
+
+class _ElevatedSessionCommandExecutor:
+    """Route CLI session bash calls through the elevated host path when enabled."""
+
+    def __init__(
+        self,
+        *,
+        harness: AgentHarness,
+        sandbox_executor: CommandExecutor,
+        host_executor: CommandExecutor,
+    ) -> None:
+        self._harness = harness
+        self._sandbox_executor = sandbox_executor
+        self._host_executor = host_executor
+        self._elevated_task_ids: set[str] = set()
+        self.workspace_dir = getattr(sandbox_executor, "workspace_dir", None)
+
+    def _mode(self) -> ElevatedSessionMode:
+        return self._harness._elevated_session_mode
+
+    def _skip_approval(self) -> bool:
+        return self._mode() == ElevatedSessionMode.FULL
+
+    def _metadata(self) -> dict[str, Any]:
+        return {
+            "source": "elevated_session",
+            "elevated_mode": self._mode().value,
+        }
+
+    def run(
+        self,
+        *,
+        command: str,
+        workdir: str | None,
+        timeout_seconds: int | None,
+    ) -> CommandResult:
+        if self._mode() == ElevatedSessionMode.OFF:
+            return self._sandbox_executor.run(
+                command=command,
+                workdir=workdir,
+                timeout_seconds=timeout_seconds,
+            )
+
+        result = self._harness.run_elevated_command(
+            command,
+            reason="Session elevated bash tool call.",
+            working_dir=workdir,
+            timeout_seconds=timeout_seconds,
+            metadata=self._metadata(),
+            _skip_approval=self._skip_approval(),
+        )
+        return CommandResult(
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.exit_code,
+            duration_ms=result.duration_ms,
+        )
+
+    def start(
+        self,
+        *,
+        command: str,
+        workdir: str | None,
+        description: str | None = None,
+    ) -> BackgroundCommandHandle:
+        if self._mode() == ElevatedSessionMode.OFF:
+            return self._sandbox_executor.start(
+                command=command,
+                workdir=workdir,
+                description=description,
+            )
+
+        request, context = self._harness._build_elevated_command_request(
+            command,
+            reason=description or "Session elevated background bash tool call.",
+            working_dir=workdir,
+            timeout_seconds=None,
+            context=None,
+            metadata={**self._metadata(), "background": True},
+        )
+        tool_request = self._harness._elevated_tool_request(request)
+        payload = self._harness._elevated_request_payload(request)
+        self._harness._authorize_elevated_command_sync(
+            request=request,
+            tool_request=tool_request,
+            context=context,
+            payload=payload,
+            skip_approval=self._skip_approval(),
+        )
+        self._harness._emit_event_sync(
+            event_type="elevated.command.started",
+            run_id=request.run_id,
+            context=context,
+            payload={**payload, "background": True},
+        )
+        try:
+            handle = self._host_executor.start(
+                command=request.command,
+                workdir=request.working_dir,
+                description=description,
+            )
+        except Exception as exc:
+            self._harness._emit_event_sync(
+                event_type="elevated.command.failed",
+                run_id=request.run_id,
+                context=context,
+                payload={**payload, "background": True, "error": str(exc)},
+            )
+            raise
+        self._elevated_task_ids.add(handle.task_id)
+        self._harness._emit_event_sync(
+            event_type="elevated.command.completed",
+            run_id=request.run_id,
+            context=context,
+            payload={
+                **payload,
+                "background": True,
+                "task_id": handle.task_id,
+                "status": handle.status,
+                "log_path": handle.log_path,
+            },
+        )
+        return handle
+
+    def output(
+        self,
+        *,
+        task_id: str,
+        max_chars: int = 8000,
+        tail: bool = True,
+    ) -> BackgroundCommandOutput:
+        if task_id in self._elevated_task_ids:
+            return self._host_executor.output(
+                task_id=task_id,
+                max_chars=max_chars,
+                tail=tail,
+            )
+        return self._sandbox_executor.output(
+            task_id=task_id,
+            max_chars=max_chars,
+            tail=tail,
+        )
+
+    def kill(self, *, task_id: str, force: bool = False) -> str:
+        if task_id in self._elevated_task_ids:
+            return self._host_executor.kill(task_id=task_id, force=force)
+        return self._sandbox_executor.kill(task_id=task_id, force=force)
+
+
 class AgentHarness:
     """
     A hackable, model-agnostic agent harness built on Agno.
@@ -280,6 +514,8 @@ class AgentHarness:
         user_id: User identifier for per-user memory.
         workspace_dir: Workspace path override. Defaults to ~/.agnoclaw/workspace.
         sandbox_dir: Session scratch path. Defaults to a temp dir per harness instance.
+        sandbox_mode: Session sandbox mode for default files/bash tools:
+                      "workspace_write" (default), "read_only", or "full".
         include_default_tools: Whether to include the built-in default tool suite.
         tools: Additional tools to add alongside the defaults.
         instructions: Additional instructions appended to the system prompt.
@@ -312,7 +548,19 @@ class AgentHarness:
         permission_require_approver: If True, deny approval-required calls when no approver exists.
         backend: Optional coherent runtime backend for tools/skills/browser.
         skill_install_approver: Optional approval backend for skill dependency installs.
+        context_providers: Optional Agno context providers to expose through the harness.
+        dependencies: Optional dependency mapping propagated into Agno run context.
+        add_dependencies_to_context: Whether Agno should add dependencies to model context.
+        packs: Optional agnoclaw pack directories or manifest paths to load.
+        trusted_packs: Whether code-executing pack registrations may run.
     """
+
+    @classmethod
+    async def create(cls, *args, **kwargs) -> AgentHarness:
+        """Async constructor that also runs async provider setup hooks."""
+        harness = cls(*args, **kwargs)
+        await harness.asetup_context_providers()
+        return harness
 
     def __init__(
         self,
@@ -323,6 +571,7 @@ class AgentHarness:
         user_id: str | None = None,
         workspace_dir: str | Path | None = None,
         sandbox_dir: str | Path | None = None,
+        sandbox_mode: str | SandboxMode | None = None,
         include_default_tools: bool = True,
         tools: list | None = None,
         instructions: str | None = None,
@@ -367,6 +616,11 @@ class AgentHarness:
         permission_preapproved_categories: list[str] | tuple[str, ...] | None = None,
         backend: RuntimeBackend | None = None,
         skill_install_approver: SkillInstallApprover | None = None,
+        context_providers: list[ContextProvider] | tuple[ContextProvider, ...] | None = None,
+        dependencies: dict[str, Any] | None = None,
+        add_dependencies_to_context: bool = False,
+        packs: list[str | Path] | tuple[str | Path, ...] | None = None,
+        trusted_packs: bool = False,
         pre_run_hooks: list[PreRunHook] | None = None,
         post_run_hooks: list[PostRunHook] | None = None,
         tenant_id: str | None = None,
@@ -405,6 +659,12 @@ class AgentHarness:
         self._on_session_end = on_session_end
         self._session_metadata = dict(session_metadata or {})
         self._closed = False
+        self._context_providers: list[ContextProvider] = list(context_providers or [])
+        self._context_provider_tool_map: dict[str, dict[str, str]] = {}
+        self._context_providers_setup = False
+        self._dependencies = dict(dependencies or {})
+        self._add_dependencies_to_context = add_dependencies_to_context
+        self._loaded_packs: list[Any] = []
 
         # Runtime extension contracts
         self._event_sink: EventSink = event_sink or NullEventSink()
@@ -417,11 +677,15 @@ class AgentHarness:
                 f"Use '{EventSinkMode.BEST_EFFORT.value}' or '{EventSinkMode.FAIL_CLOSED.value}'."
             ) from None
         self._policy_engine: PolicyEngine = policy_engine or AllowAllPolicyEngine()
+        self._policy_engines: list[tuple[str, PolicyEngine]] = [
+            ("harness", self._policy_engine)
+        ]
         self._policy_fail_open = (
             policy_fail_open if policy_fail_open is not None else self.config.policy_fail_open
         )
         self._pre_run_hooks: list[PreRunHook] = list(pre_run_hooks or [])
         self._post_run_hooks: list[PostRunHook] = list(post_run_hooks or [])
+        self._lifecycle_hooks: dict[str, list[LifecycleHook]] = {}
         permission_mode_value = permission_mode or self.config.permission_mode
         require_approver = (
             permission_require_approver
@@ -442,6 +706,7 @@ class AgentHarness:
             ),
         )
         self._plan_mode_restore_permission_mode: PermissionMode | None = None
+        self._elevated_session_mode = ElevatedSessionMode.OFF
 
         # Legacy compat: model_id / extra_tools / extra_instructions
         if model_id is not None:
@@ -477,10 +742,18 @@ class AgentHarness:
             project_dir=self.config.project_workspace_dir,
         )
         self.workspace.initialize()
+        self._workspace_hook_specs = self.workspace.hook_specs()
+        self._load_workspace_lifecycle_hooks()
         self.sandbox_dir = self._resolve_sandbox_dir(sandbox_dir, session_id=session_id)
         effective_backend = backend or RuntimeBackend()
         resolved_backend = effective_backend.resolve(workspace_dir=self.workspace.path)
+        self._sandbox_mode = normalize_sandbox_mode(
+            sandbox_mode if sandbox_mode is not None else resolved_backend.sandbox_mode
+        )
         self._session_command_executor = resolved_backend.command_executor
+        self._elevated_command_executor = LocalCommandExecutor(
+            workspace_dir=self.workspace.path
+        )
         self._ensure_sandbox_dir()
         resolved_skill_runtime_backend = resolved_backend.skill_runtime
         self._guardrails = RuntimeGuardrails(
@@ -508,10 +781,51 @@ class AgentHarness:
             for path, trust in skills_dirs:
                 self.skills.add_directory(path, trust=trust)
 
+        pack_tools: list[Any] = []
+        if packs:
+            from .packs import load_pack
+
+            for pack_path in packs:
+                loaded_pack = load_pack(pack_path, trusted=trusted_packs)
+                self._loaded_packs.append(loaded_pack)
+                for skills_dir in loaded_pack.skills_dirs:
+                    self.skills.add_directory(skills_dir, trust=loaded_pack.manifest.trust.default)
+                pack_tools.extend(loaded_pack.tools)
+                self._pre_run_hooks.extend(
+                    self._wrap_pack_pre_hook(loaded_pack.manifest.name, hook)
+                    for hook in loaded_pack.pre_run_hooks
+                )
+                self._post_run_hooks.extend(
+                    self._wrap_pack_post_hook(loaded_pack.manifest.name, hook)
+                    for hook in loaded_pack.post_run_hooks
+                )
+                for event_type, hooks in loaded_pack.lifecycle_hooks.items():
+                    self._lifecycle_hooks.setdefault(event_type, []).extend(
+                        self._wrap_pack_lifecycle_hook(
+                            loaded_pack.manifest.name,
+                            event_type,
+                            hook,
+                        )
+                        for hook in hooks
+                    )
+                self._context_providers.extend(loaded_pack.context_providers)
+                self._policy_engines.extend(
+                    (f"pack:{loaded_pack.manifest.name}", policy)
+                    for policy in loaded_pack.policies
+                )
+                if loaded_pack.policies and not isinstance(self._policy_engine, AllowAllPolicyEngine):
+                    logger.info(
+                        "Pack %s provided %d policy engine(s); they will run after the "
+                        "explicit harness policy engine.",
+                        loaded_pack.manifest.name,
+                        len(loaded_pack.policies),
+                    )
+
         # System prompt builder
         self._prompt_builder = SystemPromptBuilder(
             self.workspace.path,
             sandbox_dir=self.sandbox_dir,
+            sandbox_mode=self._sandbox_mode.value,
         )
 
         # Context budget monitoring
@@ -529,10 +843,24 @@ class AgentHarness:
                 subagents=subagents,
                 workspace_dir=self.workspace.path,
                 sandbox_dir=self.sandbox_dir,
+                sandbox_mode=self._sandbox_mode,
                 backend=effective_backend,
+                command_executor_wrapper=lambda executor: _ElevatedSessionCommandExecutor(
+                    harness=self,
+                    sandbox_executor=executor,
+                    host_executor=self._elevated_command_executor,
+                ),
             )
         if _tools:
             _all_tools.extend(_tools)
+        if pack_tools:
+            _all_tools.extend(pack_tools)
+        if self._context_providers:
+            provider_tools = self._collect_context_provider_tools(
+                self._context_providers,
+                existing_tools=_all_tools,
+            )
+            _all_tools.extend(provider_tools)
 
         # ── Plugin system ────────────────────────────────────────────────
         self._plugin_loader = None
@@ -559,6 +887,9 @@ class AgentHarness:
                 )
 
         self._attach_tool_runtime_hooks(_all_tools)
+        self._plan_signal_toolkit = self._find_plan_signal_toolkit(_all_tools)
+        if self._plan_signal_toolkit is None:
+            self._plan_signal_toolkit = PlanSignalToolkit()
 
         # Resolve learning flags before building system prompt
         _enable_learning = (
@@ -637,6 +968,8 @@ class AgentHarness:
             db=db,
             session_id=session_id,
             user_id=user_id,
+            dependencies=self._dependencies or None,
+            add_dependencies_to_context=self._add_dependencies_to_context,
             add_history_to_context=True,
             num_history_runs=num_history_runs or self.config.session_history_runs,
             num_history_messages=num_history_messages,
@@ -664,6 +997,87 @@ class AgentHarness:
         )
         # Per-run tool step tracking for progress events and duration metrics.
         self._tool_step_state: dict[str, dict[str, Any]] = {}
+
+    def _collect_context_provider_tools(
+        self,
+        providers: list[Any],
+        *,
+        existing_tools: list[Any] | None = None,
+    ) -> list[Any]:
+        """Return provider tools and reject ambiguous tool names up front."""
+        tools: list[Any] = []
+        existing_names = self._tool_names(list(existing_tools or []))
+        for provider in providers:
+            if not isinstance(provider, ContextProvider):
+                raise TypeError(
+                    f"context provider {provider!r} must be an instance of "
+                    f"agno.context.provider.ContextProvider"
+                )
+            provider_tools = list(provider.get_tools() or [])
+            provider_id = (provider.id or provider.name or "").strip()
+            provider_name = (provider.name or provider_id).strip()
+            query_name = str(provider.query_tool_name or "")
+            update_name = str(provider.update_tool_name or "")
+
+            for tool in provider_tools:
+                for tool_name in self._tool_names([tool]):
+                    if tool_name in existing_names:
+                        raise ValueError(
+                            f"Duplicate context provider tool name: {tool_name!r}"
+                        )
+                    existing_names.add(tool_name)
+                    operation = "query"
+                    if tool_name == update_name:
+                        operation = "update"
+                    elif tool_name == query_name:
+                        operation = "query"
+                    self._context_provider_tool_map[tool_name] = {
+                        "provider_id": provider_id or provider_name or tool_name,
+                        "provider_name": provider_name or provider_id or tool_name,
+                        "operation": operation,
+                    }
+            tools.extend(provider_tools)
+        return tools
+
+    @staticmethod
+    def _tool_names(tools: list[Any]) -> set[str]:
+        names: set[str] = set()
+        for tool in tools:
+            if isinstance(tool, Toolkit):
+                names.update(str(name) for name in tool.functions.keys())
+            elif isinstance(tool, Function):
+                if tool.name:
+                    names.add(str(tool.name))
+            else:
+                name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
+                if name:
+                    names.add(str(name))
+        return names
+
+    @staticmethod
+    def _find_plan_signal_toolkit(tools: list[Any]) -> PlanSignalToolkit | None:
+        for tool in tools:
+            if isinstance(tool, PlanSignalToolkit):
+                return tool
+        return None
+
+    def _context_provider_instructions(self) -> str | None:
+        if not self._context_providers:
+            return None
+        lines = ["## External Context Providers"]
+        for provider in self._context_providers:
+            text = str(provider.instructions()).strip()
+            if text:
+                lines.append(f"- {text}")
+        return "\n".join(lines)
+
+    async def asetup_context_providers(self) -> None:
+        """Run async setup for registered context providers once."""
+        if self._context_providers_setup:
+            return
+        for provider in self._context_providers:
+            await provider.asetup()
+        self._context_providers_setup = True
 
     @staticmethod
     def _close_storage_resource(storage: Any) -> None:
@@ -799,6 +1213,9 @@ class AgentHarness:
         extra_parts = []
         if self._extra_instructions:
             extra_parts.append(self._extra_instructions)
+        provider_instructions = self._context_provider_instructions()
+        if provider_instructions:
+            extra_parts.append(provider_instructions)
 
         # Inject available skill descriptions so the model can auto-select skills.
         # This mirrors Claude Code's skill awareness: the model sees all available
@@ -868,15 +1285,905 @@ class AgentHarness:
     def set_policy_engine(self, engine: PolicyEngine) -> None:
         """Swap policy engine at runtime."""
         self._policy_engine = engine
+        pack_engines = [
+            item for item in getattr(self, "_policy_engines", []) if item[0].startswith("pack:")
+        ]
+        self._policy_engines = [("harness", engine), *pack_engines]
 
     def set_permission_mode(self, mode: str) -> None:
         """Set runtime permission mode for tool calls."""
         self._permission_controller.set_mode(mode)
 
+    def set_permission_approver(
+        self,
+        approver: PermissionApprover | None,
+        *,
+        require_approver: bool | None = None,
+    ) -> None:
+        """Set or clear the runtime permission approver."""
+        self._permission_controller.approver = approver
+        if require_approver is not None:
+            self._permission_controller.require_approver = bool(require_approver)
+
+    def set_elevated_mode(self, mode: str | ElevatedSessionMode) -> str:
+        """Set session-wide elevated execution mode for bash tool calls."""
+        self._elevated_session_mode = normalize_elevated_session_mode(mode)
+        return self._elevated_session_mode.value
+
+    @property
+    def elevated_mode(self) -> str:
+        """Current session-wide elevated execution mode."""
+        return self._elevated_session_mode.value
+
+    @property
+    def sandbox_mode(self) -> str:
+        """Current default tool sandbox mode."""
+        return self._sandbox_mode.value
+
     @property
     def permission_mode(self) -> str:
         """Current runtime permission mode."""
         return self._permission_controller.current_mode().value
+
+    def admin_harness_capabilities(self) -> dict[str, Any]:
+        """Return harness-owned capability metadata for admin surfaces."""
+        return {
+            "skills": len(self.skills.list_skills()),
+            "context_providers": [
+                {
+                    "id": getattr(provider, "id", None),
+                    "name": getattr(provider, "name", None),
+                    "tools": [
+                        tool_name
+                        for tool_name, info in self._context_provider_tool_map.items()
+                        if info.get("provider_id")
+                        == str(
+                            getattr(provider, "id", "")
+                            or getattr(provider, "name", "")
+                            or tool_name
+                        ).strip()
+                    ],
+                }
+                for provider in self._context_providers
+            ],
+            "packs": [
+                getattr(getattr(pack, "manifest", None), "name", None)
+                for pack in self._loaded_packs
+            ],
+            "permission_mode": self.permission_mode,
+        }
+
+    def admin_runtime_info(self) -> dict[str, Any]:
+        """Return harness runtime metadata without exposing mutable internals."""
+        return {
+            "model": self._model,
+            "session_id": self.session_id,
+            "workspace_id": str(self.workspace.path),
+            "sandbox_dir": str(self.sandbox_dir),
+            "sandbox_mode": self._sandbox_mode.value,
+            "event_sink": self._event_sink.__class__.__name__,
+            "event_sink_mode": self._event_sink_mode.value,
+            "policy_engine": self._policy_engine.__class__.__name__,
+            "policy_fail_open": self._policy_fail_open,
+            "agentos": {
+                "approvals_enabled": bool(getattr(self, "_agentos_approvals_enabled", False)),
+                "scheduler_enabled": bool(getattr(self, "_agentos_scheduler_enabled", False)),
+                "mcp_enabled": bool(getattr(self, "_agentos_mcp_enabled", False)),
+            },
+        }
+
+    def admin_list_skills(self) -> list[dict[str, Any]]:
+        """Return registered skills."""
+        return list(self.skills.list_skills())
+
+    def admin_list_packs(self) -> list[dict[str, Any]]:
+        """Return loaded pack manifest metadata."""
+        packs: list[dict[str, Any]] = []
+        for loaded in self._loaded_packs:
+            manifest = getattr(loaded, "manifest", None)
+            if manifest is None:
+                continue
+            packs.append(
+                {
+                    "name": manifest.name,
+                    "version": manifest.version,
+                    "description": manifest.description,
+                    "root": str(manifest.root),
+                    "provides": {
+                        "skills": list(manifest.provides.skills),
+                        "tools": list(manifest.provides.tools),
+                        "hooks": list(manifest.provides.hooks),
+                        "context_providers": list(manifest.provides.context_providers),
+                        "policies": list(manifest.provides.policies),
+                        "commands": list(manifest.provides.commands),
+                    },
+                    "trust": {
+                        "default": manifest.trust.default,
+                        "requires_code_execution": manifest.trust.requires_code_execution,
+                    },
+                }
+            )
+        return packs
+
+    def admin_list_hooks(self) -> dict[str, Any]:
+        """Return registered lifecycle and discovered workspace hook metadata."""
+        return {
+            "lifecycle": {
+                event_type: len(hooks)
+                for event_type, hooks in sorted(self._lifecycle_hooks.items())
+            },
+            "workspace": list(self._workspace_hook_specs),
+        }
+
+    def admin_list_policies(self) -> dict[str, Any]:
+        """Return active policy configuration."""
+        return {
+            "engine": self._policy_engine.__class__.__name__,
+            "fail_open": self._policy_fail_open,
+            "checkpoints": [
+                "before_run",
+                "before_prompt_send",
+                "before_skill_load",
+                "before_tool_call",
+                "after_tool_call",
+            ],
+        }
+
+    def admin_list_permissions(self) -> dict[str, Any]:
+        """Return active permission configuration."""
+        controller = self._permission_controller
+        return {
+            "mode": controller.current_mode().value,
+            "elevated_mode": self.elevated_mode,
+            "require_approver": controller.require_approver,
+            "has_approver": controller.approver is not None,
+            "preapproved_tools": sorted(controller._approved_tools),
+            "preapproved_categories": sorted(controller._approved_categories),
+        }
+
+    def admin_list_events(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        """Return in-memory events when the configured sink retains them."""
+        events = getattr(self._event_sink, "events", None)
+        if not isinstance(events, list):
+            return []
+        items = []
+        for event in events:
+            if run_id is not None and getattr(event, "run_id", None) != run_id:
+                continue
+            if hasattr(event, "to_dict"):
+                items.append(event.to_dict())
+        return items
+
+    def admin_sandbox_info(self, *, session_id: str | None = None) -> dict[str, Any]:
+        """Return sandbox metadata for a session-scoped admin view."""
+        files = self.admin_list_sandbox_files(session_id=session_id)
+        return {
+            "session_id": session_id or self.session_id,
+            "sandbox_dir": str(self.sandbox_dir),
+            "sandbox_mode": self._sandbox_mode.value,
+            "exists": self.sandbox_dir.exists(),
+            "file_count": len(files),
+            "total_bytes": sum(int(item["size_bytes"]) for item in files),
+        }
+
+    def admin_list_sandbox_files(self, *, session_id: str | None = None) -> list[dict[str, Any]]:
+        """Return sandbox file metadata. The harness currently owns one sandbox path."""
+        del session_id
+        files: list[dict[str, Any]] = []
+        if not self.sandbox_dir.exists():
+            return files
+        root = self.sandbox_dir.resolve(strict=False)
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                rel_path = path.resolve(strict=False).relative_to(root).as_posix()
+            except ValueError:
+                continue
+            stat = path.stat()
+            files.append(
+                {
+                    "path": rel_path,
+                    "size_bytes": stat.st_size,
+                    "modified_at": stat.st_mtime,
+                }
+            )
+        return files
+
+    def admin_sandbox_artifact_path(self, artifact_path: str) -> Path | None:
+        """Resolve an artifact path if it points at a file inside the sandbox."""
+        root = self.sandbox_dir.resolve(strict=False)
+        candidate = (root / artifact_path).resolve(strict=False)
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        if not candidate.is_file():
+            return None
+        return candidate
+
+    def admin_snapshot_sandbox(self, *, session_id: str | None = None) -> dict[str, Any]:
+        """Return a lightweight sandbox snapshot."""
+        return {
+            **self.admin_sandbox_info(session_id=session_id),
+            "files": self.admin_list_sandbox_files(session_id=session_id),
+        }
+
+    def admin_reset_sandbox(
+        self,
+        *,
+        session_id: str | None = None,
+        context: ExecutionContext | None = None,
+    ) -> dict[str, Any]:
+        """Reset the harness sandbox after permission and policy checks."""
+        run_id = f"admin_sandbox_reset_{uuid4().hex}"
+        context = context or self._build_execution_context(
+            user_id=self.user_id,
+            session_id=session_id or self.session_id,
+            metadata={"source": "agnoclaw_admin"},
+        )
+        request = ToolCallRequest(
+            run_id=run_id,
+            tool_name="sandbox.reset",
+            arguments={"sandbox_dir": str(self.sandbox_dir)},
+            metadata={"source": "agnoclaw_admin"},
+        )
+        permission_decision = self._permission_controller.check_tool_call(
+            request,
+            context,
+            resolve_sync_value=self._resolve_sync_value,
+        )
+        self._enforce_policy_decision(
+            decision=permission_decision,
+            checkpoint="permission.before_tool_call",
+            run_id=run_id,
+            context=context,
+        )
+        decision = self._run_policy_sync(
+            method_name="before_tool_call",
+            payload=request,
+            run_input=None,
+            context=context,
+        )
+        self._enforce_policy_decision(
+            decision=decision,
+            checkpoint="before_tool_call",
+            run_id=run_id,
+            context=context,
+        )
+        before = self.admin_sandbox_info(session_id=session_id)
+        self._cleanup_sandbox_dir()
+        self._ensure_sandbox_dir()
+        after = self.admin_sandbox_info(session_id=session_id)
+        self._emit_event_sync(
+            event_type="sandbox.reset",
+            run_id=run_id,
+            context=context,
+            payload={
+                "before": before,
+                "after": after,
+            },
+        )
+        return after
+
+    def run_elevated_command(
+        self,
+        command: str,
+        *,
+        reason: str,
+        working_dir: str | Path | None = None,
+        timeout_seconds: int | None = None,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+        _skip_approval: bool = False,
+    ) -> ElevatedCommandResult:
+        """Run a host-elevated command after explicit approval and audit events."""
+        request, ctx = self._build_elevated_command_request(
+            command,
+            reason=reason,
+            working_dir=working_dir,
+            timeout_seconds=timeout_seconds,
+            context=context,
+            metadata=metadata,
+        )
+        tool_request = self._elevated_tool_request(request)
+        payload = self._elevated_request_payload(request)
+        try:
+            self._authorize_elevated_command_sync(
+                request=request,
+                tool_request=tool_request,
+                context=ctx,
+                payload=payload,
+                skip_approval=_skip_approval,
+            )
+            self._emit_event_sync(
+                event_type="elevated.command.started",
+                run_id=request.run_id,
+                context=ctx,
+                payload=payload,
+            )
+            command_result = self._elevated_command_executor.run(
+                command=request.command,
+                workdir=request.working_dir,
+                timeout_seconds=request.timeout_seconds,
+            )
+            tool_result = ToolCallResult(
+                run_id=request.run_id,
+                tool_name=tool_request.tool_name,
+                arguments=tool_request.arguments,
+                output=command_result.stdout,
+                error=command_result.stderr if command_result.exit_code else None,
+                metadata=tool_request.metadata,
+            )
+            decision = self._run_policy_sync(
+                method_name="after_tool_call",
+                payload=tool_result,
+                run_input=None,
+                context=ctx,
+            )
+            self._enforce_policy_decision(
+                decision=decision,
+                checkpoint="after_tool_call",
+                run_id=request.run_id,
+                context=ctx,
+            )
+            stdout = command_result.stdout
+            stderr = command_result.stderr
+            if decision.action == PolicyAction.ALLOW_WITH_REDACTION:
+                stdout = self._apply_redactions_to_object(stdout, decision.redactions)
+                stderr = self._apply_redactions_to_object(stderr, decision.redactions)
+            result = ElevatedCommandResult(
+                run_id=request.run_id,
+                command=request.command,
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=command_result.exit_code,
+                duration_ms=command_result.duration_ms,
+                working_dir=request.working_dir,
+                metadata=dict(request.metadata),
+            )
+            self._emit_event_sync(
+                event_type="elevated.command.completed",
+                run_id=request.run_id,
+                context=ctx,
+                payload={
+                    **payload,
+                    "exit_code": result.exit_code,
+                    "duration_ms": result.duration_ms,
+                    "stdout_chars": len(result.stdout),
+                    "stderr_chars": len(result.stderr),
+                },
+            )
+            return result
+        except HarnessError:
+            raise
+        except Exception as exc:
+            self._emit_event_sync(
+                event_type="elevated.command.failed",
+                run_id=request.run_id,
+                context=ctx,
+                payload={**payload, "error": str(exc)},
+            )
+            raise HarnessError(
+                code="ELEVATED_COMMAND_FAILED",
+                category="elevated",
+                message=f"Elevated command failed: {exc}",
+                retryable=False,
+                details={"run_id": request.run_id},
+            ) from exc
+
+    async def arun_elevated_command(
+        self,
+        command: str,
+        *,
+        reason: str,
+        working_dir: str | Path | None = None,
+        timeout_seconds: int | None = None,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+        _skip_approval: bool = False,
+    ) -> ElevatedCommandResult:
+        """Async variant of run_elevated_command."""
+        request, ctx = self._build_elevated_command_request(
+            command,
+            reason=reason,
+            working_dir=working_dir,
+            timeout_seconds=timeout_seconds,
+            context=context,
+            metadata=metadata,
+        )
+        tool_request = self._elevated_tool_request(request)
+        payload = self._elevated_request_payload(request)
+        try:
+            await self._authorize_elevated_command_async(
+                request=request,
+                tool_request=tool_request,
+                context=ctx,
+                payload=payload,
+                skip_approval=_skip_approval,
+            )
+            await self._emit_event_async(
+                event_type="elevated.command.started",
+                run_id=request.run_id,
+                context=ctx,
+                payload=payload,
+            )
+            command_result = await asyncio.to_thread(
+                self._elevated_command_executor.run,
+                command=request.command,
+                workdir=request.working_dir,
+                timeout_seconds=request.timeout_seconds,
+            )
+            tool_result = ToolCallResult(
+                run_id=request.run_id,
+                tool_name=tool_request.tool_name,
+                arguments=tool_request.arguments,
+                output=command_result.stdout,
+                error=command_result.stderr if command_result.exit_code else None,
+                metadata=tool_request.metadata,
+            )
+            decision = await self._run_policy_async(
+                method_name="after_tool_call",
+                payload=tool_result,
+                run_input=None,
+                context=ctx,
+            )
+            await self._enforce_policy_decision_async(
+                decision=decision,
+                checkpoint="after_tool_call",
+                run_id=request.run_id,
+                context=ctx,
+            )
+            stdout = command_result.stdout
+            stderr = command_result.stderr
+            if decision.action == PolicyAction.ALLOW_WITH_REDACTION:
+                stdout = self._apply_redactions_to_object(stdout, decision.redactions)
+                stderr = self._apply_redactions_to_object(stderr, decision.redactions)
+            result = ElevatedCommandResult(
+                run_id=request.run_id,
+                command=request.command,
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=command_result.exit_code,
+                duration_ms=command_result.duration_ms,
+                working_dir=request.working_dir,
+                metadata=dict(request.metadata),
+            )
+            await self._emit_event_async(
+                event_type="elevated.command.completed",
+                run_id=request.run_id,
+                context=ctx,
+                payload={
+                    **payload,
+                    "exit_code": result.exit_code,
+                    "duration_ms": result.duration_ms,
+                    "stdout_chars": len(result.stdout),
+                    "stderr_chars": len(result.stderr),
+                },
+            )
+            return result
+        except HarnessError:
+            raise
+        except Exception as exc:
+            await self._emit_event_async(
+                event_type="elevated.command.failed",
+                run_id=request.run_id,
+                context=ctx,
+                payload={**payload, "error": str(exc)},
+            )
+            raise HarnessError(
+                code="ELEVATED_COMMAND_FAILED",
+                category="elevated",
+                message=f"Elevated command failed: {exc}",
+                retryable=False,
+                details={"run_id": request.run_id},
+            ) from exc
+
+    def _build_elevated_command_request(
+        self,
+        command: str,
+        *,
+        reason: str,
+        working_dir: str | Path | None,
+        timeout_seconds: int | None,
+        context: ExecutionContext | None,
+        metadata: dict[str, Any] | None,
+    ) -> tuple[ElevatedCommandRequest, ExecutionContext]:
+        command_text = str(command or "").strip()
+        reason_text = str(reason or "").strip()
+        if not command_text:
+            raise HarnessError(
+                code="ELEVATED_COMMAND_REQUIRED",
+                category="elevated",
+                message="Elevated command cannot be empty.",
+                retryable=False,
+            )
+        if not reason_text:
+            raise HarnessError(
+                code="ELEVATED_REASON_REQUIRED",
+                category="elevated",
+                message="Elevated command requires a human-readable reason.",
+                retryable=False,
+            )
+        request_metadata = dict(metadata or {})
+        request_metadata.setdefault("source", "elevated_command")
+        ctx = context.with_metadata(request_metadata) if context else self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata=request_metadata,
+        )
+        request = ElevatedCommandRequest(
+            run_id=f"elevated_{uuid4().hex}",
+            command=command_text,
+            reason=reason_text,
+            working_dir=str(working_dir) if working_dir is not None else None,
+            timeout_seconds=timeout_seconds,
+            metadata=request_metadata,
+        )
+        return request, ctx
+
+    @staticmethod
+    def _elevated_request_payload(
+        request: ElevatedCommandRequest,
+    ) -> dict[str, Any]:
+        return {
+            "command": request.command,
+            "reason": request.reason,
+            "working_dir": request.working_dir,
+            "timeout_seconds": request.timeout_seconds,
+            "metadata": dict(request.metadata),
+        }
+
+    @staticmethod
+    def _elevated_tool_request(
+        request: ElevatedCommandRequest,
+    ) -> ToolCallRequest:
+        return ToolCallRequest(
+            run_id=request.run_id,
+            tool_name="bash.elevated",
+            arguments={
+                "command": request.command,
+                "reason": request.reason,
+                "working_dir": request.working_dir,
+                "timeout_seconds": request.timeout_seconds,
+            },
+            metadata={"elevated": True, **request.metadata},
+        )
+
+    def _authorize_elevated_command_sync(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+        payload: dict[str, Any],
+        skip_approval: bool = False,
+    ) -> None:
+        self._emit_event_sync(
+            event_type="elevated.command.requested",
+            run_id=request.run_id,
+            context=context,
+            payload=payload,
+        )
+        self._run_elevated_preflight_sync(
+            request=request,
+            tool_request=tool_request,
+            context=context,
+        )
+        if skip_approval:
+            self._emit_event_sync(
+                event_type="elevated.command.approval_skipped",
+                run_id=request.run_id,
+                context=context,
+                payload={**payload, "reason_code": "ELEVATED_FULL_MODE"},
+            )
+            return
+        self._approve_elevated_command_sync(
+            request=request,
+            tool_request=tool_request,
+            context=context,
+        )
+
+    async def _authorize_elevated_command_async(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+        payload: dict[str, Any],
+        skip_approval: bool = False,
+    ) -> None:
+        await self._emit_event_async(
+            event_type="elevated.command.requested",
+            run_id=request.run_id,
+            context=context,
+            payload=payload,
+        )
+        await self._run_elevated_preflight_async(
+            request=request,
+            tool_request=tool_request,
+            context=context,
+        )
+        if skip_approval:
+            await self._emit_event_async(
+                event_type="elevated.command.approval_skipped",
+                run_id=request.run_id,
+                context=context,
+                payload={**payload, "reason_code": "ELEVATED_FULL_MODE"},
+            )
+            return
+        await self._approve_elevated_command_async(
+            request=request,
+            tool_request=tool_request,
+            context=context,
+        )
+
+    def _run_elevated_preflight_sync(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+    ) -> None:
+        violations = self._guardrails.check(tool_request)
+        if violations:
+            for violation in violations:
+                self._emit_event_sync(
+                    event_type="guardrail.violation",
+                    run_id=request.run_id,
+                    context=context,
+                    payload={
+                        "tool_name": tool_request.tool_name,
+                        "code": violation.code,
+                        "message": violation.message,
+                        "details": violation.details,
+                    },
+                )
+            self._emit_event_sync(
+                event_type="elevated.command.rejected",
+                run_id=request.run_id,
+                context=context,
+                payload={
+                    **self._elevated_request_payload(request),
+                    "reason_code": "ELEVATED_GUARDRAIL_DENIED",
+                },
+            )
+            raise HarnessError(
+                code="GUARDRAIL_DENIED",
+                category="guardrail",
+                message="Guardrail denied elevated command.",
+                retryable=False,
+                details={"run_id": request.run_id},
+            )
+        decision = self._run_policy_sync(
+            method_name="before_tool_call",
+            payload=tool_request,
+            run_input=None,
+            context=context,
+        )
+        if decision.action == PolicyAction.DENY:
+            self._emit_event_sync(
+                event_type="elevated.command.rejected",
+                run_id=request.run_id,
+                context=context,
+                payload={
+                    **self._elevated_request_payload(request),
+                    "reason_code": decision.reason_code or "ELEVATED_POLICY_DENIED",
+                    "message": decision.message,
+                },
+            )
+        self._enforce_policy_decision(
+            decision=decision,
+            checkpoint="before_tool_call",
+            run_id=request.run_id,
+            context=context,
+        )
+
+    async def _run_elevated_preflight_async(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+    ) -> None:
+        violations = self._guardrails.check(tool_request)
+        if violations:
+            for violation in violations:
+                await self._emit_event_async(
+                    event_type="guardrail.violation",
+                    run_id=request.run_id,
+                    context=context,
+                    payload={
+                        "tool_name": tool_request.tool_name,
+                        "code": violation.code,
+                        "message": violation.message,
+                        "details": violation.details,
+                    },
+                )
+            await self._emit_event_async(
+                event_type="elevated.command.rejected",
+                run_id=request.run_id,
+                context=context,
+                payload={
+                    **self._elevated_request_payload(request),
+                    "reason_code": "ELEVATED_GUARDRAIL_DENIED",
+                },
+            )
+            raise HarnessError(
+                code="GUARDRAIL_DENIED",
+                category="guardrail",
+                message="Guardrail denied elevated command.",
+                retryable=False,
+                details={"run_id": request.run_id},
+            )
+        decision = await self._run_policy_async(
+            method_name="before_tool_call",
+            payload=tool_request,
+            run_input=None,
+            context=context,
+        )
+        if decision.action == PolicyAction.DENY:
+            await self._emit_event_async(
+                event_type="elevated.command.rejected",
+                run_id=request.run_id,
+                context=context,
+                payload={
+                    **self._elevated_request_payload(request),
+                    "reason_code": decision.reason_code or "ELEVATED_POLICY_DENIED",
+                    "message": decision.message,
+                },
+            )
+        await self._enforce_policy_decision_async(
+            decision=decision,
+            checkpoint="before_tool_call",
+            run_id=request.run_id,
+            context=context,
+        )
+
+    def _approve_elevated_command_sync(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+    ) -> None:
+        approver = self._permission_controller.approver
+        if approver is None:
+            self._reject_elevated_command_sync(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_APPROVER_REQUIRED",
+                message="Elevated commands require a permission approver.",
+            )
+        permission_request = PermissionRequest(
+            run_id=request.run_id,
+            tool_name=tool_request.tool_name,
+            category="elevated_exec",
+            arguments=dict(tool_request.arguments),
+        )
+        try:
+            allowed = self._resolve_sync_value(
+                approver.approve(permission_request, context),
+                operation="permission.approve:bash.elevated",
+            )
+        except Exception as exc:
+            self._reject_elevated_command_sync(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_APPROVAL_FAILED",
+                message=str(exc),
+            )
+        if not bool(allowed):
+            self._reject_elevated_command_sync(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_REJECTED",
+                message="Elevated command approval was rejected.",
+            )
+        self._emit_event_sync(
+            event_type="elevated.command.approved",
+            run_id=request.run_id,
+            context=context,
+            payload=self._elevated_request_payload(request),
+        )
+
+    async def _approve_elevated_command_async(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        tool_request: ToolCallRequest,
+        context: ExecutionContext,
+    ) -> None:
+        approver = self._permission_controller.approver
+        if approver is None:
+            await self._reject_elevated_command_async(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_APPROVER_REQUIRED",
+                message="Elevated commands require a permission approver.",
+            )
+        permission_request = PermissionRequest(
+            run_id=request.run_id,
+            tool_name=tool_request.tool_name,
+            category="elevated_exec",
+            arguments=dict(tool_request.arguments),
+        )
+        try:
+            allowed = await self._resolve_async_value(
+                approver.approve(permission_request, context)
+            )
+        except Exception as exc:
+            await self._reject_elevated_command_async(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_APPROVAL_FAILED",
+                message=str(exc),
+            )
+        if not bool(allowed):
+            await self._reject_elevated_command_async(
+                request=request,
+                context=context,
+                reason_code="ELEVATED_REJECTED",
+                message="Elevated command approval was rejected.",
+            )
+        await self._emit_event_async(
+            event_type="elevated.command.approved",
+            run_id=request.run_id,
+            context=context,
+            payload=self._elevated_request_payload(request),
+        )
+
+    def _reject_elevated_command_sync(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        context: ExecutionContext,
+        reason_code: str,
+        message: str,
+    ) -> None:
+        self._emit_event_sync(
+            event_type="elevated.command.rejected",
+            run_id=request.run_id,
+            context=context,
+            payload={
+                **self._elevated_request_payload(request),
+                "reason_code": reason_code,
+                "message": message,
+            },
+        )
+        raise HarnessError(
+            code=reason_code,
+            category="elevated",
+            message=message,
+            retryable=False,
+            details={"run_id": request.run_id},
+        )
+
+    async def _reject_elevated_command_async(
+        self,
+        *,
+        request: ElevatedCommandRequest,
+        context: ExecutionContext,
+        reason_code: str,
+        message: str,
+    ) -> None:
+        await self._emit_event_async(
+            event_type="elevated.command.rejected",
+            run_id=request.run_id,
+            context=context,
+            payload={
+                **self._elevated_request_payload(request),
+                "reason_code": reason_code,
+                "message": message,
+            },
+        )
+        raise HarnessError(
+            code=reason_code,
+            category="elevated",
+            message=message,
+            retryable=False,
+            details={"run_id": request.run_id},
+        )
 
     def add_pre_run_hook(self, hook: PreRunHook) -> None:
         """Register a pre-run hook."""
@@ -1315,6 +2622,30 @@ class AgentHarness:
         text = " ".join(str(value).split())
         return AgentHarness._truncate_text(text, limit=_RESULT_PREVIEW_LIMIT)
 
+    @staticmethod
+    def _scheduler_invocation_payload(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(metadata, dict):
+            return None
+        scheduler = metadata.get("scheduler")
+        if not isinstance(scheduler, dict):
+            agentos = metadata.get("agentos")
+            if isinstance(agentos, dict):
+                scheduler = agentos.get("scheduler")
+        if not isinstance(scheduler, dict):
+            scheduler = {}
+        payload = {
+            key: value
+            for key, value in {
+                "schedule_id": scheduler.get("schedule_id") or metadata.get("schedule_id"),
+                "schedule_run_id": scheduler.get("schedule_run_id")
+                or metadata.get("schedule_run_id"),
+                "schedule_name": scheduler.get("schedule_name") or metadata.get("schedule_name"),
+                "scheduled_at": scheduler.get("scheduled_at") or metadata.get("scheduled_at"),
+            }.items()
+            if value is not None
+        }
+        return payload or None
+
     def _start_tool_step(
         self,
         *,
@@ -1434,6 +2765,7 @@ class AgentHarness:
             tool_name = getattr(fc.function, "name", "unknown_tool")
             tool_call_id = self._tool_call_id(fc)
             arguments = dict(getattr(fc, "arguments", None) or {})
+            provider_info = self._context_provider_tool_map.get(tool_name)
             request = ToolCallRequest(
                 run_id=run_id,
                 tool_name=tool_name,
@@ -1528,6 +2860,20 @@ class AgentHarness:
                     "arguments": emitted_arguments,
                 },
             )
+            if provider_info:
+                operation = provider_info["operation"]
+                self._emit_event_sync(
+                    event_type=f"context.provider.{operation}.started",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "provider_id": provider_info["provider_id"],
+                        "provider_name": provider_info["provider_name"],
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "argument_keys": sorted(emitted_arguments.keys()),
+                    },
+                )
 
             fc._agnoclaw_tool_runtime = {
                 "context": context,
@@ -1551,6 +2897,7 @@ class AgentHarness:
             context = self._context_from_run_context(run_context)
             tool_name = getattr(fc.function, "name", "unknown_tool")
             tool_call_id = self._tool_call_id(fc)
+            provider_info = self._context_provider_tool_map.get(tool_name)
             result = ToolCallResult(
                 run_id=run_id,
                 tool_name=tool_name,
@@ -1607,6 +2954,26 @@ class AgentHarness:
                 context=context,
                 payload=payload,
             )
+            if provider_info:
+                operation = provider_info["operation"]
+                provider_event_type = (
+                    f"context.provider.{operation}.failed"
+                    if getattr(fc, "error", None)
+                    else f"context.provider.{operation}.completed"
+                )
+                self._emit_event_sync(
+                    event_type=provider_event_type,
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "provider_id": provider_info["provider_id"],
+                        "provider_name": provider_info["provider_name"],
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "duration_ms": duration_ms,
+                        "result_preview": result_preview,
+                    },
+                )
         except HarnessError as exc:
             self._raise_agent_run_exception(exc)
 
@@ -1822,38 +3189,85 @@ class AgentHarness:
         run_input: RunInput | None,
         context: ExecutionContext,
     ) -> PolicyDecision:
-        method = getattr(self._policy_engine, method_name, None)
-        if method is None:
-            return PolicyDecision.allow()
-        try:
-            decision = self._resolve_sync_value(
-                method(payload, context),
-                operation=f"policy.{method_name}",
-            )
-        except Exception as exc:
-            if self._policy_fail_open:
-                logger.warning("Policy engine failed at %s; fail-open enabled: %s", method_name, exc)
-                return PolicyDecision.allow()
-            raise HarnessError(
-                code="POLICY_EVALUATION_FAILED",
-                category="policy",
-                message=f"Policy evaluation failed at {method_name}: {exc}",
-                retryable=False,
-            ) from exc
-        if not isinstance(decision, PolicyDecision):
-            raise HarnessError(
-                code="POLICY_INVALID_DECISION",
-                category="policy",
-                message=f"Policy method {method_name} returned invalid type: {type(decision).__name__}",
-                retryable=False,
-            )
-        if (
-            run_input is not None
-            and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
-            and decision.constraints
-        ):
-            run_input.metadata.setdefault("policy_constraints", {}).update(decision.constraints)
-        return decision
+        run_id = self._policy_run_id(payload=payload, run_input=run_input)
+        for engine_name, engine in self._policy_engines:
+            method = getattr(engine, method_name, None)
+            if method is None:
+                continue
+            is_pack_policy = engine_name.startswith("pack:")
+            if is_pack_policy:
+                self._emit_event_sync(
+                    event_type="pack.policy.started",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "pack": engine_name.removeprefix("pack:"),
+                        "checkpoint": method_name,
+                    },
+                )
+            try:
+                decision = self._resolve_sync_value(
+                    method(payload, context),
+                    operation=f"policy.{engine_name}.{method_name}",
+                )
+            except Exception as exc:
+                if is_pack_policy:
+                    self._emit_event_sync(
+                        event_type="pack.policy.failed",
+                        run_id=run_id,
+                        context=context,
+                        payload={
+                            "pack": engine_name.removeprefix("pack:"),
+                            "checkpoint": method_name,
+                            "error": str(exc),
+                        },
+                    )
+                if self._policy_fail_open:
+                    logger.warning(
+                        "Policy engine failed at %s; fail-open enabled: %s",
+                        method_name,
+                        exc,
+                    )
+                    continue
+                raise HarnessError(
+                    code="POLICY_EVALUATION_FAILED",
+                    category="policy",
+                    message=f"Policy evaluation failed at {method_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if not isinstance(decision, PolicyDecision):
+                raise HarnessError(
+                    code="POLICY_INVALID_DECISION",
+                    category="policy",
+                    message=(
+                        f"Policy method {method_name} returned invalid type: "
+                        f"{type(decision).__name__}"
+                    ),
+                    retryable=False,
+                )
+            if is_pack_policy:
+                self._emit_event_sync(
+                    event_type="pack.policy.completed",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "pack": engine_name.removeprefix("pack:"),
+                        "checkpoint": method_name,
+                        "action": decision.action.value,
+                        "reason_code": decision.reason_code,
+                    },
+                )
+            if (
+                run_input is not None
+                and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
+                and decision.constraints
+            ):
+                run_input.metadata.setdefault("policy_constraints", {}).update(
+                    decision.constraints
+                )
+            if decision.action != PolicyAction.ALLOW:
+                return decision
+        return PolicyDecision.allow()
 
     async def _run_policy_async(
         self,
@@ -1863,35 +3277,552 @@ class AgentHarness:
         run_input: RunInput | None,
         context: ExecutionContext,
     ) -> PolicyDecision:
-        method = getattr(self._policy_engine, method_name, None)
-        if method is None:
-            return PolicyDecision.allow()
-        try:
-            decision = await self._resolve_async_value(method(payload, context))
-        except Exception as exc:
-            if self._policy_fail_open:
-                logger.warning("Policy engine failed at %s; fail-open enabled: %s", method_name, exc)
-                return PolicyDecision.allow()
-            raise HarnessError(
-                code="POLICY_EVALUATION_FAILED",
-                category="policy",
-                message=f"Policy evaluation failed at {method_name}: {exc}",
-                retryable=False,
-            ) from exc
-        if not isinstance(decision, PolicyDecision):
-            raise HarnessError(
-                code="POLICY_INVALID_DECISION",
-                category="policy",
-                message=f"Policy method {method_name} returned invalid type: {type(decision).__name__}",
-                retryable=False,
+        run_id = self._policy_run_id(payload=payload, run_input=run_input)
+        for engine_name, engine in self._policy_engines:
+            method = getattr(engine, method_name, None)
+            if method is None:
+                continue
+            is_pack_policy = engine_name.startswith("pack:")
+            if is_pack_policy:
+                await self._emit_event_async(
+                    event_type="pack.policy.started",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "pack": engine_name.removeprefix("pack:"),
+                        "checkpoint": method_name,
+                    },
+                )
+            try:
+                decision = await self._resolve_async_value(method(payload, context))
+            except Exception as exc:
+                if is_pack_policy:
+                    await self._emit_event_async(
+                        event_type="pack.policy.failed",
+                        run_id=run_id,
+                        context=context,
+                        payload={
+                            "pack": engine_name.removeprefix("pack:"),
+                            "checkpoint": method_name,
+                            "error": str(exc),
+                        },
+                    )
+                if self._policy_fail_open:
+                    logger.warning(
+                        "Policy engine failed at %s; fail-open enabled: %s",
+                        method_name,
+                        exc,
+                    )
+                    continue
+                raise HarnessError(
+                    code="POLICY_EVALUATION_FAILED",
+                    category="policy",
+                    message=f"Policy evaluation failed at {method_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if not isinstance(decision, PolicyDecision):
+                raise HarnessError(
+                    code="POLICY_INVALID_DECISION",
+                    category="policy",
+                    message=(
+                        f"Policy method {method_name} returned invalid type: "
+                        f"{type(decision).__name__}"
+                    ),
+                    retryable=False,
+                )
+            if is_pack_policy:
+                await self._emit_event_async(
+                    event_type="pack.policy.completed",
+                    run_id=run_id,
+                    context=context,
+                    payload={
+                        "pack": engine_name.removeprefix("pack:"),
+                        "checkpoint": method_name,
+                        "action": decision.action.value,
+                        "reason_code": decision.reason_code,
+                    },
+                )
+            if (
+                run_input is not None
+                and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
+                and decision.constraints
+            ):
+                run_input.metadata.setdefault("policy_constraints", {}).update(
+                    decision.constraints
+                )
+            if decision.action != PolicyAction.ALLOW:
+                return decision
+        return PolicyDecision.allow()
+
+    @staticmethod
+    def _policy_run_id(*, payload: Any, run_input: RunInput | None) -> str:
+        if run_input is not None and run_input.run_id:
+            return run_input.run_id
+        payload_run_id = getattr(payload, "run_id", None)
+        if isinstance(payload_run_id, str) and payload_run_id:
+            return payload_run_id
+        return f"policy_{uuid4().hex}"
+
+    def _wrap_pack_pre_hook(self, pack_name: str, hook: PreRunHook) -> PreRunHook:
+        hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+
+        async def _await_result(result: Awaitable[RunInput | None], run_input, context):
+            try:
+                resolved = await result
+            except Exception as exc:
+                await self._emit_event_async(
+                    event_type="pack.hook.failed",
+                    run_id=run_input.run_id,
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "pre",
+                        "error": str(exc),
+                    },
+                )
+                raise
+            await self._emit_event_async(
+                event_type="pack.hook.completed",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "pre"},
             )
-        if (
-            run_input is not None
-            and decision.action == PolicyAction.ALLOW_WITH_CONSTRAINTS
-            and decision.constraints
+            return resolved
+
+        def _wrapped(run_input: RunInput, context) -> RunInput | None | Awaitable[RunInput | None]:
+            self._emit_event_sync(
+                event_type="pack.hook.started",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "pre"},
+            )
+            try:
+                result = hook(run_input, context)
+            except Exception as exc:
+                self._emit_event_sync(
+                    event_type="pack.hook.failed",
+                    run_id=run_input.run_id,
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "pre",
+                        "error": str(exc),
+                    },
+                )
+                raise
+            if inspect.isawaitable(result):
+                return _await_result(result, run_input, context)
+            self._emit_event_sync(
+                event_type="pack.hook.completed",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "pre"},
+            )
+            return result
+
+        return _wrapped
+
+    def _wrap_pack_post_hook(self, pack_name: str, hook: PostRunHook) -> PostRunHook:
+        hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+
+        async def _await_result(
+            result: Awaitable[RunResultEnvelope | None],
+            run_input,
+            context,
         ):
-            run_input.metadata.setdefault("policy_constraints", {}).update(decision.constraints)
-        return decision
+            try:
+                resolved = await result
+            except Exception as exc:
+                await self._emit_event_async(
+                    event_type="pack.hook.failed",
+                    run_id=run_input.run_id,
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "post",
+                        "error": str(exc),
+                    },
+                )
+                raise
+            await self._emit_event_async(
+                event_type="pack.hook.completed",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "post"},
+            )
+            return resolved
+
+        def _wrapped(
+            run_input: RunInput,
+            result: RunResultEnvelope,
+            context,
+        ) -> RunResultEnvelope | None | Awaitable[RunResultEnvelope | None]:
+            self._emit_event_sync(
+                event_type="pack.hook.started",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "post"},
+            )
+            try:
+                maybe_result = hook(run_input, result, context)
+            except Exception as exc:
+                self._emit_event_sync(
+                    event_type="pack.hook.failed",
+                    run_id=run_input.run_id,
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "post",
+                        "error": str(exc),
+                    },
+                )
+                raise
+            if inspect.isawaitable(maybe_result):
+                return _await_result(maybe_result, run_input, context)
+            self._emit_event_sync(
+                event_type="pack.hook.completed",
+                run_id=run_input.run_id,
+                context=context,
+                payload={"pack": pack_name, "hook": hook_name, "kind": "post"},
+            )
+            return maybe_result
+
+        return _wrapped
+
+    def _wrap_pack_lifecycle_hook(
+        self,
+        pack_name: str,
+        event_type: str,
+        hook: LifecycleHook,
+    ) -> LifecycleHook:
+        hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+
+        async def _await_result(
+            result: Awaitable[LifecycleHookRequest | None],
+            event: LifecycleHookRequest,
+            context,
+        ):
+            try:
+                resolved = await result
+            except Exception as exc:
+                await self._emit_event_async(
+                    event_type="pack.hook.failed",
+                    run_id=event.run_id or "",
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "lifecycle",
+                        "lifecycle_event": event_type,
+                        "error": str(exc),
+                    },
+                )
+                raise
+            await self._emit_event_async(
+                event_type="pack.hook.completed",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "pack": pack_name,
+                    "hook": hook_name,
+                    "kind": "lifecycle",
+                    "lifecycle_event": event_type,
+                },
+            )
+            return resolved
+
+        def _wrapped(
+            event: LifecycleHookRequest,
+            context,
+        ) -> LifecycleHookRequest | None | Awaitable[LifecycleHookRequest | None]:
+            self._emit_event_sync(
+                event_type="pack.hook.started",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "pack": pack_name,
+                    "hook": hook_name,
+                    "kind": "lifecycle",
+                    "lifecycle_event": event_type,
+                },
+            )
+            try:
+                result = hook(event, context)
+            except Exception as exc:
+                self._emit_event_sync(
+                    event_type="pack.hook.failed",
+                    run_id=event.run_id or "",
+                    context=context,
+                    payload={
+                        "pack": pack_name,
+                        "hook": hook_name,
+                        "kind": "lifecycle",
+                        "lifecycle_event": event_type,
+                        "error": str(exc),
+                    },
+                )
+                raise
+            if inspect.isawaitable(result):
+                return _await_result(result, event, context)
+            self._emit_event_sync(
+                event_type="pack.hook.completed",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "pack": pack_name,
+                    "hook": hook_name,
+                    "kind": "lifecycle",
+                    "lifecycle_event": event_type,
+                },
+            )
+            return result
+
+        return _wrapped
+
+    def _load_workspace_lifecycle_hooks(self) -> None:
+        """Register lifecycle hooks discovered from workspace/project/global files."""
+        for spec in self._workspace_hook_specs:
+            event_type = str(spec["event"])
+            self._lifecycle_hooks.setdefault(event_type, []).append(
+                self._build_workspace_lifecycle_hook(spec)
+            )
+
+    def _build_workspace_lifecycle_hook(
+        self,
+        spec: dict[str, Any],
+    ) -> LifecycleHook:
+        name = str(spec.get("name") or "workspace-hook")
+        scope = str(spec.get("scope") or "workspace")
+        command = str(spec["command"])
+        cwd = str(spec.get("cwd") or self.workspace.path)
+        path = str(spec.get("path") or "")
+        timeout = spec.get("timeout_seconds")
+        timeout_seconds = int(timeout) if timeout is not None else 30
+
+        def _hook(
+            event: LifecycleHookRequest,
+            context: ExecutionContext,
+        ) -> LifecycleHookRequest | None:
+            payload = {
+                "event_type": event.event_type,
+                "run_id": event.run_id,
+                "metadata": dict(event.metadata),
+                "context": self._context_to_metadata(context),
+            }
+            env = {
+                **os.environ,
+                "AGNOCLAW_HOOK_EVENT": event.event_type,
+                "AGNOCLAW_HOOK_NAME": name,
+                "AGNOCLAW_HOOK_SCOPE": scope,
+                "AGNOCLAW_HOOK_RUN_ID": event.run_id or "",
+                "AGNOCLAW_WORKSPACE_DIR": str(self.workspace.path),
+                "AGNOCLAW_WORKTREE_DIR": str(Path.cwd().resolve()),
+                "AGNOCLAW_HOOK_METADATA_JSON": json.dumps(
+                    event.metadata,
+                    sort_keys=True,
+                    default=str,
+                ),
+                "AGNOCLAW_HOOK_PAYLOAD_JSON": json.dumps(
+                    payload,
+                    sort_keys=True,
+                    default=str,
+                ),
+            }
+            if self.workspace._project_dir:
+                env["AGNOCLAW_PROJECT_DIR"] = str(self.workspace._project_dir)
+            if self.workspace._global_dir:
+                env["AGNOCLAW_GLOBAL_DIR"] = str(self.workspace._global_dir)
+
+            self._emit_event_sync(
+                event_type="workspace.hook.started",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "name": name,
+                    "scope": scope,
+                    "hook_event": event.event_type,
+                    "path": path,
+                },
+            )
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=cwd,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+            except Exception as exc:
+                self._emit_event_sync(
+                    event_type="workspace.hook.failed",
+                    run_id=event.run_id or "",
+                    context=context,
+                    payload={
+                        "name": name,
+                        "scope": scope,
+                        "hook_event": event.event_type,
+                        "path": path,
+                        "error": str(exc),
+                    },
+                )
+                raise
+            if result.returncode != 0:
+                message = result.stderr.strip() or result.stdout.strip()
+                self._emit_event_sync(
+                    event_type="workspace.hook.failed",
+                    run_id=event.run_id or "",
+                    context=context,
+                    payload={
+                        "name": name,
+                        "scope": scope,
+                        "hook_event": event.event_type,
+                        "path": path,
+                        "exit_code": result.returncode,
+                        "error": message,
+                    },
+                )
+                raise RuntimeError(
+                    f"workspace hook {scope}:{name} exited {result.returncode}: {message}"
+                )
+
+            updated = self._workspace_hook_result(event, result.stdout)
+            self._emit_event_sync(
+                event_type="workspace.hook.completed",
+                run_id=event.run_id or "",
+                context=context,
+                payload={
+                    "name": name,
+                    "scope": scope,
+                    "hook_event": event.event_type,
+                    "path": path,
+                    "stdout_chars": len(result.stdout or ""),
+                },
+            )
+            return updated
+
+        _hook.__name__ = f"workspace_hook_{scope}_{name}".replace("-", "_")
+        return _hook
+
+    @staticmethod
+    def _workspace_hook_result(
+        event: LifecycleHookRequest,
+        stdout: str,
+    ) -> LifecycleHookRequest:
+        text = str(stdout or "").strip()
+        if not text:
+            return event
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return event
+        if not isinstance(payload, dict):
+            return event
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            event.metadata.update(metadata)
+        return event
+
+    def add_lifecycle_hook(self, event_type: str, hook: LifecycleHook) -> None:
+        """Register a generic lifecycle hook for a named checkpoint."""
+        self._lifecycle_hooks.setdefault(event_type, []).append(hook)
+
+    def _run_lifecycle_hooks_sync(
+        self,
+        event_type: str,
+        *,
+        context: ExecutionContext,
+        run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LifecycleHookRequest:
+        current = LifecycleHookRequest(
+            event_type=event_type,
+            run_id=run_id,
+            metadata=self._lifecycle_metadata(metadata),
+        )
+        for hook in self._lifecycle_hooks.get(event_type, []):
+            hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+            try:
+                maybe_result = self._resolve_sync_value(
+                    hook(current, context),
+                    operation=f"lifecycle_hook:{event_type}:{hook_name}",
+                )
+            except Exception as exc:
+                raise HarnessError(
+                    code="HOOK_LIFECYCLE_FAILED",
+                    category="hook",
+                    message=f"Lifecycle hook failed: {event_type}:{hook_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if maybe_result is None:
+                continue
+            if not isinstance(maybe_result, LifecycleHookRequest):
+                raise HarnessError(
+                    code="HOOK_LIFECYCLE_INVALID_RETURN",
+                    category="hook",
+                    message=(
+                        f"Lifecycle hook {event_type}:{hook_name} must return "
+                        "LifecycleHookRequest or None"
+                    ),
+                    retryable=False,
+                )
+            current = maybe_result
+        return current
+
+    async def _run_lifecycle_hooks_async(
+        self,
+        event_type: str,
+        *,
+        context: ExecutionContext,
+        run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LifecycleHookRequest:
+        current = LifecycleHookRequest(
+            event_type=event_type,
+            run_id=run_id,
+            metadata=self._lifecycle_metadata(metadata),
+        )
+        for hook in self._lifecycle_hooks.get(event_type, []):
+            hook_name = getattr(hook, "__name__", hook.__class__.__name__)
+            try:
+                maybe_result = await self._resolve_async_value(hook(current, context))
+            except Exception as exc:
+                raise HarnessError(
+                    code="HOOK_LIFECYCLE_FAILED",
+                    category="hook",
+                    message=f"Lifecycle hook failed: {event_type}:{hook_name}: {exc}",
+                    retryable=False,
+                ) from exc
+            if maybe_result is None:
+                continue
+            if not isinstance(maybe_result, LifecycleHookRequest):
+                raise HarnessError(
+                    code="HOOK_LIFECYCLE_INVALID_RETURN",
+                    category="hook",
+                    message=(
+                        f"Lifecycle hook {event_type}:{hook_name} must return "
+                        "LifecycleHookRequest or None"
+                    ),
+                    retryable=False,
+                )
+            current = maybe_result
+        return current
+
+    def _lifecycle_metadata(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        values = dict(metadata or {})
+        values.setdefault("workspace_dir", str(self.workspace.path))
+        values.setdefault("worktree_dir", str(Path.cwd().resolve()))
+        if self.workspace._project_dir:
+            values.setdefault("project_dir", str(self.workspace._project_dir))
+        if self.workspace._global_dir:
+            values.setdefault("global_dir", str(self.workspace._global_dir))
+        return values
 
     def _run_pre_hooks_sync(
         self,
@@ -2309,6 +4240,17 @@ class AgentHarness:
         )
         if max_turns is not None:
             run_input.metadata.setdefault("max_turns", int(max_turns))
+        self._run_lifecycle_hooks_sync(
+            "message.received",
+            context=ctx,
+            run_id=run_id,
+            metadata={
+                "message": message,
+                "skill": skill,
+                "stream": stream,
+                "stream_events": stream_events,
+            },
+        )
         base_prompt = self._agent.system_message
         stream_cleanup_deferred = False
 
@@ -2323,6 +4265,14 @@ class AgentHarness:
                 "max_turns": max_turns,
             },
         )
+        scheduler_payload = self._scheduler_invocation_payload(run_input.metadata)
+        if scheduler_payload:
+            self._emit_event_sync(
+                event_type="scheduler.invocation",
+                run_id=run_id,
+                context=ctx,
+                payload=scheduler_payload,
+            )
 
         try:
             run_input = self._run_pre_hooks_sync(run_input=run_input, context=ctx)
@@ -2742,6 +4692,17 @@ class AgentHarness:
         )
         if max_turns is not None:
             run_input.metadata.setdefault("max_turns", int(max_turns))
+        await self._run_lifecycle_hooks_async(
+            "message.received",
+            context=ctx,
+            run_id=run_id,
+            metadata={
+                "message": message,
+                "skill": skill,
+                "stream": stream,
+                "stream_events": stream_events,
+            },
+        )
         base_prompt = self._agent.system_message
         stream_cleanup_deferred = False
 
@@ -2756,6 +4717,14 @@ class AgentHarness:
                 "max_turns": max_turns,
             },
         )
+        scheduler_payload = self._scheduler_invocation_payload(run_input.metadata)
+        if scheduler_payload:
+            await self._emit_event_async(
+                event_type="scheduler.invocation",
+                run_id=run_id,
+                context=ctx,
+                payload=scheduler_payload,
+            )
 
         try:
             run_input = await self._run_pre_hooks_async(run_input=run_input, context=ctx)
@@ -3151,6 +5120,85 @@ class AgentHarness:
         self._plan_mode_restore_permission_mode = None
         self._set_system_prompt(session_id=self.session_id)
 
+    def ask_user_question(
+        self,
+        question: str,
+        *,
+        options: list[str] | tuple[str, ...] | str | None = None,
+        allow_freeform: bool = True,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> PlanQuestionSignal:
+        """Record and emit a structured planning question signal."""
+        signal = self._plan_signal_toolkit.record_question(
+            question,
+            options=options,
+            allow_freeform=allow_freeform,
+            metadata=metadata,
+        )
+        ctx = context.with_metadata(metadata) if context else self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata=metadata,
+        )
+        self._emit_event_sync(
+            event_type="plan.question.requested",
+            run_id=signal.signal_id,
+            context=ctx,
+            payload={
+                "signal_id": signal.signal_id,
+                "question": signal.question,
+                "options": list(signal.options),
+                "allow_freeform": signal.allow_freeform,
+                "metadata": dict(signal.metadata),
+            },
+        )
+        return signal
+
+    def signal_plan_completion(
+        self,
+        summary: str,
+        *,
+        plan_path: str | None = None,
+        ready_for_approval: bool = True,
+        context: ExecutionContext | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> PlanExitSignal:
+        """Record a structured plan-complete signal and exit plan mode."""
+        signal = self._plan_signal_toolkit.record_exit(
+            summary,
+            plan_path=plan_path,
+            ready_for_approval=ready_for_approval,
+            metadata=metadata,
+        )
+        self.exit_plan_mode()
+        ctx = context.with_metadata(metadata) if context else self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata=metadata,
+        )
+        self._emit_event_sync(
+            event_type="plan.completed",
+            run_id=signal.signal_id,
+            context=ctx,
+            payload={
+                "signal_id": signal.signal_id,
+                "summary": signal.summary,
+                "plan_path": signal.plan_path,
+                "ready_for_approval": signal.ready_for_approval,
+                "metadata": dict(signal.metadata),
+            },
+        )
+        return signal
+
+    def plan_signals(self) -> list[PlanQuestionSignal | PlanExitSignal]:
+        """Return captured plan question/completion signals."""
+        return list(self._plan_signal_toolkit.signals)
+
+    def clear_plan_signals(self) -> None:
+        """Clear captured plan signals."""
+        self._plan_signal_toolkit.clear()
+
     def add_tool(self, tool) -> None:
         """Add a tool or toolkit to the agent."""
         self._attach_tool_runtime_hooks([tool])
@@ -3160,6 +5208,42 @@ class AgentHarness:
         """Return the chat history for the current session."""
         active_session = self.session_id or getattr(self._agent, "session_id", "")
         return self._agent.get_chat_history(active_session or "")
+
+    def session(
+        self,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> HarnessSession:
+        """Return a lightweight SDK session facade over this harness."""
+        context = self._build_execution_context(
+            user_id=user_id or self.user_id,
+            session_id=session_id or self.session_id,
+            metadata=metadata,
+        )
+        self._run_lifecycle_hooks_sync(
+            "session.created",
+            context=context,
+            metadata={
+                "session_id": session_id or self.session_id,
+                "workspace_id": workspace_id or str(self.workspace.path),
+            },
+        )
+        return HarnessSession(
+            self,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            metadata=metadata,
+        )
+
+    def as_agentos_agent(self, *, agent_id: str | None = None, name: str | None = None):
+        """Return an AgentOS-compatible adapter that preserves harness runtime controls."""
+        from .runtime.agentos import as_agentos_agent
+
+        return as_agentos_agent(self, agent_id=agent_id, name=name)
 
     def get_session_messages(self, session_id: str | None = None) -> list:
         """
@@ -3316,6 +5400,16 @@ class AgentHarness:
         if hasattr(self._agent, "session_id"):
             self._agent.session_id = session
         self._set_system_prompt(session_id=session)
+        context = self._build_execution_context(
+            user_id=self.user_id,
+            session_id=session,
+            metadata={"lifecycle": "session.cleared"},
+        )
+        self._run_lifecycle_hooks_sync(
+            "session.cleared",
+            context=context,
+            metadata={"session_id": session},
+        )
         return session
 
     def save_session_summary(self, summary: str) -> None:
@@ -3409,6 +5503,16 @@ class AgentHarness:
 
         This is a manual escape hatch — Agno v2.5.x does not auto-compact.
         """
+        context = self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata={"lifecycle": "session.compaction"},
+        )
+        await self._run_lifecycle_hooks_async(
+            "session.compaction.started",
+            context=context,
+            metadata={"session_id": self.session_id},
+        )
         # Step 1: Ask the agent to write important facts to memory
         # Route through harness's arun() so hooks/policy/events are enforced.
         flush_prompt = (
@@ -3436,6 +5540,14 @@ class AgentHarness:
                 await self._on_compaction(summary)
             except Exception:
                 logger.exception("on_compaction callback failed")
+        await self._run_lifecycle_hooks_async(
+            "session.compaction.completed",
+            context=context,
+            metadata={
+                "session_id": self.session_id,
+                "summary_generated": summary is not None,
+            },
+        )
 
     async def end_session(self, generate_summary: bool = True) -> str | None:
         """
@@ -3445,6 +5557,19 @@ class AgentHarness:
         fires the on_session_end callback so the platform can persist it, and
         returns the summary text.
         """
+        context = self._build_execution_context(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            metadata={"lifecycle": "session.end"},
+        )
+        await self._run_lifecycle_hooks_async(
+            "session.end.started",
+            context=context,
+            metadata={
+                "session_id": self.session_id,
+                "generate_summary": generate_summary,
+            },
+        )
         summary = None
         if generate_summary:
             summary = await self._generate_session_summary()
@@ -3460,6 +5585,15 @@ class AgentHarness:
                     logger.exception("on_session_end callback failed")
         finally:
             self._cleanup_sandbox_dir()
+        await self._run_lifecycle_hooks_async(
+            "session.end.completed",
+            context=context,
+            metadata={
+                "session_id": self.session_id,
+                "summary_generated": summary is not None,
+                "created_files": created_files,
+            },
+        )
         return summary
 
     def close(self) -> None:
@@ -3467,12 +5601,36 @@ class AgentHarness:
         if self._closed:
             return
         self._closed = True
+        if self._context_providers:
+            async def _close_providers() -> None:
+                await asyncio.gather(
+                    *(p.aclose() for p in self._context_providers),
+                    return_exceptions=True,
+                )
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(_close_providers())
+            else:
+                logger.debug(
+                    "AgentHarness.close() called in a running loop; "
+                    "use await AgentHarness.aclose() to close context providers."
+                )
         if self._finalizer.alive:
             self._finalizer()
 
     async def aclose(self) -> None:
-        """Async-compatible close alias."""
-        self.close()
+        """Release owned resources held by this harness, including async providers."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._context_providers:
+            await asyncio.gather(
+                *(p.aclose() for p in self._context_providers),
+                return_exceptions=True,
+            )
+        if self._finalizer.alive:
+            self._finalizer()
 
     def __enter__(self) -> AgentHarness:
         return self

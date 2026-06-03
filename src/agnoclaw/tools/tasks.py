@@ -29,9 +29,12 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from agno.tools import tool
 from agno.tools.toolkit import Toolkit
+
+from agnoclaw.runtime import PlanExitSignal, PlanQuestionSignal
 
 if TYPE_CHECKING:
     from agnoclaw.backends import RuntimeBackend
@@ -156,6 +159,145 @@ class TodoToolkit(Toolkit):
             return f"[error] Todo #{todo_id} not found."
         subject = self._todos.pop(todo_id)["subject"]
         return f"Deleted todo #{todo_id}: {subject}"
+
+
+class PlanSignalToolkit(Toolkit):
+    """Structured plan-mode signals for questions and plan completion."""
+
+    def __init__(self):
+        super().__init__(name="plan_signals")
+        self._signals: list[PlanQuestionSignal | PlanExitSignal] = []
+        self.register(self.ask_user_question)
+        self.register(self.exit_plan_mode)
+
+    @property
+    def signals(self) -> tuple[PlanQuestionSignal | PlanExitSignal, ...]:
+        """Return captured plan signals."""
+        return tuple(self._signals)
+
+    def clear(self) -> None:
+        """Clear captured plan signals."""
+        self._signals.clear()
+
+    def record_question(
+        self,
+        question: str,
+        *,
+        options: list[str] | tuple[str, ...] | str | None = None,
+        allow_freeform: bool = True,
+        metadata: dict[str, Any] | None = None,
+    ) -> PlanQuestionSignal:
+        signal = PlanQuestionSignal(
+            signal_id=f"planq_{uuid4().hex}",
+            question=str(question).strip(),
+            options=self._normalize_options(options),
+            allow_freeform=bool(allow_freeform),
+            metadata=dict(metadata or {}),
+        )
+        self._signals.append(signal)
+        return signal
+
+    def record_exit(
+        self,
+        summary: str,
+        *,
+        plan_path: str | None = None,
+        ready_for_approval: bool = True,
+        metadata: dict[str, Any] | None = None,
+    ) -> PlanExitSignal:
+        signal = PlanExitSignal(
+            signal_id=f"planx_{uuid4().hex}",
+            summary=str(summary).strip(),
+            plan_path=str(plan_path).strip() if plan_path else None,
+            ready_for_approval=bool(ready_for_approval),
+            metadata=dict(metadata or {}),
+        )
+        self._signals.append(signal)
+        return signal
+
+    @tool(
+        name="AskUserQuestion",
+        description=(
+            "Ask the user a structured planning question with optional choices. "
+            "Use in plan mode when requirements are ambiguous."
+        ),
+        show_result=True,
+    )
+    def ask_user_question(
+        self,
+        question: str,
+        options: str | list[str] | None = None,
+        allow_freeform: bool = True,
+    ) -> str:
+        """Capture a structured user question signal."""
+        signal = self.record_question(
+            question,
+            options=options,
+            allow_freeform=allow_freeform,
+            metadata={"tool": "AskUserQuestion"},
+        )
+        return json.dumps(
+            {
+                "signal": "AskUserQuestion",
+                "signal_id": signal.signal_id,
+                "question": signal.question,
+                "options": signal.options,
+                "allow_freeform": signal.allow_freeform,
+                "status": "waiting_for_user",
+            },
+            ensure_ascii=True,
+        )
+
+    @tool(
+        name="ExitPlanMode",
+        description=(
+            "Signal that the implementation plan is ready for user review. "
+            "Use before making changes from plan mode."
+        ),
+        show_result=True,
+    )
+    def exit_plan_mode(
+        self,
+        summary: str,
+        plan_path: str | None = None,
+        ready_for_approval: bool = True,
+    ) -> str:
+        """Capture a structured plan completion signal."""
+        signal = self.record_exit(
+            summary,
+            plan_path=plan_path,
+            ready_for_approval=ready_for_approval,
+            metadata={"tool": "ExitPlanMode"},
+        )
+        return json.dumps(
+            {
+                "signal": "ExitPlanMode",
+                "signal_id": signal.signal_id,
+                "summary": signal.summary,
+                "plan_path": signal.plan_path,
+                "ready_for_approval": signal.ready_for_approval,
+                "status": "plan_ready",
+            },
+            ensure_ascii=True,
+        )
+
+    @staticmethod
+    def _normalize_options(options: list[str] | tuple[str, ...] | str | None) -> list[str]:
+        if options is None:
+            return []
+        if isinstance(options, (list, tuple)):
+            return [str(option).strip() for option in options if str(option).strip()]
+        text = str(options).strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(option).strip() for option in parsed if str(option).strip()]
+        separators = "\n" if "\n" in text else ","
+        return [part.strip() for part in text.split(separators) if part.strip()]
 
 
 class ProgressToolkit(Toolkit):
@@ -389,6 +531,7 @@ def _build_subagent_tools(
     tool_names: list[str] | None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
+    sandbox_mode: str | None = None,
     backend: RuntimeBackend | None = None,
 ) -> list:
     """Build tool instances for a subagent from tool name list."""
@@ -412,12 +555,27 @@ def _build_subagent_tools(
     resolved_command_executor = None
     resolved_workspace_adapter = None
     if resolved_backend is not None:
+        from agnoclaw.tools.backends import normalize_sandbox_mode
+
+        effective_sandbox_mode = normalize_sandbox_mode(
+            sandbox_mode if sandbox_mode is not None else resolved_backend.sandbox_mode
+        )
         resolved_command_executor, resolved_workspace_adapter = bind_session_sandbox(
             command_executor=resolved_backend.command_executor,
             workspace_adapter=resolved_backend.workspace_adapter,
             workspace_dir=resolved_workspace,
             sandbox_dir=resolved_sandbox,
+            sandbox_mode=effective_sandbox_mode,
         )
+        tool_surface_dir = Path(
+            getattr(
+                resolved_workspace_adapter,
+                "workspace_dir",
+                resolved_sandbox or resolved_workspace,
+            )
+        ).expanduser().resolve(strict=False)
+    else:
+        tool_surface_dir = resolved_sandbox or resolved_workspace
     if "all" in names or "web" in names:
         from agnoclaw.tools.web import WebToolkit
         agent_tools.append(WebToolkit())
@@ -425,7 +583,7 @@ def _build_subagent_tools(
         from agnoclaw.tools.files import FilesToolkit
         agent_tools.append(
             FilesToolkit(
-                workspace_dir=resolved_sandbox or resolved_workspace,
+                workspace_dir=tool_surface_dir,
                 adapter=resolved_workspace_adapter,
             )
         )
@@ -433,7 +591,7 @@ def _build_subagent_tools(
         from agnoclaw.tools.bash import make_bash_tool
         agent_tools.append(
             make_bash_tool(
-                workspace_dir=resolved_sandbox or resolved_workspace,
+                workspace_dir=tool_surface_dir,
                 executor=resolved_command_executor,
             )
         )
@@ -459,6 +617,7 @@ def _run_subagent(
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
+    sandbox_mode: str | None = None,
     config=None,
     backend: RuntimeBackend | None = None,
 ) -> str:
@@ -481,6 +640,7 @@ def _run_subagent(
             tool_names,
             workspace_dir=workspace_dir,
             sandbox_dir=sandbox_dir,
+            sandbox_mode=sandbox_mode,
             backend=backend,
         ),
         instructions=instructions,
@@ -518,6 +678,7 @@ async def _arun_subagent(
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
+    sandbox_mode: str | None = None,
     config=None,
     backend: RuntimeBackend | None = None,
 ) -> str:
@@ -540,6 +701,7 @@ async def _arun_subagent(
             tool_names,
             workspace_dir=workspace_dir,
             sandbox_dir=sandbox_dir,
+            sandbox_mode=sandbox_mode,
             backend=backend,
         ),
         instructions=instructions,
@@ -575,6 +737,7 @@ def make_subagent_tool(
     subagents: dict[str, SubagentDefinition] | None = None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
+    sandbox_mode: str | None = None,
     config=None,
     backend: RuntimeBackend | None = None,
 ):
@@ -590,6 +753,7 @@ def make_subagent_tool(
                    invoke them by name via the `agent_name` parameter.
         workspace_dir: Workspace root propagated to spawned files/bash tools.
         sandbox_dir: Session sandbox propagated to spawned files/bash tools.
+        sandbox_mode: Session sandbox mode propagated to spawned files/bash tools.
         config: HarnessConfig propagated for model/provider and runtime settings.
     """
     _subagents = subagents or {}
@@ -658,6 +822,7 @@ def make_subagent_tool(
                 tool_names,
                 workspace_dir=workspace_dir,
                 sandbox_dir=sandbox_dir,
+                sandbox_mode=sandbox_mode,
                 config=config,
                 backend=backend,
             )

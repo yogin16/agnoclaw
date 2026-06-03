@@ -1,7 +1,8 @@
 """Tests for the tool suite (bash, files, web, tasks)."""
 
+import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -492,6 +493,37 @@ def test_bash_toolkit_background_lifecycle():
     assert "status=exited" in out_after
 
 
+def test_local_command_executor_reads_persisted_background_output(tmp_path):
+    import sys
+    import time
+
+    from agnoclaw.tools.backends import LocalCommandExecutor
+
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    executor = LocalCommandExecutor(workspace_dir=tmp_path)
+    executor._tasks_dir = tasks_dir
+    handle = executor.start(
+        command=f'"{sys.executable}" -c "print(\'persisted-output\')"',
+        workdir=None,
+        description="persist output across executor instances",
+    )
+
+    fresh_executor = LocalCommandExecutor(workspace_dir=tmp_path)
+    fresh_executor._tasks_dir = tasks_dir
+    output = None
+    for _ in range(20):
+        output = fresh_executor.output(task_id=handle.task_id)
+        if "persisted-output" in output.output:
+            break
+        time.sleep(0.05)
+
+    assert output is not None
+    assert output.task_id == handle.task_id
+    assert output.pid == handle.pid
+    assert "persisted-output" in output.output
+
+
 def test_bash_toolkit_background_start_raises_for_invalid_working_dir():
     from agnoclaw.tools.bash import BashToolError, BashToolkit
 
@@ -691,6 +723,44 @@ def test_todo_toolkit_delete_nonexistent():
     assert "error" in result.lower() or "not found" in result.lower()
 
 
+# PlanSignalToolkit tests
+
+
+def test_plan_signal_toolkit_records_user_question():
+    from agnoclaw.runtime import PlanQuestionSignal
+    from agnoclaw.tools.tasks import PlanSignalToolkit
+
+    toolkit = PlanSignalToolkit()
+    result = toolkit.functions["AskUserQuestion"].entrypoint(
+        "Which path?",
+        options='["Small", "Complete"]',
+        allow_freeform=False,
+    )
+    payload = json.loads(result)
+
+    assert payload["signal"] == "AskUserQuestion"
+    assert payload["options"] == ["Small", "Complete"]
+    assert payload["allow_freeform"] is False
+    assert isinstance(toolkit.signals[0], PlanQuestionSignal)
+
+
+def test_plan_signal_toolkit_records_exit_plan_mode():
+    from agnoclaw.runtime import PlanExitSignal
+    from agnoclaw.tools.tasks import PlanSignalToolkit
+
+    toolkit = PlanSignalToolkit()
+    result = toolkit.functions["ExitPlanMode"].entrypoint(
+        "Implement the approved plan.",
+        plan_path="work.plan.md",
+    )
+    payload = json.loads(result)
+
+    assert payload["signal"] == "ExitPlanMode"
+    assert payload["summary"] == "Implement the approved plan."
+    assert payload["plan_path"] == "work.plan.md"
+    assert isinstance(toolkit.signals[0], PlanExitSignal)
+
+
 # ── get_default_tools tests ──────────────────────────────────────────────
 
 
@@ -722,6 +792,16 @@ def test_get_default_tools_includes_todos():
     cfg = HarnessConfig()
     tools = get_default_tools(cfg)
     assert any(isinstance(t, TodoToolkit) for t in tools)
+
+
+def test_get_default_tools_includes_plan_signals():
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.tasks import PlanSignalToolkit
+
+    tools = get_default_tools(HarnessConfig())
+
+    assert any(isinstance(t, PlanSignalToolkit) for t in tools)
 
 
 def test_get_default_tools_respects_disable_bash():
@@ -795,6 +875,107 @@ def test_get_default_tools_sandbox_routes_relative_file_ops_and_allows_workspace
 
     assert (sandbox_dir / "scratch.txt").read_text(encoding="utf-8") == "sandbox"
     assert (workspace_dir / "workspace.txt").read_text(encoding="utf-8") == "workspace"
+
+
+def test_get_default_tools_read_only_sandbox_blocks_workspace_writes(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+    (workspace_dir / "input.txt").write_text("alpha", encoding="utf-8")
+
+    tools = get_default_tools(
+        HarnessConfig(),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+        sandbox_mode="read_only",
+    )
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+
+    assert "alpha" in files.read_file(str(workspace_dir / "input.txt"))
+    assert files.write_file("scratch.txt", "sandbox").startswith("Written")
+
+    result = files.write_file(str(workspace_dir / "output.txt"), "workspace")
+
+    assert "Workspace is read-only" in result
+    assert (sandbox_dir / "scratch.txt").read_text(encoding="utf-8") == "sandbox"
+    assert not (workspace_dir / "output.txt").exists()
+
+
+def test_get_default_tools_read_only_sandbox_blocks_workspace_bash_workdir(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.bash import BashToolError
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+
+    tools = get_default_tools(
+        HarnessConfig(enable_bash=True),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+        sandbox_mode="read_only",
+    )
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+
+    with pytest.raises(BashToolError, match="Workspace is read-only"):
+        bash.entrypoint("pwd", working_dir=str(workspace_dir))
+
+
+def test_get_default_tools_full_sandbox_mode_uses_workspace_surface(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+
+    tools = get_default_tools(
+        HarnessConfig(enable_bash=True),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+        sandbox_mode="full",
+    )
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+    bash = next(t for t in tools if getattr(t, "name", None) == "bash")
+
+    assert files.workspace_dir == workspace_dir.resolve()
+
+    files.write_file("workspace.txt", "workspace")
+    bash.entrypoint("printf bash > bash.txt")
+
+    assert (workspace_dir / "workspace.txt").read_text(encoding="utf-8") == "workspace"
+    assert (workspace_dir / "bash.txt").read_text(encoding="utf-8") == "bash"
+    assert not (sandbox_dir / "workspace.txt").exists()
+
+
+def test_runtime_backend_sandbox_mode_applies_when_tools_do_not_override(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+    from agnoclaw.tools.files import FilesToolkit
+
+    workspace_dir = tmp_path / "workspace"
+    sandbox_dir = tmp_path / "sandbox"
+    workspace_dir.mkdir()
+    backend = RuntimeBackend(sandbox_mode="read-only")
+
+    tools = get_default_tools(
+        HarnessConfig(),
+        workspace_dir=workspace_dir,
+        sandbox_dir=sandbox_dir,
+        backend=backend,
+    )
+    files = next(t for t in tools if isinstance(t, FilesToolkit))
+
+    result = files.write_file(str(workspace_dir / "blocked.txt"), "nope")
+
+    assert "Workspace is read-only" in result
+    assert backend.sandbox_mode.value == "read_only"
 
 
 def test_get_default_tools_sandboxed_bash_can_read_workspace_and_write_both_outputs(tmp_path):

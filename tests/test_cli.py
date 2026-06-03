@@ -1,9 +1,10 @@
 """Tests for the agnoclaw CLI."""
 
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from click.testing import CliRunner
-from pathlib import Path
-from unittest.mock import MagicMock
 
 from agnoclaw.cli.main import _handle_slash_command, cli
 
@@ -223,7 +224,8 @@ def test_init_help(runner):
     """agnoclaw init --help should describe the wizard."""
     result = runner.invoke(cli, ["init", "--help"])
     assert result.exit_code == 0
-    assert "onboarding" in result.output.lower() or "wizard" in result.output.lower() or "personalize" in result.output.lower()
+    output = result.output.lower()
+    assert "onboarding" in output or "wizard" in output or "personalize" in output
 
 
 def test_handle_slash_skill_queues_skill():
@@ -245,3 +247,303 @@ def test_handle_slash_clear_rotates_session():
     assert handled is True
     assert queued is None
     agent.clear_session_context.assert_called_once()
+
+
+def test_handle_slash_elevated_uses_interactive_approver_when_missing():
+    """The /elevated command should install a terminal approver and run elevated."""
+    from types import SimpleNamespace
+
+    agent = MagicMock()
+    agent.admin_list_permissions.return_value = {"has_approver": False}
+    agent.run_elevated_command.return_value = SimpleNamespace(
+        stdout="ok\n",
+        stderr="",
+        exit_code=0,
+    )
+
+    handled, queued = _handle_slash_command("/elevated printf ok", agent, None)
+
+    assert handled is True
+    assert queued is None
+    agent.set_permission_approver.assert_called_once()
+    approver = agent.set_permission_approver.call_args.args[0]
+    assert approver.__class__.__name__ == "InteractivePermissionApprover"
+    agent.run_elevated_command.assert_called_once_with(
+        "printf ok",
+        reason="CLI /elevated directive",
+        _skip_approval=False,
+    )
+
+
+def test_handle_slash_elevated_preserves_existing_approver():
+    from types import SimpleNamespace
+
+    agent = MagicMock()
+    agent.admin_list_permissions.return_value = {"has_approver": True}
+    agent.run_elevated_command.return_value = SimpleNamespace(
+        stdout="",
+        stderr="",
+        exit_code=0,
+    )
+
+    handled, _ = _handle_slash_command("/elevated id", agent, None)
+
+    assert handled is True
+    agent.set_permission_approver.assert_not_called()
+    agent.run_elevated_command.assert_called_once_with(
+        "id",
+        reason="CLI /elevated directive",
+        _skip_approval=False,
+    )
+
+
+def test_handle_slash_elevated_sets_session_mode_and_approver():
+    agent = MagicMock()
+    agent.admin_list_permissions.return_value = {"has_approver": False}
+
+    handled, queued = _handle_slash_command("/elevated on", agent, None)
+
+    assert handled is True
+    assert queued is None
+    agent.set_elevated_mode.assert_called_once_with("on")
+    agent.set_permission_approver.assert_called_once()
+    approver = agent.set_permission_approver.call_args.args[0]
+    assert approver.default is True
+    agent.run_elevated_command.assert_not_called()
+
+
+def test_handle_slash_elevated_full_command_skips_approver():
+    from types import SimpleNamespace
+
+    agent = MagicMock()
+    agent.admin_list_permissions.return_value = {"has_approver": True}
+    agent.run_elevated_command.return_value = SimpleNamespace(
+        stdout="",
+        stderr="",
+        exit_code=0,
+    )
+
+    handled, _ = _handle_slash_command("/elevated full id", agent, None)
+
+    assert handled is True
+    agent.set_permission_approver.assert_not_called()
+    agent.set_elevated_mode.assert_called_once_with("full")
+    agent.run_elevated_command.assert_called_once_with(
+        "id",
+        reason="CLI /elevated directive",
+        _skip_approval=True,
+    )
+
+
+# ── agnoclaw pack ─────────────────────────────────────────────────────────────
+
+
+def _write_pack(tmp_path, name="cli-pack"):
+    pack = tmp_path / name
+    pack.mkdir()
+    (pack / "agnoclaw-pack.toml").write_text(
+        f"""
+name = "{name}"
+version = "0.1.0"
+description = "CLI pack"
+
+[provides]
+skills = ["skills/"]
+hooks = ["cli_pack.hooks:register"]
+
+[trust]
+requires_code_execution = true
+""",
+        encoding="utf-8",
+    )
+    return pack
+
+
+def test_pack_inspect_does_not_execute_code(runner, tmp_path):
+    pack = _write_pack(tmp_path)
+    module_dir = pack / "cli_pack"
+    module_dir.mkdir()
+    (module_dir / "__init__.py").write_text("", encoding="utf-8")
+    (module_dir / "hooks.py").write_text(
+        "raise RuntimeError('should not execute')\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(cli, ["pack", "inspect", str(pack)], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "cli-pack" in result.output
+    assert "Requires code execution: True" in result.output
+
+
+def test_pack_install_list_trust_and_remove(runner, tmp_path):
+    pack = _write_pack(tmp_path)
+    store = tmp_path / "store"
+
+    install_result = runner.invoke(
+        cli,
+        ["pack", "install", str(pack), "--root", str(store)],
+        catch_exceptions=False,
+    )
+    list_result = runner.invoke(
+        cli,
+        ["pack", "list", "--root", str(store)],
+        catch_exceptions=False,
+    )
+    trust_result = runner.invoke(
+        cli,
+        ["pack", "trust", "cli-pack", "--root", str(store)],
+        catch_exceptions=False,
+    )
+    remove_result = runner.invoke(
+        cli,
+        ["pack", "remove", "cli-pack", "--root", str(store)],
+        catch_exceptions=False,
+    )
+
+    assert install_result.exit_code == 0
+    assert "Installed pack 'cli-pack'" in install_result.output
+    assert list_result.exit_code == 0
+    assert "cli-pack" in list_result.output
+    assert trust_result.exit_code == 0
+    assert "Trusted pack 'cli-pack'" in trust_result.output
+    assert remove_result.exit_code == 0
+    assert "Removed pack 'cli-pack'" in remove_result.output
+
+
+# ── agnoclaw schedule ─────────────────────────────────────────────────────────
+
+
+def test_schedule_add_list_show_disable_enable_runs_remove(runner, tmp_path):
+    store = tmp_path / "schedules.json"
+
+    add_result = runner.invoke(
+        cli,
+        [
+            "schedule",
+            "add",
+            "daily",
+            "--schedule",
+            "30m",
+            "--prompt",
+            "write brief",
+            "--skill",
+            "briefing",
+            "--store",
+            str(store),
+        ],
+        catch_exceptions=False,
+    )
+    list_result = runner.invoke(
+        cli,
+        ["schedule", "list", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    show_result = runner.invoke(
+        cli,
+        ["schedule", "show", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    disable_result = runner.invoke(
+        cli,
+        ["schedule", "disable", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    disabled_list_result = runner.invoke(
+        cli,
+        ["schedule", "list", "--disabled", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    enable_result = runner.invoke(
+        cli,
+        ["schedule", "enable", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    runs_result = runner.invoke(
+        cli,
+        ["schedule", "runs", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+    remove_result = runner.invoke(
+        cli,
+        ["schedule", "remove", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+
+    assert add_result.exit_code == 0
+    assert "Saved schedule 'daily'" in add_result.output
+    assert list_result.exit_code == 0
+    assert "daily" in list_result.output
+    assert show_result.exit_code == 0
+    assert "write brief" in show_result.output
+    assert disable_result.exit_code == 0
+    assert "Disabled schedule 'daily'" in disable_result.output
+    assert disabled_list_result.exit_code == 0
+    assert "daily" in disabled_list_result.output
+    assert enable_result.exit_code == 0
+    assert "Enabled schedule 'daily'" in enable_result.output
+    assert runs_result.exit_code == 0
+    assert "No scheduler runs found" in runs_result.output
+    assert remove_result.exit_code == 0
+    assert "Removed schedule 'daily'" in remove_result.output
+
+
+def test_schedule_rejects_invalid_schedule(runner, tmp_path):
+    result = runner.invoke(
+        cli,
+        [
+            "schedule",
+            "add",
+            "bad",
+            "--schedule",
+            "bad",
+            "--prompt",
+            "do it",
+            "--store",
+            str(tmp_path / "schedules.json"),
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "Invalid schedule" in result.output
+
+
+def test_schedule_trigger_records_run_history(runner, tmp_path):
+    store = tmp_path / "schedules.json"
+    runner.invoke(
+        cli,
+        [
+            "schedule",
+            "add",
+            "daily",
+            "--schedule",
+            "30m",
+            "--prompt",
+            "write brief",
+            "--store",
+            str(store),
+        ],
+        catch_exceptions=False,
+    )
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="done"))
+
+    with patch("agnoclaw.cli.main._build_agent", return_value=mock_agent):
+        trigger_result = runner.invoke(
+            cli,
+            ["schedule", "trigger", "daily", "--store", str(store)],
+            catch_exceptions=False,
+        )
+    runs_result = runner.invoke(
+        cli,
+        ["schedule", "runs", "daily", "--store", str(store)],
+        catch_exceptions=False,
+    )
+
+    assert trigger_result.exit_code == 0
+    assert "done" in trigger_result.output
+    assert runs_result.exit_code == 0
+    assert "completed" in runs_result.output
+    assert "daily" in runs_result.output

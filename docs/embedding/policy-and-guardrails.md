@@ -81,10 +81,54 @@ export AGNOCLAW_NETWORK_ALLOWED_HOSTS='["docs.agno.com","api.company.com"]'
 export AGNOCLAW_NETWORK_BLOCK_PRIVATE_HOSTS=true
 ```
 
+## Elevated command execution
+
+`AgentHarness.run_elevated_command()` and `AgentHarness.arun_elevated_command()`
+provide an explicit host-local execution path for operations that should not run
+inside the normal sandbox/backend plane.
+
+Elevated commands require:
+- a non-empty human-readable reason
+- guardrail preflight
+- `before_tool_call` policy approval for `tool_name="bash.elevated"`
+- a configured permission approver that approves category `elevated_exec`
+
+Example:
+
+```python
+from agnoclaw import AgentHarness, InteractivePermissionApprover
+
+harness = AgentHarness(
+    permission_mode="default",
+    permission_approver=InteractivePermissionApprover(),
+)
+
+result = harness.run_elevated_command(
+    "launchctl list | grep my-service",
+    reason="Inspect host service state outside the sandbox",
+)
+```
+
+In `agnoclaw chat`, `/elevated <command>` runs the same path and installs an
+`InteractivePermissionApprover` automatically when no approver is configured.
+`/elevated on|ask|full|off` sets a session-wide elevated mode for later bash
+tool calls. `ask` and `on` still prompt; `full` skips the permission prompt but
+keeps guardrail checks, policy checks, and audit events.
+
+Elevated commands emit:
+- `elevated.command.requested`
+- `elevated.command.approved`
+- `elevated.command.approval_skipped`
+- `elevated.command.rejected`
+- `elevated.command.started`
+- `elevated.command.completed`
+- `elevated.command.failed`
+
 ## Error behavior
 
 - Guardrail deny: `HarnessError(code="GUARDRAIL_DENIED", category="guardrail")`
 - Policy deny: `HarnessError(code="POLICY_DENIED", category="policy")`
+- Elevated approval missing/rejected: `HarnessError(category="elevated")`
 - Policy evaluation failure: `HarnessError(code="POLICY_EVALUATION_FAILED", category="policy")` unless `policy_fail_open=true`
 - Auth/config model failures: `AgnoAuthError` / `AgnoConfigError` (raised for non-recoverable provider setup issues)
 

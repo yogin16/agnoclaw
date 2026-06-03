@@ -6,10 +6,13 @@ import pytest
 
 from agnoclaw.runtime.hooks import ToolCallRequest
 from agnoclaw.runtime.permissions import (
+    ElevatedSessionMode,
+    InteractivePermissionApprover,
     PermissionController,
     PermissionMode,
     PermissionRequest,
     classify_tool,
+    normalize_elevated_session_mode,
     normalize_permission_mode,
 )
 from agnoclaw.runtime.policy import PolicyAction
@@ -62,6 +65,13 @@ def test_classify_read_only():
     assert read_only is True
 
 
+def test_classify_plan_signals_as_read_only():
+    for tool_name in ("AskUserQuestion", "ExitPlanMode"):
+        cat, read_only = classify_tool(tool_name)
+        assert cat == "read"
+        assert read_only is True
+
+
 def test_classify_file_edit():
     cat, read_only = classify_tool("write_file")
     assert cat == "file_edit"
@@ -71,6 +81,12 @@ def test_classify_file_edit():
 def test_classify_exec():
     cat, read_only = classify_tool("bash")
     assert cat == "exec"
+    assert read_only is False
+
+
+def test_classify_elevated_exec():
+    cat, read_only = classify_tool("bash.elevated")
+    assert cat == "elevated_exec"
     assert read_only is False
 
 
@@ -250,6 +266,14 @@ def test_set_mode_and_current():
     assert ctrl.current_mode() == PermissionMode.PLAN
 
 
+def test_normalize_elevated_session_mode_aliases():
+    assert normalize_elevated_session_mode("on") == ElevatedSessionMode.ON
+    assert normalize_elevated_session_mode("enable") == ElevatedSessionMode.ON
+    assert normalize_elevated_session_mode("ask") == ElevatedSessionMode.ASK
+    assert normalize_elevated_session_mode("full") == ElevatedSessionMode.FULL
+    assert normalize_elevated_session_mode("off") == ElevatedSessionMode.OFF
+
+
 # ── PermissionRequest dataclass ─────────────────────────────────────────
 
 
@@ -258,3 +282,35 @@ def test_permission_request_fields():
     assert pr.run_id == "r1"
     assert pr.tool_name == "bash"
     assert pr.arguments == {"cmd": "ls"}
+
+
+def test_interactive_permission_approver_approves_yes():
+    outputs = []
+    approver = InteractivePermissionApprover(
+        input_fn=lambda prompt: "yes",
+        output_fn=outputs.append,
+    )
+    request = PermissionRequest(
+        run_id="r1",
+        tool_name="bash.elevated",
+        category="elevated_exec",
+        arguments={"command": "id"},
+    )
+
+    assert approver.approve(request, None) is True
+    assert any("bash.elevated" in line for line in outputs)
+
+
+def test_interactive_permission_approver_rejects_default_no():
+    approver = InteractivePermissionApprover(
+        input_fn=lambda prompt: "",
+        output_fn=lambda line: None,
+    )
+    request = PermissionRequest(
+        run_id="r1",
+        tool_name="bash",
+        category="exec",
+        arguments={},
+    )
+
+    assert approver.approve(request, None) is False

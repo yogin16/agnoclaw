@@ -3,16 +3,57 @@
 from __future__ import annotations
 
 import fnmatch
+import json
+import os
 import re
 import shlex
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
 _MAX_READ_SIZE = 50 * 1024 * 1024  # 50MB guard for read_file
+
+
+class SandboxMode(str, Enum):
+    """Session sandbox filesystem modes for built-in files/bash tools."""
+
+    WORKSPACE_WRITE = "workspace_write"
+    READ_ONLY = "read_only"
+    FULL = "full"
+
+
+_SANDBOX_MODE_ALIASES = {
+    "workspace": SandboxMode.WORKSPACE_WRITE,
+    "workspace-write": SandboxMode.WORKSPACE_WRITE,
+    "workspace_write": SandboxMode.WORKSPACE_WRITE,
+    "rw": SandboxMode.WORKSPACE_WRITE,
+    "read-only": SandboxMode.READ_ONLY,
+    "read_only": SandboxMode.READ_ONLY,
+    "readonly": SandboxMode.READ_ONLY,
+    "ro": SandboxMode.READ_ONLY,
+    "full": SandboxMode.FULL,
+    "host": SandboxMode.FULL,
+    "none": SandboxMode.FULL,
+}
+
+
+def normalize_sandbox_mode(mode: str | SandboxMode | None) -> SandboxMode:
+    """Normalize public sandbox mode aliases into a stable enum."""
+    if mode is None:
+        return SandboxMode.WORKSPACE_WRITE
+    if isinstance(mode, SandboxMode):
+        return mode
+    key = str(mode).strip().lower()
+    try:
+        return _SANDBOX_MODE_ALIASES[key]
+    except KeyError:
+        allowed = ", ".join(sorted(_SANDBOX_MODE_ALIASES))
+        raise ValueError(f"Invalid sandbox_mode={mode!r}. Use one of: {allowed}") from None
 
 
 @dataclass(frozen=True)
@@ -134,6 +175,14 @@ def _session_path_error(path: str, *, workspace_dir: Path, sandbox_dir: Path) ->
     )
 
 
+def _workspace_read_only_error(path: str, *, workspace_dir: Path, sandbox_dir: Path) -> str:
+    return (
+        "Workspace is read-only in sandbox_mode='read_only'. "
+        f"Write inside sandbox {sandbox_dir} or switch to workspace_write/full: {path} "
+        f"(workspace {workspace_dir})"
+    )
+
+
 class SessionSandboxCommandExecutor:
     """Wrap a command executor so default/relative work happens in a session sandbox."""
 
@@ -143,10 +192,12 @@ class SessionSandboxCommandExecutor:
         *,
         workspace_dir: str | Path,
         sandbox_dir: str | Path,
+        sandbox_mode: str | SandboxMode = SandboxMode.WORKSPACE_WRITE,
     ) -> None:
         self._executor = executor
         self._workspace_dir = Path(workspace_dir).expanduser().resolve(strict=False)
         self._sandbox_dir = Path(sandbox_dir).expanduser().resolve(strict=False)
+        self._sandbox_mode = normalize_sandbox_mode(sandbox_mode)
         self.workspace_dir = str(self._sandbox_dir)
         self._ensure_sandbox_exists()
 
@@ -195,7 +246,17 @@ class SessionSandboxCommandExecutor:
         candidate = Path(workdir).expanduser()
         if candidate.is_absolute():
             resolved = candidate.resolve(strict=False)
-            if _is_within(resolved, self._sandbox_dir) or _is_within(resolved, self._workspace_dir):
+            if _is_within(resolved, self._sandbox_dir):
+                return str(resolved)
+            if _is_within(resolved, self._workspace_dir):
+                if self._sandbox_mode is SandboxMode.READ_ONLY:
+                    raise RuntimeError(
+                        _workspace_read_only_error(
+                            workdir,
+                            workspace_dir=self._workspace_dir,
+                            sandbox_dir=self._sandbox_dir,
+                        )
+                    )
                 return str(resolved)
             raise RuntimeError(
                 _session_path_error(
@@ -233,10 +294,12 @@ class SessionSandboxWorkspaceAdapter:
         *,
         workspace_dir: str | Path,
         sandbox_dir: str | Path,
+        sandbox_mode: str | SandboxMode = SandboxMode.WORKSPACE_WRITE,
     ) -> None:
         self._adapter = adapter
         self._workspace_dir = Path(workspace_dir).expanduser().resolve(strict=False)
         self._sandbox_dir = Path(sandbox_dir).expanduser().resolve(strict=False)
+        self._sandbox_mode = normalize_sandbox_mode(sandbox_mode)
         self.workspace_dir = self._sandbox_dir
         self._sandbox_dir.mkdir(parents=True, exist_ok=True)
 
@@ -250,6 +313,7 @@ class SessionSandboxWorkspaceAdapter:
     def write_file(self, path: str, content: str) -> str:
         try:
             resolved = self._resolve_path(path)
+            self._ensure_write_allowed(path, resolved)
         except ValueError as exc:
             return f"[error] {exc}"
         return self._adapter.write_file(path=str(resolved), content=content)
@@ -257,6 +321,7 @@ class SessionSandboxWorkspaceAdapter:
     def edit_file(self, path: str, old_string: str, new_string: str) -> str:
         try:
             resolved = self._resolve_path(path)
+            self._ensure_write_allowed(path, resolved)
         except ValueError as exc:
             return f"[error] {exc}"
         return self._adapter.edit_file(
@@ -268,6 +333,7 @@ class SessionSandboxWorkspaceAdapter:
     def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str:
         try:
             resolved = self._resolve_path(path)
+            self._ensure_write_allowed(path, resolved)
         except ValueError as exc:
             return f"[error] {exc}"
         return self._adapter.multi_edit_file(path=str(resolved), edits=edits)
@@ -337,6 +403,20 @@ class SessionSandboxWorkspaceAdapter:
             )
         return resolved
 
+    def _ensure_write_allowed(self, path: str, resolved: Path) -> None:
+        if self._sandbox_mode is not SandboxMode.READ_ONLY:
+            return
+        if _is_within(resolved, self._sandbox_dir):
+            return
+        if _is_within(resolved, self._workspace_dir):
+            raise ValueError(
+                _workspace_read_only_error(
+                    path,
+                    workspace_dir=self._workspace_dir,
+                    sandbox_dir=self._sandbox_dir,
+                )
+            )
+
 
 def bind_session_sandbox(
     *,
@@ -344,10 +424,12 @@ def bind_session_sandbox(
     workspace_adapter: WorkspaceAdapter,
     workspace_dir: str | Path,
     sandbox_dir: str | Path | None,
+    sandbox_mode: str | SandboxMode | None = None,
 ) -> tuple[CommandExecutor, WorkspaceAdapter]:
     """Wrap backend adapters so relative/default tool operations use `sandbox_dir`."""
 
-    if sandbox_dir is None:
+    mode = normalize_sandbox_mode(sandbox_mode)
+    if sandbox_dir is None or mode is SandboxMode.FULL:
         return command_executor, workspace_adapter
 
     return (
@@ -355,11 +437,13 @@ def bind_session_sandbox(
             command_executor,
             workspace_dir=workspace_dir,
             sandbox_dir=sandbox_dir,
+            sandbox_mode=mode,
         ),
         SessionSandboxWorkspaceAdapter(
             workspace_adapter,
             workspace_dir=workspace_dir,
             sandbox_dir=sandbox_dir,
+            sandbox_mode=mode,
         ),
     )
 
@@ -394,6 +478,46 @@ class LocalCommandExecutor:
         self._tasks: dict[str, _BackgroundTask] = {}
         self._tasks_dir = Path.home() / ".agnoclaw" / "tmp" / "bash_tasks"
         self._tasks_dir.mkdir(parents=True, exist_ok=True)
+
+    def _task_metadata_path(self, task_id: str) -> Path:
+        return self._tasks_dir / f"{task_id}.json"
+
+    def _write_task_metadata(self, task: _BackgroundTask) -> None:
+        metadata = {
+            "task_id": task.task_id,
+            "pid": task.process.pid,
+            "command": task.command,
+            "output_path": str(task.output_path),
+            "working_dir": task.working_dir,
+            "started_at": task.started_at,
+            "description": task.description,
+        }
+        self._task_metadata_path(task.task_id).write_text(
+            json.dumps(metadata, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _read_task_metadata(self, task_id: str) -> dict[str, Any] | None:
+        path = self._task_metadata_path(task_id)
+        if not path.exists():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    @staticmethod
+    def _pid_is_running(pid: int | None) -> bool:
+        if not pid or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
 
     def _resolve_cwd(self, working_dir: str | None) -> str | None:
         candidate = working_dir or self.workspace_dir
@@ -494,7 +618,7 @@ class LocalCommandExecutor:
                 output_file.close()
             raise RuntimeError(f"Failed to start background command: {exc}") from exc
 
-        self._tasks[task_id] = _BackgroundTask(
+        task = _BackgroundTask(
             task_id=task_id,
             process=process,
             command=command,
@@ -504,6 +628,8 @@ class LocalCommandExecutor:
             started_at=time.time(),
             description=description,
         )
+        self._tasks[task_id] = task
+        self._write_task_metadata(task)
         return BackgroundCommandHandle(
             task_id=task_id,
             pid=process.pid,
@@ -520,7 +646,11 @@ class LocalCommandExecutor:
     ) -> BackgroundCommandOutput:
         task = self._tasks.get(task_id)
         if task is None:
-            raise RuntimeError(f"Unknown task id: {task_id}")
+            return self._output_from_persisted_task(
+                task_id=task_id,
+                max_chars=max_chars,
+                tail=tail,
+            )
 
         exit_code = task.process.poll()
         if exit_code is None:
@@ -545,10 +675,41 @@ class LocalCommandExecutor:
             pid=task.process.pid,
         )
 
+    def _output_from_persisted_task(
+        self,
+        *,
+        task_id: str,
+        max_chars: int,
+        tail: bool,
+    ) -> BackgroundCommandOutput:
+        metadata = self._read_task_metadata(task_id)
+        if metadata is None:
+            raise RuntimeError(f"Unknown task id: {task_id}")
+
+        output_path_text = str(metadata.get("output_path") or "")
+        output_path = Path(output_path_text) if output_path_text else None
+        if output_path is None or not output_path.is_file():
+            body = "[no output yet]"
+        else:
+            body = output_path.read_text(encoding="utf-8", errors="replace")
+            body = self._tail_text(body, max_chars=max_chars, tail=tail)
+            if not body.strip():
+                body = "[no output yet]"
+
+        pid = self._task_pid(metadata)
+        status = "running" if self._pid_is_running(pid) else "unknown"
+        return BackgroundCommandOutput(
+            task_id=task_id,
+            status=status,
+            output=body,
+            exit_code=None,
+            pid=pid,
+        )
+
     def kill(self, *, task_id: str, force: bool = False) -> str:
         task = self._tasks.get(task_id)
         if task is None:
-            raise RuntimeError(f"Unknown task id: {task_id}")
+            return self._kill_persisted_task(task_id=task_id, force=force)
 
         code = task.process.poll()
         if code is not None:
@@ -570,6 +731,30 @@ class LocalCommandExecutor:
         except Exception as exc:
             raise RuntimeError(f"Failed to kill task {task_id}: {exc}") from exc
 
+    def _kill_persisted_task(self, *, task_id: str, force: bool = False) -> str:
+        metadata = self._read_task_metadata(task_id)
+        if metadata is None:
+            raise RuntimeError(f"Unknown task id: {task_id}")
+
+        pid = self._task_pid(metadata)
+        if not self._pid_is_running(pid):
+            return f"Task {task_id} is not running."
+
+        try:
+            os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+        except ProcessLookupError:
+            return f"Task {task_id} is not running."
+        except Exception as exc:
+            raise RuntimeError(f"Failed to kill task {task_id}: {exc}") from exc
+        return f"Killed task {task_id} (pid {pid})."
+
+    @staticmethod
+    def _task_pid(metadata: dict[str, Any]) -> int | None:
+        try:
+            return int(metadata["pid"]) if metadata.get("pid") else None
+        except (TypeError, ValueError):
+            return None
+
 
 class LocalWorkspaceAdapter:
     """Host-local pathlib implementation for file operations."""
@@ -581,8 +766,14 @@ class LocalWorkspaceAdapter:
             else Path.cwd().resolve()
         )
 
+    def _resolve_path(self, path: str | Path) -> Path:
+        candidate = Path(path).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return (self.workspace_dir / candidate).resolve(strict=False)
+
     def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
-        file_path = Path(path).expanduser()
+        file_path = self._resolve_path(path)
         if not file_path.exists():
             return f"[error] File not found: {path}"
         if not file_path.is_file():
@@ -608,7 +799,7 @@ class LocalWorkspaceAdapter:
             return f"[error] Could not read {path}: {exc}"
 
     def write_file(self, path: str, content: str) -> str:
-        file_path = Path(path).expanduser()
+        file_path = self._resolve_path(path)
         try:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
@@ -618,7 +809,7 @@ class LocalWorkspaceAdapter:
             return f"[error] Could not write {path}: {exc}"
 
     def edit_file(self, path: str, old_string: str, new_string: str) -> str:
-        file_path = Path(path).expanduser()
+        file_path = self._resolve_path(path)
         if not file_path.exists():
             return f"[error] File not found: {path}. Read the file first."
 
@@ -642,7 +833,7 @@ class LocalWorkspaceAdapter:
             return f"[error] Could not edit {path}: {exc}"
 
     def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str:
-        file_path = Path(path).expanduser()
+        file_path = self._resolve_path(path)
         if not file_path.exists():
             return f"[error] File not found: {path}. Read the file first."
         if not edits:
@@ -681,7 +872,7 @@ class LocalWorkspaceAdapter:
         path: str | None = None,
     ) -> str:
         directory = base_dir or path
-        search_dir = Path(directory).expanduser() if directory else self.workspace_dir
+        search_dir = self._resolve_path(directory) if directory else self.workspace_dir
         if not search_dir.exists():
             return f"[error] Directory not found: {search_dir}"
 
@@ -710,7 +901,7 @@ class LocalWorkspaceAdapter:
         context_lines: int = 0,
         max_results: int = 50,
     ) -> str:
-        search_path = Path(path).expanduser() if path else self.workspace_dir
+        search_path = self._resolve_path(path) if path else self.workspace_dir
         flags = re.IGNORECASE if case_insensitive else 0
         try:
             compiled = re.compile(pattern, flags)
@@ -766,7 +957,7 @@ class LocalWorkspaceAdapter:
         return output
 
     def list_dir(self, path: str | None = None) -> str:
-        dir_path = Path(path).expanduser() if path else self.workspace_dir
+        dir_path = self._resolve_path(path) if path else self.workspace_dir
         if not dir_path.exists():
             return f"[error] Directory not found: {dir_path}"
         if not dir_path.is_dir():

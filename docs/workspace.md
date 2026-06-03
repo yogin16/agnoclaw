@@ -142,13 +142,34 @@ All files are optional — missing files are silently skipped.
 | `memory/YYYY-MM-DD.md` | Yes | Yes | Daily auto-logs |
 | `BOOTSTRAP.md` | No | Yes | Self-destructing onboarding script |
 | `SHIELD.md` | No | Community | Security policy file |
-| `hooks/` | No | Yes | Event hook definitions |
+| `hooks/` | Yes | Yes | JSON command hook definitions |
 | `skills/` | Yes | Yes | Workspace skill overrides |
 
 **agnoclaw additions vs OpenClaw:**
 - 3-tier memory: workspace files + LearningMachine user stores (SQLite) + LearningMachine institutional stores
 - `ProgressToolkit`: multi-context-window feature tracking (`progress.md` + `features.md`)
 - `.learnings/` directory via `self-improving-agent` skill
+
+---
+
+## Workspace Hooks
+
+agnoclaw discovers lifecycle command hooks from `hooks/*.json` in the global,
+project, and workspace layers. Each file may contain one hook object or a list:
+
+```json
+{
+  "name": "session-audit",
+  "event": "session.created",
+  "command": "python session_audit.py",
+  "timeout_seconds": 30
+}
+```
+
+Hook commands run from the hook file's directory unless `cwd` is provided. They
+receive `AGNOCLAW_HOOK_EVENT`, `AGNOCLAW_HOOK_RUN_ID`, `AGNOCLAW_WORKSPACE_DIR`,
+`AGNOCLAW_WORKTREE_DIR`, and JSON payload variables. If stdout is JSON with a
+`metadata` object, that metadata is merged into the lifecycle event.
 
 ---
 
