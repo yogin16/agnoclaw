@@ -72,6 +72,7 @@ from typing import Any
 from uuid import uuid4
 
 from agno.agent import Agent
+from agno.context.provider import ContextProvider
 from agno.exceptions import AgentRunException
 from agno.run.agent import RunOutput, RunOutputEvent
 from agno.tools.function import Function
@@ -84,22 +85,22 @@ from .runtime import (
     AgnoAuthError,
     AgnoConfigError,
     AllowAllPolicyEngine,
-    EventSink,
-    EventSinkMode,
     ElevatedCommandRequest,
     ElevatedCommandResult,
     ElevatedSessionMode,
+    EventSink,
+    EventSinkMode,
     ExecutionContext,
     HarnessError,
     LifecycleHook,
     LifecycleHookRequest,
     NullEventSink,
-    PlanExitSignal,
-    PlanQuestionSignal,
     PermissionApprover,
     PermissionController,
     PermissionMode,
     PermissionRequest,
+    PlanExitSignal,
+    PlanQuestionSignal,
     PolicyAction,
     PolicyDecision,
     PolicyEngine,
@@ -615,7 +616,7 @@ class AgentHarness:
         permission_preapproved_categories: list[str] | tuple[str, ...] | None = None,
         backend: RuntimeBackend | None = None,
         skill_install_approver: SkillInstallApprover | None = None,
-        context_providers: list[Any] | tuple[Any, ...] | None = None,
+        context_providers: list[ContextProvider] | tuple[ContextProvider, ...] | None = None,
         dependencies: dict[str, Any] | None = None,
         add_dependencies_to_context: bool = False,
         packs: list[str | Path] | tuple[str | Path, ...] | None = None,
@@ -658,7 +659,7 @@ class AgentHarness:
         self._on_session_end = on_session_end
         self._session_metadata = dict(session_metadata or {})
         self._closed = False
-        self._context_providers: list[Any] = list(context_providers or [])
+        self._context_providers: list[ContextProvider] = list(context_providers or [])
         self._context_provider_tool_map: dict[str, dict[str, str]] = {}
         self._context_providers_setup = False
         self._dependencies = dict(dependencies or {})
@@ -1007,16 +1008,16 @@ class AgentHarness:
         tools: list[Any] = []
         existing_names = self._tool_names(list(existing_tools or []))
         for provider in providers:
-            getter = getattr(provider, "get_tools", None)
-            if not callable(getter):
+            if not isinstance(provider, ContextProvider):
                 raise TypeError(
-                    f"context provider {provider!r} must expose get_tools()"
+                    f"context provider {provider!r} must be an instance of "
+                    f"agno.context.provider.ContextProvider"
                 )
-            provider_tools = list(getter() or [])
-            provider_id = str(getattr(provider, "id", "") or getattr(provider, "name", "")).strip()
-            provider_name = str(getattr(provider, "name", "") or provider_id).strip()
-            query_name = str(getattr(provider, "query_tool_name", "") or "")
-            update_name = str(getattr(provider, "update_tool_name", "") or "")
+            provider_tools = list(provider.get_tools() or [])
+            provider_id = (provider.id or provider.name or "").strip()
+            provider_name = (provider.name or provider_id).strip()
+            query_name = str(provider.query_tool_name or "")
+            update_name = str(provider.update_tool_name or "")
 
             for tool in provider_tools:
                 for tool_name in self._tool_names([tool]):
@@ -1065,15 +1066,7 @@ class AgentHarness:
             return None
         lines = ["## External Context Providers"]
         for provider in self._context_providers:
-            instructions = getattr(provider, "instructions", None)
-            if callable(instructions):
-                text = str(instructions()).strip()
-            else:
-                provider_name = (
-                    getattr(provider, "name", None)
-                    or getattr(provider, "id", "provider")
-                )
-                text = f"`{provider_name}` is available as an external context provider."
+            text = str(provider.instructions()).strip()
             if text:
                 lines.append(f"- {text}")
         return "\n".join(lines)
@@ -1083,9 +1076,7 @@ class AgentHarness:
         if self._context_providers_setup:
             return
         for provider in self._context_providers:
-            setup = getattr(provider, "asetup", None)
-            if callable(setup):
-                await setup()
+            await provider.asetup()
         self._context_providers_setup = True
 
     @staticmethod
@@ -5610,18 +5601,12 @@ class AgentHarness:
         if self._closed:
             return
         self._closed = True
-        closers = [
-            getattr(provider, "aclose", None)
-            for provider in self._context_providers
-            if callable(getattr(provider, "aclose", None))
-        ]
-        if closers:
+        if self._context_providers:
             async def _close_providers() -> None:
                 await asyncio.gather(
-                    *(closer() for closer in closers),
+                    *(p.aclose() for p in self._context_providers),
                     return_exceptions=True,
                 )
-
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
@@ -5639,14 +5624,11 @@ class AgentHarness:
         if self._closed:
             return
         self._closed = True
-        await asyncio.gather(
-            *(
-                provider.aclose()
-                for provider in self._context_providers
-                if callable(getattr(provider, "aclose", None))
-            ),
-            return_exceptions=True,
-        )
+        if self._context_providers:
+            await asyncio.gather(
+                *(p.aclose() for p in self._context_providers),
+                return_exceptions=True,
+            )
         if self._finalizer.alive:
             self._finalizer()
 

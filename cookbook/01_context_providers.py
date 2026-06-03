@@ -2,7 +2,7 @@
 Cookbook 1: Context Providers
 
 Demonstrates:
-- Creating a duck-typed context provider with get_tools() and optional lifecycle
+- Extending Agno's ContextProvider ABC (query, aquery, status, astatus)
 - Registering context providers with AgentHarness
 - Using AgentHarness.create() for async provider setup
 
@@ -13,81 +13,91 @@ import asyncio
 import os
 import tempfile
 
+from agno.context.provider import Answer, ContextProvider, Status
+
 from agnoclaw import AgentHarness
 
 
-# ── Duck-typed context provider ─────────────────────────────────────────────
-# No base class needed — just implement get_tools() and optional lifecycle hooks.
-class ProjectContextProvider:
+# ── Context provider extending Agno's ABC ────────────────────────────────────
+class ProjectContextProvider(ContextProvider):
     """Provides project-aware tools for browsing a codebase."""
 
     def __init__(self, project_root: str):
-        self.id = "project_context"
-        self.name = "Project Context"
-        self.query_tool_name = "list_project_files"
-        self.update_tool_name = None  # read-only provider
+        super().__init__(
+            id="project_context",
+            name="Project Context",
+            query_tool_name="list_project_files",
+            read=True,
+            write=False,
+        )
         self._root = project_root
 
-    def get_tools(self) -> list:
-        """Return Agno tool functions for this provider."""
-        from agno.tools import tool
+    def query(self, question: str, *, run_context=None) -> Answer:
+        """List files in the project directory."""
+        matches = []
+        for root, _dirs, files in os.walk(self._root):
+            for f in files:
+                matches.append(os.path.join(root, f))
+        result = "\n".join(sorted(matches)) if matches else "No files found."
+        return Answer(answer=result)
 
-        @tool(name=self.query_tool_name)
-        def list_project_files(extension: str | None = None) -> str:
-            """List files in the project directory, optionally filtered by extension."""
-            matches = []
-            for root, _dirs, files in os.walk(self._root):
-                for f in files:
-                    if extension is None or f.endswith(extension):
-                        matches.append(os.path.join(root, f))
-            if not matches:
-                return "No files found."
-            return "\n".join(sorted(matches))
+    async def aquery(self, question: str, *, run_context=None) -> Answer:
+        return self.query(question, run_context=run_context)
 
-        return [list_project_files]
+    def status(self) -> Status:
+        return Status(available=True, details=f"Watching {self._root}")
+
+    async def astatus(self) -> Status:
+        return self.status()
 
     def instructions(self) -> str:
         return (
-            f"You have access to `{self.query_tool_name}` for listing files "
-            f"in the project at {self._root}. Use it when asked about the codebase."
+            f"Use `{self.query_tool_name}(question)` to list files "
+            f"in the project at {self._root}."
         )
 
     async def asetup(self) -> None:
-        """Async initialization — called by AgentHarness.create()."""
         print(f"[Provider] Setting up project context: {self._root}")
 
     async def aclose(self) -> None:
-        """Async cleanup — called by AgentHarness.aclose()."""
         print(f"[Provider] Closing project context: {self._root}")
 
 
-class WeatherContextProvider:
-    """Simulated weather data provider — demonstrates bounded tools + instructions."""
+class WeatherContextProvider(ContextProvider):
+    """Simulated weather data provider."""
 
     def __init__(self):
-        self.id = "weather"
-        self.name = "Weather Service"
-        self.query_tool_name = "get_weather"
-        self.update_tool_name = None
+        super().__init__(
+            id="weather",
+            name="Weather Service",
+            query_tool_name="get_weather",
+            read=True,
+            write=False,
+        )
 
-    def get_tools(self) -> list:
-        from agno.tools import tool
+    def query(self, question: str, *, run_context=None) -> Answer:
+        data = {
+            "New York": "22°C, partly cloudy",
+            "London": "15°C, light rain",
+            "Tokyo": "28°C, sunny",
+            "Dubai": "40°C, clear",
+        }
+        for city, weather in data.items():
+            if city.lower() in question.lower():
+                return Answer(answer=f"{city}: {weather}")
+        return Answer(answer=f"No weather data found for: {question}")
 
-        @tool(name=self.query_tool_name)
-        def get_weather(city: str) -> str:
-            """Get current weather for a city (simulated)."""
-            data = {
-                "New York": "22°C, partly cloudy",
-                "London": "15°C, light rain",
-                "Tokyo": "28°C, sunny",
-                "Dubai": "40°C, clear",
-            }
-            return data.get(city, f"No data for {city}")
+    async def aquery(self, question: str, *, run_context=None) -> Answer:
+        return self.query(question, run_context=run_context)
 
-        return [get_weather]
+    def status(self) -> Status:
+        return Status(available=True, details="Weather service ready")
+
+    async def astatus(self) -> Status:
+        return self.status()
 
     def instructions(self) -> str:
-        return "You have a `get_weather` tool for checking weather conditions."
+        return f"You have `{self.query_tool_name}(question)` for checking weather."
 
 
 async def main():

@@ -165,17 +165,29 @@ asyncio.run(main())
 ### v0.8 features (context providers, elevated, packs, sandbox, plan signals, AgentOS, lifecycle hooks, scheduler persistence)
 
 ```python
-# Context provider (duck-typed, no base class needed)
+# Context provider (extends Agno's ContextProvider ABC)
+from agno.context.provider import ContextProvider
+from agno.context.provider import Answer, Status
 from agnoclaw import AgentHarness
 
-class MyProvider:
-    id = "my_provider"
-    def get_tools(self):
-        from agno.tools import tool
-        @tool(name="my_query")
-        def my_query(query: str) -> str: return f"result for {query}"
-        return [my_query]
-    def instructions(self): return "Use my_query to search my data."
+class MyProvider(ContextProvider):
+    def __init__(self):
+        super().__init__(id="my_provider", name="My Provider")
+
+    def query(self, question: str, *, run_context=None) -> Answer:
+        return Answer(answer=f"result for {question}")
+
+    async def aquery(self, question: str, *, run_context=None) -> Answer:
+        return self.query(question, run_context=run_context)
+
+    def status(self) -> Status:
+        return Status(available=True, details="ready")
+
+    async def astatus(self) -> Status:
+        return self.status()
+
+    def instructions(self) -> str:
+        return "Use my_query to search my data."
 
 harness = await AgentHarness.create(
     context_providers=[MyProvider()],
