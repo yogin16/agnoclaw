@@ -198,7 +198,6 @@ harness.set_elevated_mode("full")
 result = harness.run_elevated_command("sudo systemctl status", reason="Check service")
 
 # Sandbox modes
-from agnoclaw import SandboxMode
 harness = AgentHarness(sandbox_mode="read_only")
 
 # Plan signals
