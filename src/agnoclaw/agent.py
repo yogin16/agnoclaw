@@ -144,6 +144,14 @@ _CURRENT_TOOL_RUNTIME: ContextVar[dict[str, Any] | None] = ContextVar(
     "agnoclaw_current_tool_runtime",
     default=None,
 )
+# Holds the active Agno ``RunContext`` for the duration of a tool dispatch, so a
+# custom dispatch adapter (one that does not take a ``run_context: RunContext``
+# parameter) can read caller scope — ``run_context.dependencies`` (tenant, user,
+# request-scoped ids, per-message selections) — from one agno-native contract.
+_CURRENT_RUN_CONTEXT: ContextVar[Any | None] = ContextVar(
+    "agnoclaw_current_run_context",
+    default=None,
+)
 
 # Provider name aliases → Agno's canonical provider names
 _PROVIDER_ALIASES: dict[str, str] = {
@@ -204,6 +212,36 @@ def get_current_tool_runtime() -> dict[str, Any] | None:
     if runtime is None:
         return None
     return dict(runtime)
+
+
+def get_current_run_context() -> Any | None:
+    """Return the active Agno ``RunContext`` for the current tool dispatch.
+
+    This is the documented, stable way to read caller-supplied, LLM-hidden scope
+    from inside a *custom* tool-dispatch path — an adapter that dispatches tools
+    itself instead of declaring a plain ``@tool`` function with a
+    ``run_context: RunContext`` parameter (which Agno injects for you).
+
+    The harness sets this contextvar for the duration of each tool call, so the
+    value is only populated while a tool is executing. It returns ``None`` outside
+    a tool dispatch. Read per-run scope from ``run_context.dependencies`` — the
+    same mapping ``run``/``arun`` accept as a per-run ``dependencies`` kwarg.
+    """
+    return _CURRENT_RUN_CONTEXT.get()
+
+
+def get_current_dependencies() -> dict[str, Any] | None:
+    """Return ``dependencies`` from the active run context, if any.
+
+    Convenience over :func:`get_current_run_context`; returns the active run's
+    ``dependencies`` mapping (a copy) or ``None`` when no run context is active or
+    no dependencies were set for the run.
+    """
+    run_context = _CURRENT_RUN_CONTEXT.get()
+    dependencies = getattr(run_context, "dependencies", None)
+    if isinstance(dependencies, dict):
+        return dict(dependencies)
+    return None
 
 
 def _run_output_status_value(value: Any) -> str | None:
@@ -587,7 +625,13 @@ class AgentHarness:
         skill_install_approver: Optional approval backend for skill dependency installs.
         context_providers: Optional Agno context providers to expose through the harness.
         dependencies: Optional dependency mapping propagated into Agno run context.
+                      Serves as the construction-time default that per-run
+                      ``dependencies`` (on ``run``/``arun``) are merged over.
         add_dependencies_to_context: Whether Agno should add dependencies to model context.
+                                     Leave False to keep caller scope LLM-hidden.
+        session_state: Optional session-state mapping seeded into Agno's run context.
+                       Construction-time default that per-run ``session_state`` merges over.
+        add_session_state_to_context: Whether Agno should add session_state to model context.
         packs: Optional agnoclaw pack directories or manifest paths to load.
         trusted_packs: Whether code-executing pack registrations may run.
     """
@@ -656,6 +700,8 @@ class AgentHarness:
         context_providers: list[ContextProvider] | tuple[ContextProvider, ...] | None = None,
         dependencies: dict[str, Any] | None = None,
         add_dependencies_to_context: bool = False,
+        session_state: dict[str, Any] | None = None,
+        add_session_state_to_context: bool = False,
         packs: list[str | Path] | tuple[str | Path, ...] | None = None,
         trusted_packs: bool = False,
         pre_run_hooks: list[PreRunHook] | None = None,
@@ -701,6 +747,8 @@ class AgentHarness:
         self._context_providers_setup = False
         self._dependencies = dict(dependencies or {})
         self._add_dependencies_to_context = add_dependencies_to_context
+        self._session_state = dict(session_state or {})
+        self._add_session_state_to_context = add_session_state_to_context
         self._loaded_packs: list[Any] = []
 
         # Runtime extension contracts
@@ -1007,6 +1055,8 @@ class AgentHarness:
             user_id=user_id,
             dependencies=self._dependencies or None,
             add_dependencies_to_context=self._add_dependencies_to_context,
+            session_state=self._session_state or None,
+            add_session_state_to_context=self._add_session_state_to_context,
             add_history_to_context=True,
             num_history_runs=num_history_runs or self.config.session_history_runs,
             num_history_messages=num_history_messages,
@@ -1221,6 +1271,61 @@ class AgentHarness:
                     skill_schemas = dict(meta.tool_schemas)
         overrides = {**skill_schemas, **(tool_schema_overrides or {})}
         return allowed, (overrides or None)
+
+    @staticmethod
+    def _merge_run_mapping(
+        base: dict[str, Any] | None,
+        override: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Merge a per-run mapping over a construction-time default.
+
+        Returns a fresh dict with ``override`` keys winning over ``base`` keys, or
+        ``None`` when both are empty. ``base`` is never mutated, so concurrent and
+        sequential runs on one harness never leak each other's per-run values —
+        each run builds its own merged copy that Agno resolves into its own
+        ``RunContext`` (the agent's construction-time mapping is read, not
+        rewritten).
+        """
+        if not base and not override:
+            return None
+        merged = dict(base or {})
+        if override:
+            merged.update(override)
+        return merged or None
+
+    def _resolve_run_context_kwargs(
+        self,
+        *,
+        dependencies: dict[str, Any] | None,
+        session_state: dict[str, Any] | None,
+        add_dependencies_to_context: bool | None,
+        add_session_state_to_context: bool | None,
+        knowledge_filters: dict[str, Any] | list[Any] | None,
+    ) -> dict[str, Any]:
+        """Build the per-run context/state kwargs forwarded to Agno's run/arun.
+
+        Per-run ``dependencies`` / ``session_state`` are merged over the
+        harness's construction-time defaults; the merged value is only forwarded
+        when the caller supplied a per-run value, so the default (no-kwarg) path
+        leaves Agno to use the agent-level defaults untouched. The remaining flags
+        pass straight through when provided.
+        """
+        resolved: dict[str, Any] = {}
+        if dependencies is not None:
+            resolved["dependencies"] = self._merge_run_mapping(
+                self._dependencies, dependencies
+            )
+        if session_state is not None:
+            resolved["session_state"] = self._merge_run_mapping(
+                self._session_state, session_state
+            )
+        if add_dependencies_to_context is not None:
+            resolved["add_dependencies_to_context"] = add_dependencies_to_context
+        if add_session_state_to_context is not None:
+            resolved["add_session_state_to_context"] = add_session_state_to_context
+        if knowledge_filters is not None:
+            resolved["knowledge_filters"] = knowledge_filters
+        return resolved
 
     @staticmethod
     def _find_plan_signal_toolkit(tools: list[Any]) -> PlanSignalToolkit | None:
@@ -2391,6 +2496,9 @@ class AgentHarness:
                 except HarnessError as exc:
                     self._raise_agent_run_exception(exc)
             self._handle_tool_pre_hook(fc=fc, run_context=run_context)
+            # Expose the active RunContext to custom dispatch adapters for the
+            # duration of this tool call (read via get_current_run_context()).
+            self._set_active_run_context(fc, run_context)
             runtime = getattr(fc, "_agnoclaw_tool_runtime", None)
             if isinstance(runtime, dict):
                 self._set_active_tool_runtime(fc, runtime)
@@ -2411,6 +2519,7 @@ class AgentHarness:
                 self._handle_tool_post_hook(fc=fc, run_context=run_context)
             finally:
                 self._clear_active_tool_runtime(fc)
+                self._clear_active_run_context(fc)
 
         runtime_pre_hook._agnoclaw_runtime_pre = True  # type: ignore[attr-defined]
         runtime_post_hook._agnoclaw_runtime_post = True  # type: ignore[attr-defined]
@@ -2474,6 +2583,22 @@ class AgentHarness:
             return
         _CURRENT_TOOL_RUNTIME.reset(token)
         delattr(fc, "_agnoclaw_tool_runtime_token")
+
+    @staticmethod
+    def _set_active_run_context(fc, run_context: Any) -> None:
+        token = _CURRENT_RUN_CONTEXT.set(run_context)
+        if fc is not None:
+            fc._agnoclaw_run_context_token = token
+
+    @staticmethod
+    def _clear_active_run_context(fc) -> None:
+        if fc is None:
+            return
+        token = getattr(fc, "_agnoclaw_run_context_token", None)
+        if token is None:
+            return
+        _CURRENT_RUN_CONTEXT.reset(token)
+        delattr(fc, "_agnoclaw_run_context_token")
 
     @staticmethod
     def _context_to_metadata(context: ExecutionContext) -> dict[str, Any]:
@@ -3045,6 +3170,7 @@ class AgentHarness:
 
             fc._agnoclaw_tool_runtime = {
                 "context": context,
+                "run_context": run_context,
                 "event_sink": self._event_sink,
                 "event_sink_mode": self._event_sink_mode.value,
                 "session_metadata": dict(self._session_metadata),
@@ -4386,9 +4512,33 @@ class AgentHarness:
         metadata: dict[str, Any] | None = None,
         output_schema: type | None = None,
         tool_schema_overrides: dict[str, dict[str, Any]] | None = None,
+        dependencies: dict[str, Any] | None = None,
+        session_state: dict[str, Any] | None = None,
+        add_dependencies_to_context: bool | None = None,
+        add_session_state_to_context: bool | None = None,
+        knowledge_filters: dict[str, Any] | list[Any] | None = None,
         **kwargs,
     ) -> RunOutput | Iterator[RunOutputEvent]:
-        """Run the agent on a message."""
+        """Run the agent on a message.
+
+        Per-run caller context/state (Agno-native, never mutates the harness):
+
+        - ``dependencies`` — merged over the construction-time ``dependencies``
+          and scoped to this run only. Every tool (via a ``run_context:
+          RunContext`` parameter Agno injects) and every custom dispatch adapter
+          (via :func:`get_current_run_context` / :func:`get_current_dependencies`)
+          reads it from one place. Left out of the model-facing context unless
+          ``add_dependencies_to_context`` is True, preserving the
+          "external variables never reach the model" guarantee.
+        - ``session_state`` — merged over the construction-time ``session_state``,
+          scoped to this run.
+        - ``add_dependencies_to_context`` / ``add_session_state_to_context`` /
+          ``knowledge_filters`` — forwarded to Agno's run for this call only.
+
+        Scoping is leak-free across concurrent and sequential runs on one harness:
+        the merged mappings are fresh copies Agno resolves into a per-run
+        ``RunContext``; the harness's defaults are read, never rewritten.
+        """
         self._check_context_budget()
 
         run_id = f"run_{uuid4().hex}"
@@ -4593,6 +4743,21 @@ class AgentHarness:
             )
             if isinstance(extra_metadata, dict):
                 agent_metadata.update(extra_metadata)
+
+            # Per-run caller context/state: merge over construction defaults and
+            # forward to Agno for this call only. Agno resolves these into a
+            # per-run RunContext without mutating the agent, so they're naturally
+            # scoped to the run — on success, on exception, and for streaming runs
+            # (the kwargs are captured by the iterator/generator returned below).
+            call_kwargs.update(
+                self._resolve_run_context_kwargs(
+                    dependencies=dependencies,
+                    session_state=session_state,
+                    add_dependencies_to_context=add_dependencies_to_context,
+                    add_session_state_to_context=add_session_state_to_context,
+                    knowledge_filters=knowledge_filters,
+                )
+            )
 
             # Per-run tool scoping: honor the active skill's allowed_tools and any
             # tool input-schema specialization for this run only.
@@ -4869,9 +5034,21 @@ class AgentHarness:
         metadata: dict[str, Any] | None = None,
         output_schema: type | None = None,
         tool_schema_overrides: dict[str, dict[str, Any]] | None = None,
+        dependencies: dict[str, Any] | None = None,
+        session_state: dict[str, Any] | None = None,
+        add_dependencies_to_context: bool | None = None,
+        add_session_state_to_context: bool | None = None,
+        knowledge_filters: dict[str, Any] | list[Any] | None = None,
         **kwargs,
     ) -> RunOutput | AsyncIterator[RunOutputEvent]:
-        """Async version of run()."""
+        """Async version of run().
+
+        Accepts the same per-run ``dependencies`` / ``session_state`` /
+        ``add_dependencies_to_context`` / ``add_session_state_to_context`` /
+        ``knowledge_filters`` kwargs as :meth:`run`, with identical merge-over-
+        construction-defaults and per-run scoping semantics (including the
+        streaming path).
+        """
         self._check_context_budget()
 
         run_id = f"run_{uuid4().hex}"
@@ -5029,6 +5206,18 @@ class AgentHarness:
             )
             if isinstance(extra_metadata, dict):
                 agent_metadata.update(extra_metadata)
+
+            # Per-run caller context/state: merge over construction defaults and
+            # forward to Agno for this call only (leak-free — see run()).
+            call_kwargs.update(
+                self._resolve_run_context_kwargs(
+                    dependencies=dependencies,
+                    session_state=session_state,
+                    add_dependencies_to_context=add_dependencies_to_context,
+                    add_session_state_to_context=add_session_state_to_context,
+                    knowledge_filters=knowledge_filters,
+                )
+            )
 
             # Per-run tool scoping: honor the active skill's allowed_tools and any
             # tool input-schema specialization for this run only.
@@ -5516,6 +5705,69 @@ class AgentHarness:
         if "session_id" not in data and "id" in data and data["id"] is not None:
             data["session_id"] = str(data["id"])
         return data
+
+    @property
+    def dependencies(self) -> dict[str, Any]:
+        """A copy of the harness's construction-time dependency default.
+
+        Per-run ``dependencies`` passed to :meth:`run`/:meth:`arun` are merged
+        over this mapping. To read the *active run's* dependencies from inside a
+        tool dispatch, use :func:`get_current_dependencies` instead.
+        """
+        return dict(self._dependencies)
+
+    def update_dependencies(self, dependencies: dict[str, Any]) -> dict[str, Any]:
+        """Update the harness's default dependency mapping at runtime.
+
+        Merges ``dependencies`` over the existing default and propagates the
+        result to the underlying Agno agent so subsequent runs (without a per-run
+        override) see it. Returns a copy of the new default.
+        """
+        self._dependencies.update(dependencies)
+        self._agent.dependencies = dict(self._dependencies) or None
+        return dict(self._dependencies)
+
+    def get_session_state(self, *, session_id: str | None = None) -> dict[str, Any]:
+        """Return Agno's persisted session_state for a session.
+
+        Proxies ``Agent.get_session_state``. Defaults to the harness's active
+        session when ``session_id`` is omitted.
+        """
+        return self._agent.get_session_state(session_id=session_id or self._active_session_id(None))
+
+    def update_session_state(
+        self,
+        session_state_updates: dict[str, Any],
+        *,
+        session_id: str | None = None,
+    ) -> str:
+        """Merge updates into Agno's persisted session_state for a session.
+
+        Proxies ``Agent.update_session_state``. Defaults to the harness's active
+        session when ``session_id`` is omitted.
+        """
+        return self._agent.update_session_state(
+            session_state_updates,
+            session_id=session_id or self._active_session_id(None),
+        )
+
+    async def aget_session_state(self, *, session_id: str | None = None) -> dict[str, Any]:
+        """Async variant of :meth:`get_session_state`."""
+        return await self._agent.aget_session_state(
+            session_id=session_id or self._active_session_id(None)
+        )
+
+    async def aupdate_session_state(
+        self,
+        session_state_updates: dict[str, Any],
+        *,
+        session_id: str | None = None,
+    ) -> str:
+        """Async variant of :meth:`update_session_state`."""
+        return await self._agent.aupdate_session_state(
+            session_state_updates,
+            session_id=session_id or self._active_session_id(None),
+        )
 
     def list_sessions(self, *, user_id: str | None = None, limit: int | None = 50) -> list[dict[str, Any]]:
         """
