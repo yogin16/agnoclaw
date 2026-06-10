@@ -5033,20 +5033,18 @@ class AgentHarness:
             # Per-run tool scoping: honor the active skill's allowed_tools and any
             # tool input-schema specialization for this run only.
             #
-            # Non-streaming runs execute the whole model loop inside the awaited
-            # call below, so we apply the scope here and restore it in the outer
-            # finally. Streaming runs execute lazily as the caller drains the
-            # generator, so the scope is applied *inside* _wrapped_stream — binding
-            # its lifetime to generator execution. Applying it here for a stream
-            # would leak permanently if the caller never drains it, because an
-            # unstarted generator's finally never runs.
+            # The scope is applied where the model loop actually runs: a coroutine
+            # executes on ``await`` below (every non-streaming run, plus any
+            # stream=True call that Agno resolves to a non-iterable RunOutput), so
+            # we scope it around that await and restore in the outer finally. A
+            # true async generator runs lazily as the caller drains it, so its
+            # scope is applied *inside* _wrapped_stream — binding its lifetime to
+            # generator execution. Applying it before returning the generator would
+            # leak permanently if the caller never drains it (an unstarted
+            # generator's finally never runs).
             scope_allowed, scope_overrides = self._skill_tool_scope_args(
                 scoped_skill_obj, tool_schema_overrides
             )
-            if not stream:
-                tool_scope = self._apply_tool_scope(
-                    allowed=scope_allowed, schema_overrides=scope_overrides
-                )
 
             agno_call = self._agent.arun(
                 prompt.user_message,
@@ -5064,6 +5062,10 @@ class AgentHarness:
             if hasattr(agno_call, "__anext__") or hasattr(agno_call, "__aiter__"):
                 result = agno_call
             else:
+                # Coroutine: the whole loop runs on await — scope it here.
+                tool_scope = self._apply_tool_scope(
+                    allowed=scope_allowed, schema_overrides=scope_overrides
+                )
                 result = await agno_call
 
             if self._agent.system_message != base_prompt:

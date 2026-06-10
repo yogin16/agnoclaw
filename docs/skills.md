@@ -136,11 +136,18 @@ A tool name nested in a toolkit is surfaced on its own, so you can expose a sing
 function without its siblings. An empty/absent `allowed-tools` means "no
 restriction" (consistent with the fork path).
 
-### `tool-schemas` — specialize a tool's input schema
+**This is the common case, and it's all most skills need.** You only name the
+tool — the harness already knows that tool and the input schema it was registered
+with, and advertises that schema as-is. You do **not** restate the schema in
+`SKILL.md`.
 
-A generic "save"-style tool often exposes an untyped `content: dict`, leaving the
-model to guess field names. `tool-schemas` lets the skill advertise the exact
-typed shape for that run:
+### `tool-schemas` — specialize a tool's input schema (optional)
+
+`tool-schemas` is an escape hatch for the one case `allowed-tools` can't cover: a
+tool whose *registered* schema is too loose. A generic "save"-style tool often
+exposes an untyped `content: dict`, leaving the model to guess field names. When
+you want a tighter, typed shape **for this skill's run only** (without changing the
+tool's registration), declare it here:
 
 ```yaml
 allowed-tools: save_artifact

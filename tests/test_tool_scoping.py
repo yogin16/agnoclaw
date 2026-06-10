@@ -407,6 +407,38 @@ async def test_arun_honors_allowed_tools_inline(harness: AgentHarness, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_arun_stream_resolving_to_coroutine_still_scopes(
+    harness: AgentHarness, monkeypatch
+) -> None:
+    """stream=True that Agno resolves to a non-iterable RunOutput must still scope.
+
+    Regression: scoping was gated on `not stream`, so a stream=True call whose
+    result wasn't async-iterable fell through to the non-stream path unscoped,
+    silently bypassing allowed_tools.
+    """
+    _install_skill(harness, SkillMeta(name="saver", allowed_tools=["save_artifact"]), monkeypatch)
+
+    captured: dict = {}
+
+    async def fake_arun(*args, **kwargs):
+        # A coroutine that resolves to a plain (non-async-iterable) RunOutput.
+        captured["names"] = harness._tool_names(harness._agent.tools)
+        return SimpleNamespace(content="ok")
+
+    monkeypatch.setattr(harness._agent, "arun", fake_arun)
+
+    await harness.arun("acme 5 20", skill="saver", stream=True)
+
+    assert captured["names"] == {"save_artifact"}  # scoped during the await
+    assert harness._tool_names(harness._agent.tools) == {
+        "save_artifact",
+        "grep_files",
+        "spawn_subagent",
+        "standalone_tool",
+    }
+
+
+@pytest.mark.asyncio
 async def test_arun_streaming_unconsumed_does_not_leak_scope(
     harness: AgentHarness, monkeypatch
 ) -> None:
