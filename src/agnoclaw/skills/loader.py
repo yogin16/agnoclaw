@@ -88,6 +88,11 @@ class SkillMeta:
     # input shape (restored afterward), so a generic "save"-style tool can expose
     # the exact typed payload the skill expects for that turn.
     tool_schemas: dict[str, dict] = field(default_factory=dict)
+    # Per-run tool argument binding (partial application): tool name → {arg: value}.
+    # During a run with this skill, the named args are removed from the schema the
+    # model sees and supplied at dispatch (restored afterward). Usually set at the
+    # call site (values are run-scoped), but a skill may declare static bindings.
+    tool_arg_bindings: dict[str, dict] = field(default_factory=dict)
     model: Optional[str] = None
     context: Optional[str] = None       # "fork" for isolated subagent
     argument_hint: Optional[str] = None
@@ -241,6 +246,27 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
                     name, tool_name,
                 )
 
+    # Parse per-run tool argument bindings (tool name → {arg: value}).
+    tool_arg_bindings_raw = metadata.get(
+        "tool-arg-bindings", metadata.get("tool_arg_bindings", {})
+    )
+    if isinstance(tool_arg_bindings_raw, str):
+        try:
+            import json as _json
+            tool_arg_bindings_raw = _json.loads(tool_arg_bindings_raw)
+        except Exception:
+            tool_arg_bindings_raw = {}
+    tool_arg_bindings: dict[str, dict] = {}
+    if isinstance(tool_arg_bindings_raw, dict):
+        for tool_name, binding in tool_arg_bindings_raw.items():
+            if isinstance(binding, dict):
+                tool_arg_bindings[str(tool_name)] = binding
+            else:
+                logger.warning(
+                    "Skill '%s': ignoring non-object tool arg binding for %r",
+                    name, tool_name,
+                )
+
     # Parse OpenClaw gating metadata.
     # Accepts aliases: metadata.openclaw, metadata.clawdbot, metadata.clawdis
     raw_meta = metadata.get("metadata") or {}
@@ -295,6 +321,7 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
         ),
         allowed_tools=allowed_tools,
         tool_schemas=tool_schemas,
+        tool_arg_bindings=tool_arg_bindings,
         model=metadata.get("model"),
         context=metadata.get("context"),
         argument_hint=metadata.get("argument-hint", metadata.get("argument_hint")),

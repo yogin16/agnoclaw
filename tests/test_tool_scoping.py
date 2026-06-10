@@ -247,7 +247,7 @@ def test_scope_args_reads_skill_meta(harness: AgentHarness) -> None:
         tool_schemas={"save_artifact": CONTENT_SCHEMA},
     )
     skill = Skill(meta=meta, content="x", path=Path("x"))
-    allowed, overrides = harness._skill_tool_scope_args(skill, None)
+    allowed, overrides, _bindings = harness._skill_tool_scope_args(skill, None)
     assert allowed == ["save_artifact"]
     assert overrides == {"save_artifact": CONTENT_SCHEMA}
 
@@ -256,15 +256,16 @@ def test_scope_args_explicit_overrides_take_precedence(harness: AgentHarness) ->
     meta = SkillMeta(name="saver", tool_schemas={"save_artifact": {"type": "object"}})
     skill = Skill(meta=meta, content="x", path=Path("x"))
     explicit = {"save_artifact": CONTENT_SCHEMA}
-    _allowed, overrides = harness._skill_tool_scope_args(skill, explicit)
+    _allowed, overrides, _bindings = harness._skill_tool_scope_args(skill, explicit)
     assert overrides["save_artifact"] is CONTENT_SCHEMA
 
 
 def test_scope_args_no_skill(harness: AgentHarness) -> None:
-    allowed, overrides = harness._skill_tool_scope_args(None, None)
+    allowed, overrides, bindings = harness._skill_tool_scope_args(None, None)
     assert allowed is None
     assert overrides is None
-    allowed, overrides = harness._skill_tool_scope_args(None, {"t": CONTENT_SCHEMA})
+    assert bindings is None
+    allowed, overrides, _bindings = harness._skill_tool_scope_args(None, {"t": CONTENT_SCHEMA})
     assert allowed is None
     assert overrides == {"t": CONTENT_SCHEMA}
 
