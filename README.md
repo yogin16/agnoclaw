@@ -227,6 +227,45 @@ run = await harness.session(session_id="s1").send("Hello")
 async for event in run.events(): print(event)
 ```
 
+### v0.9 features (per-run dependencies + active RunContext for custom dispatch)
+
+Set caller scope once per run as `dependencies`; every tool and every custom
+dispatch adapter reads it from one agno-native contract (the run's `RunContext`),
+and the values never reach the model (unless you opt in with
+`add_dependencies_to_context=True`). Per-run values merge over the
+construction-time defaults and are scoped to that run only — leak-free across
+concurrent and sequential runs on one harness.
+
+```python
+from agno.run.base import RunContext
+from agno.tools import tool
+from agnoclaw import AgentHarness, get_current_dependencies
+
+@tool
+def whoami(run_context: RunContext) -> str:           # Agno injects run_context
+    return str((run_context.dependencies or {}).get("tenant_id"))
+
+harness = AgentHarness(tools=[whoami], dependencies={"env": "prod"})
+
+# Per-run scope — merged over construction defaults, restored after the run.
+harness.run(
+    "Who am I?",
+    dependencies={"tenant_id": "acme", "user_id": "u-123"},
+    session_state={"cart": []},          # also per-run, merged + scoped
+)
+
+# A custom dispatch adapter (no run_context parameter) reads the SAME scope:
+def my_adapter():
+    deps = get_current_dependencies()    # active during a tool dispatch
+    return deps["tenant_id"]
+
+# Harness-level session-state read/update (proxies Agno):
+harness.update_session_state({"seen": True}, session_id="s1")
+state = harness.get_session_state(session_id="s1")
+```
+
+See `examples/per_run_dependencies.py` for a runnable end-to-end demo.
+
 See [`cookbook/`](cookbook/) for complete runnable examples of each feature.
 
 ---

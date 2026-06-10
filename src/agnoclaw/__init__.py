@@ -23,7 +23,13 @@ With skills:
     agent.print_response("Research quantum computing", skill="deep-research")
 """
 
-from .agent import AgentHarness, HarnessAgent  # HarnessAgent = backward compat alias
+from .agent import (  # HarnessAgent = backward compat alias
+    AgentHarness,
+    HarnessAgent,
+    get_current_dependencies,
+    get_current_run_context,
+    get_current_tool_runtime,
+)
 from .backends import RuntimeBackend, SandboxMode, normalize_sandbox_mode
 from .config import HarnessConfig, get_config
 from .packs import (
@@ -147,6 +153,9 @@ __all__ = [
     "as_agentos_agent",
     "create_agentos_app",
     "get_config",
+    "get_current_dependencies",
+    "get_current_run_context",
+    "get_current_tool_runtime",
     "normalize_sandbox_mode",
     "SubagentDefinition",
     "WorkspaceAdapter",
@@ -161,4 +170,4 @@ __all__ = [
     "trust_pack",
 ]
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
