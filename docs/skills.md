@@ -60,7 +60,8 @@ metadata:
 | `description` | string | `""` | Shown in skill list; used for selective injection |
 | `user-invocable` | bool | `true` | Can users activate via `/skill name`? |
 | `disable-model-invocation` | bool | `false` | Prevent model from self-activating |
-| `allowed-tools` | string or list | `[]` | Comma-separated or YAML list of allowed tool names |
+| `allowed-tools` | string or list | `[]` | Comma-separated or YAML list of allowed tool names. When set, a run with this skill sees **only** these tools (restored after the run). See [Per-run tool scoping](#per-run-tool-scoping). |
+| `tool-schemas` | map | `{}` | Per-tool input-schema specialization: tool name → JSON Schema. During the run, the named tool advertises this schema (restored after). See [Per-run tool scoping](#per-run-tool-scoping). |
 | `model` | string | agent default | Model override for this skill (e.g. `"claude-opus-4-6"`) |
 | `context` | string | `null` | Set to `"fork"` to run as isolated subagent (parsed, not yet enforced) |
 | `argument-hint` | string | `null` | Hint shown in CLI tab completion |
@@ -109,6 +110,71 @@ install:
 | `go` | `go install <pkg>` | Go binaries |
 
 Install runs only if the package is not already importable (Python) or binary is not on PATH (brew/npm/go).
+
+---
+
+## Per-run tool scoping
+
+A skill can shape the toolset the model sees **for the duration of a single run**,
+without persisting any change to the agent. Two declarations drive this:
+
+### `allowed-tools` — restrict the visible toolset
+
+When a run is invoked with a skill that declares `allowed-tools`, the model sees
+only those tools for that run; the full toolset is restored afterward. This now
+applies to **inline** skill runs (`harness.run(msg, skill="...")`), not just
+`context: fork` skills. It also suppresses the harness's own default toolkits
+(bash/files/web/subagent), which a consumer otherwise can't strip — useful when a
+skill's entire job is to call one tool and you don't want the model wandering to
+`write_file` or `spawn_subagent`.
+
+```yaml
+allowed-tools: save_artifact
+```
+
+A tool name nested in a toolkit is surfaced on its own, so you can expose a single
+function without its siblings. An empty/absent `allowed-tools` means "no
+restriction" (consistent with the fork path).
+
+### `tool-schemas` — specialize a tool's input schema
+
+A generic "save"-style tool often exposes an untyped `content: dict`, leaving the
+model to guess field names. `tool-schemas` lets the skill advertise the exact
+typed shape for that run:
+
+```yaml
+allowed-tools: save_artifact
+tool-schemas:
+  save_artifact:
+    type: object
+    properties:
+      content:
+        type: object
+        properties:
+          company_id: { type: string }
+          new_money:  { type: number }
+          pre_money:  { type: number }
+        required: [company_id, new_money, pre_money]
+    required: [content]
+```
+
+During the run the model sees the specialized schema; the original is restored
+after. You can also pass schemas programmatically per call:
+
+```python
+harness.run(msg, skill="saver", tool_schema_overrides={"save_artifact": {...}})
+```
+
+Notes:
+
+- This shapes the model's **tool-call input**. It is distinct from `output_schema`,
+  which parses the model's **final text response**.
+- The harness still recomputes the *top-level* `required` from the tool's
+  signature and forces `additionalProperties: false` (an Agno behavior). Overrides
+  reliably control nested shapes, types, and descriptions.
+- Scoping mutates the live agent for one run, so a single harness instance should
+  not have two scoped runs in flight at once (same constraint as the per-run
+  system-prompt swap).
 
 ---
 

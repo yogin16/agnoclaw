@@ -83,6 +83,11 @@ class SkillMeta:
     user_invocable: bool = True
     disable_model_invocation: bool = False
     allowed_tools: list[str] = field(default_factory=list)
+    # Per-run tool input-schema specialization: tool name → JSON Schema dict.
+    # During a run with this skill, each named tool advertises this schema as its
+    # input shape (restored afterward), so a generic "save"-style tool can expose
+    # the exact typed payload the skill expects for that turn.
+    tool_schemas: dict[str, dict] = field(default_factory=dict)
     model: Optional[str] = None
     context: Optional[str] = None       # "fork" for isolated subagent
     argument_hint: Optional[str] = None
@@ -217,6 +222,25 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
     else:
         allowed_tools = list(allowed_tools_raw)
 
+    # Parse per-run tool input schemas (tool name → JSON Schema object).
+    tool_schemas_raw = metadata.get("tool-schemas", metadata.get("tool_schemas", {}))
+    if isinstance(tool_schemas_raw, str):
+        try:
+            import json as _json
+            tool_schemas_raw = _json.loads(tool_schemas_raw)
+        except Exception:
+            tool_schemas_raw = {}
+    tool_schemas: dict[str, dict] = {}
+    if isinstance(tool_schemas_raw, dict):
+        for tool_name, schema in tool_schemas_raw.items():
+            if isinstance(schema, dict):
+                tool_schemas[str(tool_name)] = schema
+            else:
+                logger.warning(
+                    "Skill '%s': ignoring non-object tool schema for %r",
+                    name, tool_name,
+                )
+
     # Parse OpenClaw gating metadata.
     # Accepts aliases: metadata.openclaw, metadata.clawdbot, metadata.clawdis
     raw_meta = metadata.get("metadata") or {}
@@ -270,6 +294,7 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
             metadata.get("disable_model_invocation", False),
         ),
         allowed_tools=allowed_tools,
+        tool_schemas=tool_schemas,
         model=metadata.get("model"),
         context=metadata.get("context"),
         argument_hint=metadata.get("argument-hint", metadata.get("argument_hint")),
