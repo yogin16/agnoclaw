@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 import inspect
 import json
 import logging
@@ -537,27 +538,43 @@ class _ToolScope:
     """A reversible, per-run view over an Agno agent's toolset.
 
     Captures the agent's original ``tools`` list and the original parameter
-    schema of any tool whose schema is overridden, so the run can:
+    schema / entrypoint of any tool the run reshapes, so the run can:
 
-      * hide tools the active skill did not allow (``allowed_tools``), and
-      * advertise a specialized input schema for named tools,
+      * hide tools the active skill did not allow (``allowed_tools``),
+      * advertise a specialized input schema for named tools, and
+      * bind specific tool arguments for the run — partial application: the
+        bound args are removed from the advertised schema and supplied at
+        dispatch via a per-run ``functools.partial`` entrypoint,
 
     then restore everything exactly on exit. No persisted mutation survives a
     run: ``restore()`` is idempotent and always returns the agent to its
     construction-time toolset.
     """
 
-    __slots__ = ("_agent", "_original_tools", "_param_backups", "_restored")
+    __slots__ = (
+        "_agent",
+        "_original_tools",
+        "_param_backups",
+        "_entrypoint_backups",
+        "_restored",
+    )
 
     def __init__(self, agent: Any, original_tools: Any) -> None:
         self._agent = agent
         self._original_tools = original_tools
         # list of (function_object, original_parameters_dict)
         self._param_backups: list[tuple[Any, dict[str, Any]]] = []
+        # list of (function_object, original_entrypoint, original_skip_flag)
+        self._entrypoint_backups: list[tuple[Any, Any, Any]] = []
         self._restored = False
 
     def record_param_override(self, function: Any, original_parameters: dict[str, Any]) -> None:
         self._param_backups.append((function, original_parameters))
+
+    def record_entrypoint_binding(
+        self, function: Any, original_entrypoint: Any, original_skip: Any
+    ) -> None:
+        self._entrypoint_backups.append((function, original_entrypoint, original_skip))
 
     def restore(self) -> None:
         if self._restored:
@@ -565,6 +582,9 @@ class _ToolScope:
         self._restored = True
         self._agent.tools = self._original_tools
         # Restore in reverse so repeated overrides of the same object unwind cleanly.
+        for function, original_entrypoint, original_skip in reversed(self._entrypoint_backups):
+            function.entrypoint = original_entrypoint
+            function.skip_entrypoint_processing = original_skip
         for function, original_parameters in reversed(self._param_backups):
             function.parameters = original_parameters
 
@@ -1172,6 +1192,7 @@ class AgentHarness:
         *,
         allowed: list[str] | None = None,
         schema_overrides: dict[str, dict[str, Any]] | None = None,
+        arg_bindings: dict[str, dict[str, Any]] | None = None,
     ) -> _ToolScope | None:
         """Scope the agent's toolset for a single run, returning a restore token.
 
@@ -1179,7 +1200,10 @@ class AgentHarness:
         names (functions nested in toolkits are surfaced individually so a single
         function can be exposed without its sibling tools). ``schema_overrides``
         maps a tool name → a JSON Schema dict to advertise as that tool's input
-        schema for the run. Both are reverted by :meth:`_restore_tool_scope`.
+        schema for the run. ``arg_bindings`` maps a tool name → {arg: value} to
+        bind for the run (partial application): the bound args are removed from
+        the advertised schema *and* supplied at dispatch. All three are reverted
+        by :meth:`_restore_tool_scope`.
 
         Returns ``None`` when there is nothing to scope, so callers pay no cost on
         the common (no-skill / unrestricted) path.
@@ -1199,10 +1223,17 @@ class AgentHarness:
           ``additionalProperties: False`` (see ``Function.process_entrypoint``).
           Overrides reliably control nested shapes, types, and descriptions; the
           top-level required set follows the entrypoint.
+        * For ``arg_bindings`` the entrypoint is replaced with a
+          ``functools.partial`` carrying the bound values and
+          ``skip_entrypoint_processing`` is set, so Agno keeps the stripped schema
+          verbatim. This sidesteps the ``required``-recompute above: a bound arg
+          that has no default would otherwise be re-added to ``required`` while
+          absent from ``properties`` (a dangling required entry).
         """
         allowed_present = allowed is not None
         overrides_present = bool(schema_overrides)
-        if not allowed_present and not overrides_present:
+        bindings_present = bool(arg_bindings)
+        if not allowed_present and not overrides_present and not bindings_present:
             return None
 
         original_tools = self._agent.tools
@@ -1230,8 +1261,13 @@ class AgentHarness:
         else:
             working = current
 
+        by_name = (
+            self._resolve_function_objects(working)
+            if overrides_present or bindings_present
+            else {}
+        )
+
         if overrides_present:
-            by_name = self._resolve_function_objects(working)
             for override_name, schema in (schema_overrides or {}).items():
                 target_fn = by_name.get(str(override_name))
                 if target_fn is None or not hasattr(target_fn, "parameters"):
@@ -1241,7 +1277,79 @@ class AgentHarness:
                 # Agno's per-run processing (which sets additionalProperties/required).
                 target_fn.parameters = copy.deepcopy(schema)
 
+        if bindings_present:
+            for bind_name, values in (arg_bindings or {}).items():
+                if not values:
+                    continue
+                target_fn = by_name.get(str(bind_name))
+                if target_fn is None or not hasattr(target_fn, "parameters"):
+                    continue
+                original_entrypoint = getattr(target_fn, "entrypoint", None)
+                if original_entrypoint is None:
+                    continue
+                self._bind_tool_args(scope, target_fn, dict(values))
+
         return scope
+
+    @staticmethod
+    def _schema_has_properties(schema: Any) -> bool:
+        return isinstance(schema, dict) and bool(schema.get("properties"))
+
+    def _bind_tool_args(
+        self,
+        scope: _ToolScope,
+        target_fn: Any,
+        values: dict[str, Any],
+    ) -> None:
+        """Partially apply ``values`` to ``target_fn`` for the duration of a run.
+
+        Removes the bound argument names from the advertised input schema and
+        replaces the entrypoint with a ``functools.partial`` so the bound values
+        are supplied at dispatch and never exposed to (or settable by) the model.
+        Originals are recorded on ``scope`` for restoration.
+        """
+        original_entrypoint = target_fn.entrypoint
+        original_skip = getattr(target_fn, "skip_entrypoint_processing", False)
+
+        # Resolve the baseline schema to strip from. A tool whose schema was
+        # already specialized this run (schema_overrides) carries it on
+        # ``parameters``; an untouched toolkit tool has an empty default schema
+        # until Agno processes it per-run, so generate it on a throwaway copy.
+        current_params = target_fn.parameters
+        if self._schema_has_properties(current_params):
+            baseline = copy.deepcopy(current_params)
+        else:
+            baseline = None
+            try:
+                probe = target_fn.model_copy(deep=True)
+                probe.skip_entrypoint_processing = False
+                probe.process_entrypoint()
+                if self._schema_has_properties(probe.parameters):
+                    baseline = copy.deepcopy(probe.parameters)
+            except Exception:
+                logger.debug("Could not derive schema for tool binding", exc_info=True)
+            if baseline is None:
+                baseline = copy.deepcopy(current_params) if isinstance(current_params, dict) else {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                }
+
+        props = baseline.get("properties")
+        if isinstance(props, dict):
+            for arg in values:
+                props.pop(arg, None)
+        required = baseline.get("required")
+        if isinstance(required, list):
+            baseline["required"] = [name for name in required if name not in values]
+
+        scope.record_param_override(target_fn, current_params)
+        scope.record_entrypoint_binding(target_fn, original_entrypoint, original_skip)
+        target_fn.parameters = baseline
+        target_fn.entrypoint = functools.partial(original_entrypoint, **values)
+        # Keep the stripped schema verbatim — Agno's process_entrypoint would
+        # otherwise recompute `required` from the (now partial) signature.
+        target_fn.skip_entrypoint_processing = True
 
     @staticmethod
     def _restore_tool_scope(scope: _ToolScope | None) -> None:
@@ -1253,15 +1361,23 @@ class AgentHarness:
     def _skill_tool_scope_args(
         skill_obj: Any,
         tool_schema_overrides: dict[str, dict[str, Any]] | None,
-    ) -> tuple[list[str] | None, dict[str, dict[str, Any]] | None]:
-        """Resolve (allowed, schema_overrides) for the inline-skill scope.
+        tool_arg_bindings: dict[str, dict[str, Any]] | None = None,
+    ) -> tuple[
+        list[str] | None,
+        dict[str, dict[str, Any]] | None,
+        dict[str, dict[str, Any]] | None,
+    ]:
+        """Resolve (allowed, schema_overrides, arg_bindings) for the inline scope.
 
         ``allowed_tools`` from the skill restricts the toolset; explicit
         ``tool_schema_overrides`` passed to run/arun take precedence over the
-        skill's declared ``tool_schemas``.
+        skill's declared ``tool_schemas``. ``tool_arg_bindings`` are per-run
+        partial-application values (their values are run-scoped, so they come
+        from the call site; any skill-declared bindings are merged under them).
         """
         allowed: list[str] | None = None
         skill_schemas: dict[str, dict[str, Any]] = {}
+        skill_bindings: dict[str, dict[str, Any]] = {}
         if skill_obj is not None:
             meta = getattr(skill_obj, "meta", None)
             if meta is not None:
@@ -1269,8 +1385,11 @@ class AgentHarness:
                     allowed = list(meta.allowed_tools)
                 if getattr(meta, "tool_schemas", None):
                     skill_schemas = dict(meta.tool_schemas)
+                if getattr(meta, "tool_arg_bindings", None):
+                    skill_bindings = dict(meta.tool_arg_bindings)
         overrides = {**skill_schemas, **(tool_schema_overrides or {})}
-        return allowed, (overrides or None)
+        bindings = {**skill_bindings, **(tool_arg_bindings or {})}
+        return allowed, (overrides or None), (bindings or None)
 
     @staticmethod
     def _merge_run_mapping(
@@ -4512,6 +4631,7 @@ class AgentHarness:
         metadata: dict[str, Any] | None = None,
         output_schema: type | None = None,
         tool_schema_overrides: dict[str, dict[str, Any]] | None = None,
+        tool_arg_bindings: dict[str, dict[str, Any]] | None = None,
         dependencies: dict[str, Any] | None = None,
         session_state: dict[str, Any] | None = None,
         add_dependencies_to_context: bool | None = None,
@@ -4520,6 +4640,14 @@ class AgentHarness:
         **kwargs,
     ) -> RunOutput | Iterator[RunOutputEvent]:
         """Run the agent on a message.
+
+        ``tool_arg_bindings`` partially applies tool arguments for this run only
+        (``{tool_name: {arg: value}}``): the bound args are removed from the
+        schema the model sees AND supplied at dispatch (caller-wins, the model
+        never sets them) — `functools.partial` for a tool, scoped to the run.
+        Composes with ``tool_schema_overrides`` (re-typing the remaining visible
+        args) and a skill's ``allowed_tools``; restored after the run (on
+        success, on exception, and for streaming runs).
 
         Per-run caller context/state (Agno-native, never mutates the harness):
 
@@ -4769,12 +4897,14 @@ class AgentHarness:
             # its lifetime to generator execution. Applying it here for a stream
             # would leak permanently if the caller never drains it, because an
             # unstarted generator's finally never runs.
-            scope_allowed, scope_overrides = self._skill_tool_scope_args(
-                scoped_skill_obj, tool_schema_overrides
+            scope_allowed, scope_overrides, scope_bindings = self._skill_tool_scope_args(
+                scoped_skill_obj, tool_schema_overrides, tool_arg_bindings
             )
             if not stream:
                 tool_scope = self._apply_tool_scope(
-                    allowed=scope_allowed, schema_overrides=scope_overrides
+                    allowed=scope_allowed,
+                    schema_overrides=scope_overrides,
+                    arg_bindings=scope_bindings,
                 )
 
             result = self._agent.run(
@@ -4804,7 +4934,9 @@ class AgentHarness:
                         # generator's. Agno resolves tools lazily during iteration,
                         # so this is active before the first model request.
                         stream_scope = self._apply_tool_scope(
-                            allowed=scope_allowed, schema_overrides=scope_overrides
+                            allowed=scope_allowed,
+                            schema_overrides=scope_overrides,
+                            arg_bindings=scope_bindings,
                         )
                         for event in result:
                             source_event = self._event_name(event) or None
@@ -5034,6 +5166,7 @@ class AgentHarness:
         metadata: dict[str, Any] | None = None,
         output_schema: type | None = None,
         tool_schema_overrides: dict[str, dict[str, Any]] | None = None,
+        tool_arg_bindings: dict[str, dict[str, Any]] | None = None,
         dependencies: dict[str, Any] | None = None,
         session_state: dict[str, Any] | None = None,
         add_dependencies_to_context: bool | None = None,
@@ -5043,11 +5176,11 @@ class AgentHarness:
     ) -> RunOutput | AsyncIterator[RunOutputEvent]:
         """Async version of run().
 
-        Accepts the same per-run ``dependencies`` / ``session_state`` /
-        ``add_dependencies_to_context`` / ``add_session_state_to_context`` /
-        ``knowledge_filters`` kwargs as :meth:`run`, with identical merge-over-
-        construction-defaults and per-run scoping semantics (including the
-        streaming path).
+        Accepts the same per-run ``tool_arg_bindings`` / ``dependencies`` /
+        ``session_state`` / ``add_dependencies_to_context`` /
+        ``add_session_state_to_context`` / ``knowledge_filters`` kwargs as
+        :meth:`run`, with identical merge-over-construction-defaults and per-run
+        scoping semantics (including the streaming path).
         """
         self._check_context_budget()
 
@@ -5231,8 +5364,8 @@ class AgentHarness:
             # generator execution. Applying it before returning the generator would
             # leak permanently if the caller never drains it (an unstarted
             # generator's finally never runs).
-            scope_allowed, scope_overrides = self._skill_tool_scope_args(
-                scoped_skill_obj, tool_schema_overrides
+            scope_allowed, scope_overrides, scope_bindings = self._skill_tool_scope_args(
+                scoped_skill_obj, tool_schema_overrides, tool_arg_bindings
             )
 
             agno_call = self._agent.arun(
@@ -5253,7 +5386,9 @@ class AgentHarness:
             else:
                 # Coroutine: the whole loop runs on await — scope it here.
                 tool_scope = self._apply_tool_scope(
-                    allowed=scope_allowed, schema_overrides=scope_overrides
+                    allowed=scope_allowed,
+                    schema_overrides=scope_overrides,
+                    arg_bindings=scope_bindings,
                 )
                 result = await agno_call
 
@@ -5273,7 +5408,9 @@ class AgentHarness:
                         # generator's. Agno resolves tools lazily during iteration,
                         # so this is active before the first model request.
                         stream_scope = self._apply_tool_scope(
-                            allowed=scope_allowed, schema_overrides=scope_overrides
+                            allowed=scope_allowed,
+                            schema_overrides=scope_overrides,
+                            arg_bindings=scope_bindings,
                         )
                         async for event in result:
                             source_event = self._event_name(event) or None

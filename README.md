@@ -266,6 +266,38 @@ state = harness.get_session_state(session_id="s1")
 
 See `examples/per_run_dependencies.py` for a runnable end-to-end demo.
 
+### v0.10 features (per-run tool argument binding — partial application)
+
+Bind specific tool arguments for a single run: the bound args are **removed from
+the schema the model sees** AND **supplied at dispatch** (caller-wins; the model
+never sees or sets them). Conceptually `functools.partial(tool, **bound)` for a
+tool, scoped to one run — the pre-bound values can be chosen per run (resolved
+from the active skill, the request scope, etc.). Composes with
+`tool_schema_overrides` (re-type the remaining visible args) and a skill's
+`allowed_tools`; restored after the run (success, exception, streaming), so a
+later run without the binding sees the full signature.
+
+```python
+from agno.tools import tool
+from agnoclaw import AgentHarness
+
+@tool
+def save_artifact(name: str, kind: str, schema: str, content: str) -> str:
+    ...
+
+harness = AgentHarness(tools=[save_artifact])
+
+# This run: the model only sees `name` and `content`; kind/schema are pre-bound
+# and injected at dispatch.
+harness.run(
+    "Create and save a note.",
+    tool_arg_bindings={"save_artifact": {"kind": "note", "schema": "v1"}},
+)
+```
+
+A skill can also declare static bindings via `tool-arg-bindings` frontmatter;
+per-run values passed to `run`/`arun` win. See `examples/tool_arg_bindings.py`.
+
 See [`cookbook/`](cookbook/) for complete runnable examples of each feature.
 
 ---
