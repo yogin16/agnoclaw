@@ -54,6 +54,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import logging
@@ -492,6 +493,42 @@ class _ElevatedSessionCommandExecutor:
         if task_id in self._elevated_task_ids:
             return self._host_executor.kill(task_id=task_id, force=force)
         return self._sandbox_executor.kill(task_id=task_id, force=force)
+
+
+class _ToolScope:
+    """A reversible, per-run view over an Agno agent's toolset.
+
+    Captures the agent's original ``tools`` list and the original parameter
+    schema of any tool whose schema is overridden, so the run can:
+
+      * hide tools the active skill did not allow (``allowed_tools``), and
+      * advertise a specialized input schema for named tools,
+
+    then restore everything exactly on exit. No persisted mutation survives a
+    run: ``restore()`` is idempotent and always returns the agent to its
+    construction-time toolset.
+    """
+
+    __slots__ = ("_agent", "_original_tools", "_param_backups", "_restored")
+
+    def __init__(self, agent: Any, original_tools: Any) -> None:
+        self._agent = agent
+        self._original_tools = original_tools
+        # list of (function_object, original_parameters_dict)
+        self._param_backups: list[tuple[Any, dict[str, Any]]] = []
+        self._restored = False
+
+    def record_param_override(self, function: Any, original_parameters: dict[str, Any]) -> None:
+        self._param_backups.append((function, original_parameters))
+
+    def restore(self) -> None:
+        if self._restored:
+            return
+        self._restored = True
+        self._agent.tools = self._original_tools
+        # Restore in reverse so repeated overrides of the same object unwind cleanly.
+        for function, original_parameters in reversed(self._param_backups):
+            function.parameters = original_parameters
 
 
 class AgentHarness:
@@ -1053,6 +1090,137 @@ class AgentHarness:
                 if name:
                     names.add(str(name))
         return names
+
+    @staticmethod
+    def _single_tool_name(tool: Any) -> str | None:
+        """Return the advertised name of a standalone (non-Toolkit) tool."""
+        if isinstance(tool, Function):
+            return str(tool.name) if tool.name else None
+        name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
+        return str(name) if name else None
+
+    def _resolve_function_objects(self, tools: list[Any]) -> dict[str, Any]:
+        """Map advertised tool name → the live Function object backing it.
+
+        Used by schema specialization to reach the exact object the model copies
+        from at run time, including functions nested inside a Toolkit. Plain
+        callables (not yet wrapped as a Function) have no mutable ``parameters``
+        attribute and are skipped.
+        """
+        resolved: dict[str, Any] = {}
+        for tool in tools:
+            if isinstance(tool, Toolkit):
+                for name, function in tool.functions.items():
+                    resolved.setdefault(str(name), function)
+            elif isinstance(tool, Function):
+                if tool.name:
+                    resolved.setdefault(str(tool.name), tool)
+        return resolved
+
+    def _apply_tool_scope(
+        self,
+        *,
+        allowed: list[str] | None = None,
+        schema_overrides: dict[str, dict[str, Any]] | None = None,
+    ) -> _ToolScope | None:
+        """Scope the agent's toolset for a single run, returning a restore token.
+
+        ``allowed`` restricts the tools visible to the model to exactly those
+        names (functions nested in toolkits are surfaced individually so a single
+        function can be exposed without its sibling tools). ``schema_overrides``
+        maps a tool name → a JSON Schema dict to advertise as that tool's input
+        schema for the run. Both are reverted by :meth:`_restore_tool_scope`.
+
+        Returns ``None`` when there is nothing to scope, so callers pay no cost on
+        the common (no-skill / unrestricted) path.
+
+        Caveats (shared-state, matching the harness's existing per-run
+        ``system_message`` swap):
+
+        * This mutates the live ``Agent.tools`` for the duration of one run, so a
+          single harness instance must not have two scoped runs in flight at once
+          — concurrent runs would observe each other's toolset. Restoration is
+          tied to the run's lifecycle (see :meth:`run`/:meth:`arun`).
+        * Scoping acts on ``Agent.tools``. A caller that supplies its own per-run
+          tool list (Agno's ``run_context.tools`` / a ``tools=`` run kwarg) takes
+          precedence in Agno and bypasses this filter.
+        * For ``schema_overrides``, Agno still recomputes the *top-level*
+          ``required`` from the tool's entrypoint signature and forces
+          ``additionalProperties: False`` (see ``Function.process_entrypoint``).
+          Overrides reliably control nested shapes, types, and descriptions; the
+          top-level required set follows the entrypoint.
+        """
+        allowed_present = allowed is not None
+        overrides_present = bool(schema_overrides)
+        if not allowed_present and not overrides_present:
+            return None
+
+        original_tools = self._agent.tools
+        scope = _ToolScope(self._agent, original_tools)
+
+        current: list[Any] = list(original_tools) if isinstance(original_tools, list) else []
+        if allowed_present:
+            allowed_set = {str(name) for name in (allowed or [])}
+            scoped: list[Any] = []
+            seen: set[str] = set()
+            for tool in current:
+                if isinstance(tool, Toolkit):
+                    for raw_name, function in tool.functions.items():
+                        fn_name = str(raw_name)
+                        if fn_name in allowed_set and fn_name not in seen:
+                            seen.add(fn_name)
+                            scoped.append(function)
+                else:
+                    tool_name = self._single_tool_name(tool)
+                    if tool_name is not None and tool_name in allowed_set and tool_name not in seen:
+                        seen.add(tool_name)
+                        scoped.append(tool)
+            working = scoped
+            self._agent.tools = scoped
+        else:
+            working = current
+
+        if overrides_present:
+            by_name = self._resolve_function_objects(working)
+            for override_name, schema in (schema_overrides or {}).items():
+                target_fn = by_name.get(str(override_name))
+                if target_fn is None or not hasattr(target_fn, "parameters"):
+                    continue
+                scope.record_param_override(target_fn, target_fn.parameters)
+                # Deep-copy so the advertised schema can't be mutated in place by
+                # Agno's per-run processing (which sets additionalProperties/required).
+                target_fn.parameters = copy.deepcopy(schema)
+
+        return scope
+
+    @staticmethod
+    def _restore_tool_scope(scope: _ToolScope | None) -> None:
+        """Restore a toolset previously scoped by :meth:`_apply_tool_scope`."""
+        if scope is not None:
+            scope.restore()
+
+    @staticmethod
+    def _skill_tool_scope_args(
+        skill_obj: Any,
+        tool_schema_overrides: dict[str, dict[str, Any]] | None,
+    ) -> tuple[list[str] | None, dict[str, dict[str, Any]] | None]:
+        """Resolve (allowed, schema_overrides) for the inline-skill scope.
+
+        ``allowed_tools`` from the skill restricts the toolset; explicit
+        ``tool_schema_overrides`` passed to run/arun take precedence over the
+        skill's declared ``tool_schemas``.
+        """
+        allowed: list[str] | None = None
+        skill_schemas: dict[str, dict[str, Any]] = {}
+        if skill_obj is not None:
+            meta = getattr(skill_obj, "meta", None)
+            if meta is not None:
+                if getattr(meta, "allowed_tools", None):
+                    allowed = list(meta.allowed_tools)
+                if getattr(meta, "tool_schemas", None):
+                    skill_schemas = dict(meta.tool_schemas)
+        overrides = {**skill_schemas, **(tool_schema_overrides or {})}
+        return allowed, (overrides or None)
 
     @staticmethod
     def _find_plan_signal_toolkit(tools: list[Any]) -> PlanSignalToolkit | None:
@@ -4217,6 +4385,7 @@ class AgentHarness:
         context: ExecutionContext | None = None,
         metadata: dict[str, Any] | None = None,
         output_schema: type | None = None,
+        tool_schema_overrides: dict[str, dict[str, Any]] | None = None,
         **kwargs,
     ) -> RunOutput | Iterator[RunOutputEvent]:
         """Run the agent on a message."""
@@ -4253,6 +4422,8 @@ class AgentHarness:
         )
         base_prompt = self._agent.system_message
         stream_cleanup_deferred = False
+        tool_scope: _ToolScope | None = None
+        scoped_skill_obj: Any = None
 
         self._emit_event_sync(
             event_type="run.started",
@@ -4368,6 +4539,7 @@ class AgentHarness:
                         return tool_result
 
                     self._set_system_prompt(skill_content=skill_content, session_id=effective_session)
+                    scoped_skill_obj = skill_obj
 
             prompt = PromptEnvelope(
                 system_prompt=self._agent.system_message,
@@ -4422,6 +4594,24 @@ class AgentHarness:
             if isinstance(extra_metadata, dict):
                 agent_metadata.update(extra_metadata)
 
+            # Per-run tool scoping: honor the active skill's allowed_tools and any
+            # tool input-schema specialization for this run only.
+            #
+            # Non-streaming runs execute the whole model loop synchronously inside
+            # the call below, so we apply the scope here and restore it in the
+            # outer finally. Streaming runs execute lazily as the caller drains the
+            # generator, so the scope is applied *inside* _wrapped_stream — binding
+            # its lifetime to generator execution. Applying it here for a stream
+            # would leak permanently if the caller never drains it, because an
+            # unstarted generator's finally never runs.
+            scope_allowed, scope_overrides = self._skill_tool_scope_args(
+                scoped_skill_obj, tool_schema_overrides
+            )
+            if not stream:
+                tool_scope = self._apply_tool_scope(
+                    allowed=scope_allowed, schema_overrides=scope_overrides
+                )
+
             result = self._agent.run(
                 prompt.user_message,
                 stream=stream,
@@ -4443,7 +4633,14 @@ class AgentHarness:
                     cumulative = ""
                     stream_error_signal: dict[str, Any] | None = None
                     run_failed_emitted = False
+                    stream_scope: _ToolScope | None = None
                     try:
+                        # Apply the tool scope here so its lifetime equals the
+                        # generator's. Agno resolves tools lazily during iteration,
+                        # so this is active before the first model request.
+                        stream_scope = self._apply_tool_scope(
+                            allowed=scope_allowed, schema_overrides=scope_overrides
+                        )
                         for event in result:
                             source_event = self._event_name(event) or None
                             stream_summary = self._stream_event_summary(event)
@@ -4581,6 +4778,7 @@ class AgentHarness:
                             raise harness_error from exc
                         raise
                     finally:
+                        self._restore_tool_scope(stream_scope)
                         self._cleanup_tool_step_state(run_id)
 
                 stream_cleanup_deferred = True
@@ -4654,6 +4852,7 @@ class AgentHarness:
             ) from exc
         finally:
             if not stream_cleanup_deferred:
+                self._restore_tool_scope(tool_scope)
                 self._cleanup_tool_step_state(run_id)
 
     async def arun(
@@ -4669,6 +4868,7 @@ class AgentHarness:
         context: ExecutionContext | None = None,
         metadata: dict[str, Any] | None = None,
         output_schema: type | None = None,
+        tool_schema_overrides: dict[str, dict[str, Any]] | None = None,
         **kwargs,
     ) -> RunOutput | AsyncIterator[RunOutputEvent]:
         """Async version of run()."""
@@ -4705,6 +4905,8 @@ class AgentHarness:
         )
         base_prompt = self._agent.system_message
         stream_cleanup_deferred = False
+        tool_scope: _ToolScope | None = None
+        scoped_skill_obj: Any = None
 
         await self._emit_event_async(
             event_type="run.started",
@@ -4773,6 +4975,7 @@ class AgentHarness:
                 )
                 if skill_content:
                     self._set_system_prompt(skill_content=skill_content, session_id=effective_session)
+                    scoped_skill_obj = self.skills._get_skill(run_input.skill)
 
             prompt = PromptEnvelope(
                 system_prompt=self._agent.system_message,
@@ -4827,6 +5030,22 @@ class AgentHarness:
             if isinstance(extra_metadata, dict):
                 agent_metadata.update(extra_metadata)
 
+            # Per-run tool scoping: honor the active skill's allowed_tools and any
+            # tool input-schema specialization for this run only.
+            #
+            # The scope is applied where the model loop actually runs: a coroutine
+            # executes on ``await`` below (every non-streaming run, plus any
+            # stream=True call that Agno resolves to a non-iterable RunOutput), so
+            # we scope it around that await and restore in the outer finally. A
+            # true async generator runs lazily as the caller drains it, so its
+            # scope is applied *inside* _wrapped_stream — binding its lifetime to
+            # generator execution. Applying it before returning the generator would
+            # leak permanently if the caller never drains it (an unstarted
+            # generator's finally never runs).
+            scope_allowed, scope_overrides = self._skill_tool_scope_args(
+                scoped_skill_obj, tool_schema_overrides
+            )
+
             agno_call = self._agent.arun(
                 prompt.user_message,
                 stream=stream,
@@ -4843,6 +5062,10 @@ class AgentHarness:
             if hasattr(agno_call, "__anext__") or hasattr(agno_call, "__aiter__"):
                 result = agno_call
             else:
+                # Coroutine: the whole loop runs on await — scope it here.
+                tool_scope = self._apply_tool_scope(
+                    allowed=scope_allowed, schema_overrides=scope_overrides
+                )
                 result = await agno_call
 
             if self._agent.system_message != base_prompt:
@@ -4855,7 +5078,14 @@ class AgentHarness:
                     cumulative = ""
                     stream_error_signal: dict[str, Any] | None = None
                     run_failed_emitted = False
+                    stream_scope: _ToolScope | None = None
                     try:
+                        # Apply the tool scope here so its lifetime equals the
+                        # generator's. Agno resolves tools lazily during iteration,
+                        # so this is active before the first model request.
+                        stream_scope = self._apply_tool_scope(
+                            allowed=scope_allowed, schema_overrides=scope_overrides
+                        )
                         async for event in result:
                             source_event = self._event_name(event) or None
                             stream_summary = self._stream_event_summary(event)
@@ -4993,6 +5223,7 @@ class AgentHarness:
                             raise harness_error from exc
                         raise
                     finally:
+                        self._restore_tool_scope(stream_scope)
                         self._cleanup_tool_step_state(run_id)
 
                 stream_cleanup_deferred = True
@@ -5066,6 +5297,7 @@ class AgentHarness:
             ) from exc
         finally:
             if not stream_cleanup_deferred:
+                self._restore_tool_scope(tool_scope)
                 self._cleanup_tool_step_state(run_id)
 
     def print_response(self, message: str, *, stream: bool = True, skill: str | None = None, **kwargs) -> None:
