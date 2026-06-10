@@ -4,6 +4,7 @@ A binding removes the named args from the schema the model sees AND supplies
 them at dispatch (via a per-run ``functools.partial``), restoring both on exit.
 """
 
+import functools
 import logging
 import tempfile
 from types import SimpleNamespace
@@ -119,6 +120,57 @@ def test_binding_unknown_tool_is_ignored():
         assert scope is not None
     finally:
         scope.restore()
+
+
+# ── Regression: usual (no-binding) cases must be untouched ───────────────────
+
+
+def test_usual_run_no_scope_keeps_full_schema_and_dispatch():
+    """A run with no scope kwargs leaves the tool's full signature + dispatch."""
+    harness = _harness()
+    fn = _live_function(harness, "save_thing")
+    original_entrypoint = fn.entrypoint
+
+    # No scope applied at all — the new binding code paths are inert.
+    assert harness._apply_tool_scope() is None
+
+    model_fn = _model_facing(fn)
+    assert sorted(model_fn.parameters["properties"]) == ["kind", "name", "note", "schema"]
+    assert model_fn.entrypoint(name="N", kind="K", schema="S", note="Z") == "N/K/S/Z"
+    # the live function is pristine: no partial, no skip flag set
+    assert fn.entrypoint is original_entrypoint
+    assert fn.skip_entrypoint_processing is False
+
+
+def test_overrides_only_path_unchanged_by_binding_support():
+    """schema_overrides with no bindings behaves exactly as before."""
+    override = {
+        "type": "object",
+        "properties": {"name": {"type": "string", "description": "renamed"}},
+        "required": ["name"],
+    }
+    harness = _harness()
+    scope = harness._apply_tool_scope(schema_overrides={"save_thing": override})
+    try:
+        fn = _live_function(harness, "save_thing")
+        assert fn.parameters["properties"]["name"]["description"] == "renamed"
+        # entrypoint untouched when only overriding the schema (no partial)
+        assert not isinstance(fn.entrypoint, functools.partial)
+        assert fn.skip_entrypoint_processing is False
+    finally:
+        scope.restore()
+
+
+def test_run_without_bindings_applies_no_binding_scope():
+    """Plain run() forwards arg_bindings=None (usual case keeps the fast path)."""
+    harness, mock_agent = _mock_agent_harness()
+    mock_agent.run.return_value = SimpleNamespace(content="ok")
+
+    with patch.object(harness, "_apply_tool_scope", wraps=harness._apply_tool_scope) as spy:
+        harness.run("hi")
+
+    for call in spy.call_args_list:
+        assert call.kwargs.get("arg_bindings") is None
 
 
 # ── Composition ──────────────────────────────────────────────────────────────
