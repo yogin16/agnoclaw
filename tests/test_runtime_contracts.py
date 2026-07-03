@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -531,6 +532,201 @@ def test_fail_closed_event_sink_raises(tmp_path):
     with pytest.raises(HarnessError) as exc:
         harness.run("hello")
     assert exc.value.code == "EVENT_SINK_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_sync_emit_from_worker_thread_routes_to_owning_loop(tmp_path):
+    """Regression (issue #57): when a sync tool's lifecycle hook fires from an
+    agno ThreadPoolExecutor worker thread (no running loop), an async event
+    sink's ``emit`` must run on the harness's owning loop — not a throwaway
+    ``asyncio.run`` loop that would corrupt loop-bound resources under load."""
+    recorded_loops: list[int] = []
+
+    class LoopRecordingSink:
+        async def emit(self, event):
+            del event
+            recorded_loops.append(id(asyncio.get_running_loop()))
+
+    harness, _ = _make_harness(tmp_path, event_sink=LoopRecordingSink())
+    owning_loop = asyncio.get_running_loop()
+    harness._owning_loop = owning_loop
+
+    ctx = ExecutionContext.create(
+        user_id="u", session_id="s", workspace_id="ws", roles=["developer"]
+    )
+
+    # Mirror agno's sync-tool thread hop: emit from a worker thread that has no
+    # running loop of its own.
+    await asyncio.to_thread(
+        harness._emit_event_sync,
+        event_type="tool.started",
+        run_id="run_x",
+        context=ctx,
+    )
+
+    # Best-effort mode is fire-and-forget; let the owning loop drain the task.
+    for _ in range(100):
+        if recorded_loops:
+            break
+        await asyncio.sleep(0.01)
+
+    assert recorded_loops == [id(owning_loop)]
+
+
+def test_sync_emit_falls_back_when_owning_loop_not_running(tmp_path):
+    """A stale-but-open owning loop (from a prior run, no longer running) must
+    NOT be routed to — routing there would drop the event or hang. The sync
+    fallback (asyncio.run) still delivers the emit (issue #57 hardening)."""
+    delivered: list[str] = []
+
+    class AsyncSink:
+        async def emit(self, event):
+            delivered.append(event.event_type)
+
+    harness, _ = _make_harness(tmp_path, event_sink=AsyncSink())
+
+    stale_loop = asyncio.new_event_loop()  # open but never run
+    harness._owning_loop = stale_loop
+    try:
+        assert not stale_loop.is_running()
+        ctx = ExecutionContext.create(
+            user_id="u", session_id="s", workspace_id="ws", roles=["developer"]
+        )
+        harness._emit_event_sync(
+            event_type="tool.started", run_id="run_x", context=ctx
+        )
+    finally:
+        stale_loop.close()
+
+    assert delivered == ["tool.started"]
+
+
+@pytest.mark.asyncio
+async def test_sync_emit_fail_closed_from_worker_thread_propagates(tmp_path):
+    """A failing async sink driven from a worker thread must surface as a
+    HarnessError under fail-closed mode (issue #57 routing path)."""
+
+    class FailingAsyncSink:
+        async def emit(self, event):
+            del event
+            raise RuntimeError("sink down")
+
+    harness, _ = _make_harness(
+        tmp_path,
+        event_sink=FailingAsyncSink(),
+        event_sink_mode="fail_closed",
+    )
+    harness._owning_loop = asyncio.get_running_loop()
+
+    ctx = ExecutionContext.create(
+        user_id="u", session_id="s", workspace_id="ws", roles=["developer"]
+    )
+
+    with pytest.raises(HarnessError) as exc:
+        await asyncio.to_thread(
+            harness._emit_event_sync,
+            event_type="tool.started",
+            run_id="run_x",
+            context=ctx,
+        )
+    assert exc.value.code == "EVENT_SINK_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_sync_emit_best_effort_worker_thread_swallows_sink_failure(tmp_path, caplog):
+    """Best-effort mode: a failing async sink routed from a worker thread must
+    be swallowed and logged on the owning loop, never raised (issue #57)."""
+
+    class FailingAsyncSink:
+        async def emit(self, event):
+            del event
+            raise RuntimeError("sink down")
+
+    harness, _ = _make_harness(tmp_path, event_sink=FailingAsyncSink())
+    harness._owning_loop = asyncio.get_running_loop()
+
+    ctx = ExecutionContext.create(
+        user_id="u", session_id="s", workspace_id="ws", roles=["developer"]
+    )
+
+    with caplog.at_level("WARNING", logger="agnoclaw.agent"):
+        # Fire-and-forget: emit returns without raising even though the sink fails.
+        await asyncio.to_thread(
+            harness._emit_event_sync,
+            event_type="tool.started",
+            run_id="run_x",
+            context=ctx,
+        )
+        # Let the owning loop drain the scheduled coroutine + done-callback.
+        for _ in range(100):
+            if any("Async event sink failure" in r.message for r in caplog.records):
+                break
+            await asyncio.sleep(0.01)
+
+    assert any("Async event sink failure" in r.message for r in caplog.records)
+
+
+def test_sync_emit_falls_back_when_owning_loop_closed(tmp_path):
+    """A closed owning loop must take the asyncio.run fallback (the is_closed()
+    guard sub-branch), still delivering the event (issue #57).
+
+    Sync test on purpose: with no running loop, ``_emit_event_sync`` reaches the
+    no-running-loop branch where the ``_owning_loop`` guard lives. An async test
+    would supply a running loop and take the create_task path instead.
+    """
+    delivered: list[str] = []
+
+    class AsyncSink:
+        async def emit(self, event):
+            delivered.append(event.event_type)
+
+    harness, _ = _make_harness(tmp_path, event_sink=AsyncSink())
+
+    closed_loop = asyncio.new_event_loop()
+    closed_loop.close()
+    harness._owning_loop = closed_loop
+    assert closed_loop.is_closed()
+
+    ctx = ExecutionContext.create(
+        user_id="u", session_id="s", workspace_id="ws", roles=["developer"]
+    )
+    harness._emit_event_sync(event_type="tool.started", run_id="run_x", context=ctx)
+
+    assert delivered == ["tool.started"]
+
+
+@pytest.mark.asyncio
+async def test_sync_emit_fail_closed_worker_thread_success_delivers(tmp_path):
+    """Fail-closed mode: a healthy async sink routed from a worker thread must
+    deliver on the owning loop and not raise (issue #57 success path)."""
+    delivered: list[int] = []
+
+    class LoopRecordingSink:
+        async def emit(self, event):
+            del event
+            delivered.append(id(asyncio.get_running_loop()))
+
+    harness, _ = _make_harness(
+        tmp_path,
+        event_sink=LoopRecordingSink(),
+        event_sink_mode="fail_closed",
+    )
+    owning_loop = asyncio.get_running_loop()
+    harness._owning_loop = owning_loop
+
+    ctx = ExecutionContext.create(
+        user_id="u", session_id="s", workspace_id="ws", roles=["developer"]
+    )
+
+    # future.result() blocks the worker thread until the owning loop delivers.
+    await asyncio.to_thread(
+        harness._emit_event_sync,
+        event_type="tool.started",
+        run_id="run_x",
+        context=ctx,
+    )
+
+    assert delivered == [id(owning_loop)]
 
 
 @pytest.mark.asyncio
