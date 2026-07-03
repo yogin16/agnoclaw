@@ -54,6 +54,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import copy
 import functools
 import inspect
@@ -762,6 +763,10 @@ class AgentHarness:
         self._on_session_end = on_session_end
         self._session_metadata = dict(session_metadata or {})
         self._closed = False
+        # Loop that owns this harness's async run, captured in arun(). Used to
+        # route consumer coroutines emitted from sync-tool worker threads back to
+        # the owning loop instead of a throwaway asyncio.run() loop.
+        self._owning_loop: asyncio.AbstractEventLoop | None = None
         self._context_providers: list[ContextProvider] = list(context_providers or [])
         self._context_provider_tool_map: dict[str, dict[str, str]] = {}
         self._context_providers_setup = False
@@ -3445,7 +3450,38 @@ class AgentHarness:
                 try:
                     loop = asyncio.get_running_loop()
                 except RuntimeError:
-                    asyncio.run(maybe_awaitable)
+                    owning_loop = self._owning_loop
+                    if (
+                        owning_loop is not None
+                        and not owning_loop.is_closed()
+                        and owning_loop.is_running()
+                    ):
+                        # We're on an agno worker thread (sync tools run via
+                        # asyncio.to_thread) with no running loop. Route the
+                        # consumer coroutine back to the harness's owning loop
+                        # instead of spinning a throwaway loop — a fresh loop
+                        # would drive loop-bound resources (asyncpg/SQLAlchemy
+                        # pools, aiohttp sessions) the owning loop is mid-use on,
+                        # corrupting the main coroutine's in-flight work.
+                        #
+                        # The owning loop must be *running* to route to it: a
+                        # stale-but-open loop from a prior run would never drain
+                        # the scheduled coroutine (silently dropping the event, or
+                        # hanging future.result() forever under fail-closed).
+                        future = asyncio.run_coroutine_threadsafe(
+                            maybe_awaitable, owning_loop
+                        )
+                        if self._event_sink_mode == EventSinkMode.FAIL_CLOSED:
+                            future.result()
+                        else:
+                            future.add_done_callback(
+                                self._build_event_task_callback(event_type)
+                            )
+                    else:
+                        # No owning loop (fully synchronous run) — a throwaway
+                        # loop is the only option and is safe here because no
+                        # other loop is driving the sink's resources.
+                        asyncio.run(maybe_awaitable)
                 else:
                     if self._event_sink_mode == EventSinkMode.FAIL_CLOSED:
                         raise HarnessError(
@@ -3471,7 +3507,13 @@ class AgentHarness:
             logger.warning("Event sink failure for %s: %s", event_type, exc)
 
     def _build_event_task_callback(self, event_type: str):
-        def _callback(task: asyncio.Task) -> None:
+        # Handles the done-callback for both an asyncio.Task (running-loop path)
+        # and a concurrent.futures.Future (run_coroutine_threadsafe path). Both
+        # expose .result(); the callback only reads it to surface swallowed
+        # errors, so the same handler serves either type.
+        def _callback(
+            task: asyncio.Future | concurrent.futures.Future,
+        ) -> None:
             try:
                 task.result()
             except Exception as exc:  # pragma: no cover - loop callback path
@@ -5183,6 +5225,12 @@ class AgentHarness:
         scoping semantics (including the streaming path).
         """
         self._check_context_budget()
+
+        # Capture the loop that owns this async run so sync-tool lifecycle hooks
+        # (which agno invokes from ThreadPoolExecutor worker threads with no
+        # running loop) can route consumer coroutines back here instead of
+        # spinning a throwaway loop that drives loop-bound resources incorrectly.
+        self._owning_loop = asyncio.get_running_loop()
 
         run_id = f"run_{uuid4().hex}"
         effective_session = session_id or (context.session_id if context else None) or self._active_session_id(None)

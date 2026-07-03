@@ -20,19 +20,17 @@ pytestmark = pytest.mark.integration
 
 
 def _require_ollama() -> str:
-    """Return the model ID to use, or skip if Ollama is unavailable."""
-    try:
-        import httpx
-    except Exception:  # pragma: no cover - environment guard
-        pytest.skip("httpx unavailable for Ollama health check")
+    """Return the model ID to use, or skip if Ollama is unavailable.
 
-    try:
-        resp = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
-    except Exception:
-        pytest.skip("Ollama daemon not reachable on localhost:11434")
+    "Unavailable" covers both a down daemon and a missing ``ollama`` binding
+    (the optional ``agnoclaw[local]`` extra) — agno imports the binding lazily
+    at harness-build time, so a reachable daemon without it would still error
+    rather than skip.
+    """
+    from tests._ollama import ollama_available
 
-    if resp.status_code != 200:
-        pytest.skip("Ollama daemon unhealthy")
+    if not ollama_available():
+        pytest.skip("Ollama unavailable (daemon down or agnoclaw[local] not installed)")
 
     return os.environ.get("AGNOCLAW_TEST_MODEL", "qwen3:0.6b")
 
