@@ -45,13 +45,10 @@ def test_live_agent_session_persistence(tmp_workspace_path):
     model = os.environ.get("AGNOCLAW_TEST_MODEL", "qwen3:0.6b" if provider == "ollama" else "claude-haiku-4-5-20251001")
 
     if provider == "ollama":
-        try:
-            import httpx
-            r = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
-            if r.status_code != 200:
-                pytest.skip("Ollama not running")
-        except Exception:
-            pytest.skip("Ollama not running")
+        from tests._ollama import ollama_available
+
+        if not ollama_available():
+            pytest.skip("Ollama not running (or agnoclaw[local] not installed)")
     elif provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
         pytest.skip("ANTHROPIC_API_KEY not set")
 

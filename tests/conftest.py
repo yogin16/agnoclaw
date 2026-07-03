@@ -159,13 +159,10 @@ def _get_live_provider() -> tuple[str, str]:
 
 
 def _ollama_available() -> bool:
-    """True if the Ollama daemon is reachable."""
-    try:
-        import httpx
-        r = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
-        return r.status_code == 200
-    except Exception:
-        return False
+    """True if the Ollama daemon is reachable AND the binding is importable."""
+    from tests._ollama import ollama_available
+
+    return ollama_available()
 
 
 def _anthropic_available() -> bool:
