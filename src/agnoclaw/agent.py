@@ -137,6 +137,11 @@ logger = logging.getLogger("agnoclaw.agent")
 
 _ERROR_MESSAGE_LIMIT = 500
 _RESULT_PREVIEW_LIMIT = 240
+# Generic, cross-app identity keys the harness recognizes on a dict/model tool result
+# when building the structured `result_ref`. Deployment-specific keys (e.g. an app's
+# artifact_title/document_title) are supplied by the consumer via
+# HarnessConfig.result_ref_keys rather than hardcoded here — agnoclaw stays app-agnostic.
+_RESULT_REF_KEYS = ("id", "name", "title", "type", "version", "filename")
 _TRACE_METADATA_KEY = "_agnoclaw_trace"
 _ASSISTANT_STREAM_EVENTS = frozenset({"RunContent"})
 _TOOL_LIFECYCLE_EVENT_TYPES = frozenset(
@@ -206,6 +211,16 @@ _KNOWN_PROVIDERS: set[str] = {
     "vllm",
     "xai",
 }
+
+
+def _merge_result_ref_keys(extra: list[str] | None) -> tuple[str, ...]:
+    """Generic identity keys with consumer-configured keys appended (order-preserving,
+    de-duplicated). Non-string / blank entries are ignored."""
+    keys = list(_RESULT_REF_KEYS)
+    for key in extra or []:
+        if isinstance(key, str) and key.strip() and key not in keys:
+            keys.append(key)
+    return tuple(keys)
 
 
 def get_current_tool_runtime() -> dict[str, Any] | None:
@@ -748,6 +763,9 @@ class AgentHarness:
         extra_instructions: str | None = None,
     ):
         self.config = config or get_config()
+        self._result_ref_keys = _merge_result_ref_keys(
+            getattr(self.config, "result_ref_keys", None)
+        )
         self.name = name
         self.user_id = user_id
         self.session_id = session_id
@@ -3040,6 +3058,44 @@ class AgentHarness:
         return AgentHarness._truncate_text(text, limit=_RESULT_PREVIEW_LIMIT)
 
     @staticmethod
+    def _result_identity(
+        value: Any, ref_keys: tuple[str, ...] = _RESULT_REF_KEYS
+    ) -> dict[str, Any] | None:
+        """Small JSON-safe identity from a live tool result — dict, Pydantic model
+        (.model_dump), or a JSON string. Only the recognized identity keys
+        (id/name/title/type/version/filename plus any consumer-configured keys);
+        never full content. None for scalars / non-identifying results."""
+        obj: Any = value
+        if hasattr(obj, "model_dump"):
+            try:
+                # Dump only the identity fields — avoids serializing the full
+                # (possibly large/nested) model graph on the tool-completion hot path.
+                obj = obj.model_dump(mode="json", include=set(ref_keys))
+            except Exception:
+                return None
+        if isinstance(obj, str):
+            # Only an object-shaped JSON string can carry identity; skip parsing
+            # large non-object results (HTML, plain text) on the hot path.
+            if not obj.lstrip().startswith("{"):
+                return None
+            try:
+                obj = json.loads(obj)
+            except Exception:
+                return None
+        if not isinstance(obj, dict):
+            return None
+        ref: dict[str, Any] = {}
+        for key in ref_keys:
+            candidate = obj.get(key)
+            # bool is an int subclass — exclude it so a boolean flag can't pose as
+            # identity; accept str/int/float scalars with non-blank content.
+            if isinstance(candidate, bool) or not isinstance(candidate, (str, int, float)):
+                continue
+            if str(candidate).strip():
+                ref[key] = candidate
+        return ref or None
+
+    @staticmethod
     def _scheduler_invocation_payload(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(metadata, dict):
             return None
@@ -3360,6 +3416,9 @@ class AgentHarness:
                 "error": getattr(fc, "error", None),
                 "duration_ms": duration_ms,
                 "result_preview": result_preview,
+                "result_ref": self._result_identity(
+                    getattr(fc, "result", None), self._result_ref_keys
+                ),
                 "result_chars": (
                     len(str(getattr(fc, "result", "")))
                     if getattr(fc, "result", None) is not None
@@ -4515,8 +4574,7 @@ class AgentHarness:
             details["event"] = event_name
         return details
 
-    @staticmethod
-    def _tool_stream_payload(event: Any) -> dict[str, Any]:
+    def _tool_stream_payload(self, event: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         tool_obj = AgentHarness._event_attr(event, "tool", None)
 
@@ -4551,12 +4609,12 @@ class AgentHarness:
             result = AgentHarness._event_attr(event, "content", None)
         if result is not None:
             payload["result_preview"] = AgentHarness._format_result_preview(result)
+            payload["result_ref"] = self._result_identity(result, self._result_ref_keys)
             payload["result_chars"] = len(str(result))
 
         return payload
 
-    @staticmethod
-    def _stream_event_summary(event: Any) -> dict[str, Any]:
+    def _stream_event_summary(self, event: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         for key in (
             "parent_run_id",
@@ -4578,7 +4636,7 @@ class AgentHarness:
                 payload["tool_name"] = tool_name
             if tool_call_id and "tool_call_id" not in payload:
                 payload["tool_call_id"] = tool_call_id
-        payload.update(AgentHarness._tool_stream_payload(event))
+        payload.update(self._tool_stream_payload(event))
         return payload
 
     @staticmethod

@@ -181,6 +181,13 @@ class HarnessConfig(BaseSettings):
     event_sink_mode: str = "best_effort"
     """Event sink behavior: 'best_effort' (default) or 'fail_closed'."""
 
+    result_ref_keys: list[str] = Field(default_factory=list)
+    """Extra dict keys the consumer's tool results use for identity, merged on top of
+    the generic built-ins (id, name, title, type, version, filename) when building the
+    structured `result_ref` on tool.call.completed events. Use this to surface
+    deployment-specific identifiers (e.g. artifact_title, document_title) without the
+    harness hardcoding any one app's schema."""
+
     policy_fail_open: bool = False
     """If True, policy engine evaluation errors default to ALLOW with warning."""
 

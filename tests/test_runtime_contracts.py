@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from agno.exceptions import AgentRunException
 
-from agnoclaw.agent import AgentHarness
+from agnoclaw.agent import _RESULT_REF_KEYS, AgentHarness, _merge_result_ref_keys
 from agnoclaw.config import HarnessConfig
 from agnoclaw.runtime import (
     AgnoAuthError,
@@ -949,6 +949,189 @@ def test_tool_events_include_step_progress_and_result_preview(tmp_path):
     assert completed.payload["arguments"] == {"url": "https://example.com"}
     assert completed.payload["argument_keys"] == ["url"]
     assert completed.payload["result_preview"] == "line one line two"
+    # Scalar/string result yields no structured identity.
+    assert completed.payload["result_ref"] is None
+
+
+def test_result_identity_extracts_generic_keys_only():
+    ref = AgentHarness._result_identity(
+        {
+            "id": "art_123",
+            "title": "Quarterly Report",
+            "type": "document",
+            "content": "the full body that must never be carried",
+            "extra": {"nested": "ignored"},
+            # App-specific keys are NOT recognized without explicit configuration —
+            # the harness stays agnostic about any one consumer's schema.
+            "artifact_type": "report",
+        }
+    )
+    assert ref == {"id": "art_123", "title": "Quarterly Report", "type": "document"}
+    assert "content" not in ref
+    assert "artifact_type" not in ref
+
+
+def test_result_identity_honors_configured_extra_keys():
+    ref_keys = _merge_result_ref_keys(["artifact_title", "document_title"])
+    ref = AgentHarness._result_identity(
+        {"id": "a1", "artifact_title": "Design Doc", "unknown_key": "ignored"},
+        ref_keys,
+    )
+    assert ref == {"id": "a1", "artifact_title": "Design Doc"}
+    assert "unknown_key" not in ref
+
+
+def test_result_identity_from_pydantic_model():
+    from pydantic import BaseModel
+
+    class Artifact(BaseModel):
+        id: str
+        title: str
+        version: int
+
+    ref = AgentHarness._result_identity(Artifact(id="a1", title="Spec", version=3))
+    assert ref == {"id": "a1", "title": "Spec", "version": 3}
+
+
+def test_result_identity_from_json_string():
+    ref = AgentHarness._result_identity('{"id": "d9", "name": "notes.txt", "type": "file"}')
+    assert ref == {"id": "d9", "name": "notes.txt", "type": "file"}
+
+
+def test_result_identity_none_for_scalars_and_non_identifying():
+    assert AgentHarness._result_identity(None) is None
+    assert AgentHarness._result_identity(42) is None
+    assert AgentHarness._result_identity("plain text output") is None
+    assert AgentHarness._result_identity([1, 2, 3]) is None
+    # A dict with no identity-bearing keys yields None, not an empty dict.
+    assert AgentHarness._result_identity({"foo": "bar", "count": 5}) is None
+    # Blank/whitespace identity values are ignored.
+    assert AgentHarness._result_identity({"title": "   "}) is None
+
+
+def test_result_identity_excludes_bool_and_accepts_float():
+    # bool is an int subclass but is meaningless as identity — it must not leak in.
+    ref = AgentHarness._result_identity({"id": "a1", "type": True})
+    assert ref == {"id": "a1"}
+    assert "type" not in ref
+    # Numeric identifiers expressed as floats are preserved (e.g. a float version).
+    ref = AgentHarness._result_identity({"id": "a1", "version": 1.5})
+    assert ref == {"id": "a1", "version": 1.5}
+
+
+def test_result_identity_skips_parsing_non_object_strings():
+    # A large non-object string (HTML/plain text) is not JSON-parsed; yields None.
+    assert AgentHarness._result_identity("<html><body>" + "x" * 10000) is None
+    assert AgentHarness._result_identity("[1, 2, 3]") is None  # JSON array, not identity
+    # Object-shaped JSON (even with leading whitespace) is still parsed.
+    assert AgentHarness._result_identity('  {"id": "z1"}') == {"id": "z1"}
+
+
+def test_result_identity_pydantic_include_limits_dump(monkeypatch):
+    from pydantic import BaseModel
+
+    class Doc(BaseModel):
+        id: str
+        title: str
+
+    doc = Doc(id="d1", title="Spec")
+    captured = {}
+    original = Doc.model_dump
+
+    def spy(self, **kwargs):
+        captured.update(kwargs)
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(Doc, "model_dump", spy)
+    ref = AgentHarness._result_identity(doc, _RESULT_REF_KEYS)
+    assert ref == {"id": "d1", "title": "Spec"}
+    # Only identity fields are dumped, not the whole model graph.
+    assert captured.get("include") == set(_RESULT_REF_KEYS)
+
+
+def test_merge_result_ref_keys_dedups_and_ignores_blanks():
+    merged = _merge_result_ref_keys(["artifact_title", "id", "  ", "artifact_title", 5])
+    # Generic keys come first, unchanged.
+    assert merged[: len(_RESULT_REF_KEYS)] == _RESULT_REF_KEYS
+    # "id" already generic -> not duplicated; blanks/non-strings dropped.
+    assert merged == _RESULT_REF_KEYS + ("artifact_title",)
+
+
+def test_tool_events_emit_result_ref_for_dict_result(tmp_path):
+    sink = InMemoryEventSink()
+    harness, _ = _make_harness(tmp_path, event_sink=sink)
+    run_context = _tool_run_context(harness)
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="load_artifact"),
+        arguments={"artifact_id": "art_9"},
+        result={"id": "art_9", "title": "Design Doc", "type": "document"},
+        error=None,
+        call_id="tc-ref-1",
+    )
+
+    harness._handle_tool_pre_hook(fc=fc, run_context=run_context)
+    harness._handle_tool_post_hook(fc=fc, run_context=run_context)
+
+    completed = [e for e in sink.events if e.event_type == "tool.call.completed"][-1]
+    assert completed.payload["result_ref"] == {
+        "id": "art_9",
+        "title": "Design Doc",
+        "type": "document",
+    }
+    # result_preview is still emitted unchanged alongside result_ref.
+    assert "result_preview" in completed.payload
+
+
+def test_tool_events_result_ref_honors_configured_keys(tmp_path):
+    config = HarnessConfig(result_ref_keys=["artifact_title", "artifact_type"])
+    sink = InMemoryEventSink()
+    harness, _ = _make_harness(tmp_path, config=config, event_sink=sink)
+    run_context = _tool_run_context(harness)
+    fc = SimpleNamespace(
+        function=SimpleNamespace(name="load_artifact"),
+        arguments={"artifact_id": "art_9"},
+        result={"id": "art_9", "artifact_title": "Design Doc", "artifact_type": "document"},
+        error=None,
+        call_id="tc-ref-cfg-1",
+    )
+
+    harness._handle_tool_pre_hook(fc=fc, run_context=run_context)
+    harness._handle_tool_post_hook(fc=fc, run_context=run_context)
+
+    completed = [e for e in sink.events if e.event_type == "tool.call.completed"][-1]
+    assert completed.payload["result_ref"] == {
+        "id": "art_9",
+        "artifact_title": "Design Doc",
+        "artifact_type": "document",
+    }
+
+
+def test_stream_event_summary_result_ref_honors_configured_keys(tmp_path):
+    # The streaming path (used by the TUI/async REPL renderers, too) must honor the
+    # consumer-configured keys — not just the sync tool-hook path.
+    config = HarnessConfig(result_ref_keys=["artifact_title"])
+    harness, _ = _make_harness(tmp_path, config=config)
+    event = SimpleNamespace(
+        result={"id": "art_9", "artifact_title": "Design Doc", "content": "big body"},
+        tool=None,
+    )
+
+    summary = harness._stream_event_summary(event)
+
+    assert summary["result_ref"] == {"id": "art_9", "artifact_title": "Design Doc"}
+
+
+def test_stream_event_summary_result_ref_generic_by_default(tmp_path):
+    harness, _ = _make_harness(tmp_path)
+    event = SimpleNamespace(
+        result={"id": "art_9", "title": "Doc", "artifact_title": "dropped"},
+        tool=None,
+    )
+
+    summary = harness._stream_event_summary(event)
+
+    # Without configuration, only generic keys are recognized.
+    assert summary["result_ref"] == {"id": "art_9", "title": "Doc"}
 
 
 def test_tool_events_emit_failed_for_tool_errors(tmp_path):
