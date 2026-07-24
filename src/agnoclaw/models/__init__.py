@@ -13,10 +13,15 @@ provider SDK you don't have installed.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agno.models.base import Model
 
 
-def _anthropic_adapter(spec: str, *, cache_prompts: bool, effort: str | None) -> Any:
+def _anthropic_adapter(spec: str, *, cache_prompts: bool, effort: str | None) -> Model | str:
+    # Imported here, not at module level: agno's anthropic module pulls
+    # in the `anthropic` SDK, which is an optional dependency.
     from .anthropic import materialize_anthropic_model
 
     return materialize_anthropic_model(spec, cache_prompts=cache_prompts, effort=effort)
