@@ -665,6 +665,13 @@ class AgentHarness:
         provider: Provider name — only needed when model is not in "provider:model_id"
                   format. Accepts "anthropic", "openai", "ollama", "groq", "google",
                   "aws"/"bedrock", "mistral", "xai"/"grok", "deepseek", "litellm".
+        cache_prompts: Enable provider-side prompt caching for providers that
+                       need an explicit lever (default: config.cache_prompts).
+                       Routed through agnoclaw.models.materialize_model; providers
+                       that cache automatically ignore it. String specs only —
+                       pre-built model instances are passed through untouched.
+        effort: Reasoning-effort hint (default: config.model_effort). Applied
+                only where the provider/model supports it; dropped elsewhere.
         permission_mode: Runtime permission mode for tool calls:
                          "bypass", "default", "accept_edits", "plan", "dont_ask".
         permission_approver: Optional approval callback used in non-bypass modes.
@@ -693,9 +700,11 @@ class AgentHarness:
 
     def __init__(
         self,
-        model: str | None = None,
+        model: str | Model | None = None,
         *,
         provider: str | None = None,
+        cache_prompts: bool | None = None,
+        effort: str | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
         workspace_dir: str | Path | None = None,
@@ -873,6 +882,24 @@ class AgentHarness:
 
         # Resolve model → Agno-native "provider:model_id" string
         self._model = _resolve_model(_model, provider, self.config)
+
+        # Route "provider:id" specs through the provider adapter registry.
+        # Callers state intent only (cache_prompts / effort); each adapter
+        # applies its provider's best practice, and providers without an
+        # adapter (or without applicable levers) keep the plain spec
+        # string. Pre-built model instances pass through untouched.
+        _cache_prompts = (
+            cache_prompts
+            if cache_prompts is not None
+            else self.config.cache_prompts
+        )
+        _effort = effort if effort is not None else self.config.model_effort
+        if isinstance(self._model, str) and (_cache_prompts or _effort):
+            from .models import materialize_model
+
+            self._model = materialize_model(
+                self._model, cache_prompts=_cache_prompts, effort=_effort
+            )
 
         # Workspace (with hierarchical parent chain)
         _ws_dir = workspace_dir or self.config.workspace_dir
@@ -1725,8 +1752,11 @@ class AgentHarness:
         if caller_blocks is not None:
             resolved = caller_blocks() if callable(caller_blocks) else caller_blocks
             blocks.extend(resolved or [])
+        # include_time: this block is delivered uncached after the cached
+        # prefix, so wall-clock time here costs no cache hits.
         text = self._prompt_builder.build_runtime_block(
-            session_id=self._prompt_session_id or self.session_id
+            session_id=self._prompt_session_id or self.session_id,
+            include_time=True,
         )
         blocks.append(SystemPromptBlock(text=text, cache=False))
         return blocks

@@ -72,6 +72,15 @@ class HarnessConfig(BaseSettings):
     default_provider: str = "anthropic"
     """Model provider: 'anthropic', 'openai', 'google', 'groq', 'ollama', 'litellm'"""
 
+    cache_prompts: bool = False
+    """Enable provider-side prompt caching where the provider needs an
+    explicit lever (routed through agnoclaw.models.materialize_model).
+    Providers that cache automatically (e.g. OpenAI) ignore this."""
+
+    model_effort: str | None = None
+    """Reasoning-effort hint (e.g. 'low'|'medium'|'high'). Applied only
+    on providers/models that support it; silently dropped elsewhere."""
+
     # Workspace
     workspace_dir: str = "~/.agnoclaw/workspace"
     """Root workspace directory. Expanded at runtime."""
@@ -245,11 +254,7 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     """Recursively merge nested dictionaries; override wins on conflicts."""
     merged = dict(base)
     for key, value in override.items():
-        if (
-            key in merged
-            and isinstance(merged[key], dict)
-            and isinstance(value, dict)
-        ):
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
             merged[key] = _deep_merge(merged[key], value)
         else:
             merged[key] = value

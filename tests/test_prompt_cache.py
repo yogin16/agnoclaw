@@ -103,6 +103,22 @@ def _make_harness(tmp_path, model):
     return harness, agent_cls
 
 
+def _make_harness_kwargs(tmp_path, **kwargs):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+
+    agent_cls = MagicMock(return_value=MagicMock())
+    with patch("agnoclaw.agent.Agent", agent_cls):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                workspace_dir=tmp_path,
+                config=HarnessConfig(),
+                session_id="cs_split",
+                **kwargs,
+            )
+    return harness, agent_cls
+
+
 def test_split_mode_active_for_cache_enabled_claude_instance(tmp_path):
     from agnoclaw.models.anthropic import CacheAwareClaude
 
@@ -185,6 +201,66 @@ def test_split_mode_runtime_block_tracks_session_id_updates(tmp_path):
     # session_id=None falls back to the harness session, not a blank line.
     harness._set_system_prompt(session_id=None)
     assert "Session ID: cs_split" in model.system_prompt_blocks()[0].text
+
+
+def test_harness_cache_prompts_arg_materializes_model(tmp_path):
+    """cache_prompts=True on the constructor routes string specs through
+    the provider adapter and lands in split-cache mode."""
+    from agnoclaw.models.anthropic import CacheAwareClaude
+
+    harness, agent_cls = _make_harness_kwargs(
+        tmp_path, model="anthropic:claude-sonnet-4-6", cache_prompts=True
+    )
+    assert isinstance(harness._model, CacheAwareClaude)
+    assert harness._model.cache_system_prompt is True
+    assert "# Runtime" not in agent_cls.call_args.kwargs["system_message"]
+
+
+def test_harness_config_cache_prompts_materializes_model(tmp_path):
+    from agnoclaw.agent import AgentHarness
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.models.anthropic import CacheAwareClaude
+
+    cfg = HarnessConfig(cache_prompts=True, model_effort="medium")
+    with patch("agnoclaw.agent.Agent", MagicMock(return_value=MagicMock())):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                model="anthropic:claude-sonnet-4-6",
+                workspace_dir=tmp_path,
+                config=cfg,
+                session_id="cs_cfg",
+            )
+    assert isinstance(harness._model, CacheAwareClaude)
+    assert harness._model.output_config == {"effort": "medium"}
+
+
+def test_harness_cache_prompts_leaves_other_providers_untouched(tmp_path):
+    harness, _ = _make_harness_kwargs(
+        tmp_path, model="openai:gpt-4o", cache_prompts=True
+    )
+    assert harness._model == "openai:gpt-4o"
+
+
+def test_split_mode_runtime_block_carries_wall_clock_time(tmp_path):
+    """The uncached trailing block costs no cache hits, so it keeps the
+    model time-aware (minute granularity)."""
+    from agnoclaw.models.anthropic import CacheAwareClaude
+
+    model = CacheAwareClaude(id="claude-sonnet-4-6", cache_system_prompt=True)
+    fake_dt = MagicMock(wraps=datetime)
+    fake_dt.now.return_value = datetime(2026, 7, 24, 10, 15, 30)
+    _make_harness(tmp_path, model)
+    with patch("agnoclaw.prompts.system.datetime", fake_dt):
+        text = model.system_prompt_blocks()[0].text
+    assert "2026-07-24 10:15" in text
+
+
+def test_runtime_block_time_opt_in(builder):
+    fake_dt = MagicMock(wraps=datetime)
+    fake_dt.now.return_value = datetime(2026, 7, 24, 10, 15, 30)
+    with patch("agnoclaw.prompts.system.datetime", fake_dt):
+        timed = builder.build_runtime_block(session_id="cs", include_time=True)
+    assert "Current date and time: 2026-07-24 10:15" in timed
 
 
 def test_runtime_block_sanitizes_session_id_newlines(builder):

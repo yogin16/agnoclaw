@@ -140,7 +140,9 @@ class SystemPromptBuilder:
 
         return "\n\n---\n\n".join(parts)
 
-    def build_runtime_block(self, *, session_id: str | None = None) -> str:
+    def build_runtime_block(
+        self, *, session_id: str | None = None, include_time: bool = False
+    ) -> str:
         """Build the volatile "# Runtime" section on its own.
 
         This is the only part of the system prompt that varies per
@@ -148,12 +150,23 @@ class SystemPromptBuilder:
         lets callers place it OUTSIDE the cached prompt prefix — e.g.
         as a trailing uncached Anthropic system block — so the stable
         prompt stays byte-identical across sessions and prompt-cache
-        hits survive. The date is deliberately day-granular: a
-        wall-clock timestamp invalidated the whole cached prefix every
-        time the prompt was rebuilt mid-run (skill activation).
+        hits survive.
+
+        ``include_time`` adds wall-clock time (minute granularity). The
+        default is day-granular because the inline path embeds this
+        block in the prompt prefix, where a ticking clock would bust
+        provider caches (explicit breakpoints and OpenAI-style implicit
+        caching alike) on every rebuild. Callers that deliver the block
+        outside the cached prefix — the split-cache mode's uncached
+        trailing system block — pass ``include_time=True``: there it
+        costs no cache hits and keeps the model time-aware.
         """
+        if include_time:
+            stamp = f"Current date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        else:
+            stamp = f"Current date: {datetime.now().strftime('%Y-%m-%d')}"
         runtime_lines = [
-            f"Current date: {datetime.now().strftime('%Y-%m-%d')}",
+            stamp,
             f"Workspace: {self.workspace_dir}",
         ]
         if self.sandbox_dir is not None:
