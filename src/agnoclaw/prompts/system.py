@@ -137,20 +137,33 @@ class SystemPromptBuilder:
 
         # 15: Runtime reminders
         if include_datetime:
-            now = datetime.now()
-            runtime_lines = [
-                f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}",
-                f"Workspace: {self.workspace_dir}",
-            ]
-            if self.sandbox_dir is not None:
-                runtime_lines.append(f"Session sandbox: {self.sandbox_dir}")
-                if self.sandbox_mode:
-                    runtime_lines.append(f"Sandbox mode: {self.sandbox_mode}")
-            if session_id:
-                runtime_lines.append(f"Session ID: {session_id}")
-            parts.append("# Runtime\n\n" + "\n".join(runtime_lines))
+            parts.append(self.build_runtime_block(session_id=session_id))
 
         return "\n\n---\n\n".join(parts)
+
+    def build_runtime_block(self, *, session_id: Optional[str] = None) -> str:
+        """Build the volatile "# Runtime" section on its own.
+
+        This is the only part of the system prompt that varies per
+        session (session ID) or per day (date). Keeping it separable
+        lets callers place it OUTSIDE the cached prompt prefix — e.g.
+        as a trailing uncached Anthropic system block — so the stable
+        prompt stays byte-identical across sessions and prompt-cache
+        hits survive. The date is deliberately day-granular: a
+        wall-clock timestamp invalidated the whole cached prefix every
+        time the prompt was rebuilt mid-run (skill activation).
+        """
+        runtime_lines = [
+            f"Current date: {datetime.now().strftime('%Y-%m-%d')}",
+            f"Workspace: {self.workspace_dir}",
+        ]
+        if self.sandbox_dir is not None:
+            runtime_lines.append(f"Session sandbox: {self.sandbox_dir}")
+            if self.sandbox_mode:
+                runtime_lines.append(f"Sandbox mode: {self.sandbox_mode}")
+        if session_id:
+            runtime_lines.append(f"Session ID: {session_id}")
+        return "# Runtime\n\n" + "\n".join(runtime_lines)
 
     def _load_workspace_context(self) -> Optional[str]:
         """

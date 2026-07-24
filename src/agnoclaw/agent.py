@@ -278,7 +278,10 @@ def _run_output_is_error(value: Any) -> bool:
 
 def _resolve_model(model: str | None, provider: str | None, config: HarnessConfig) -> str:
     """
-    Return an Agno-compatible 'provider:model_id' string.
+    Return an Agno-compatible 'provider:model_id' string, or pass a
+    pre-built Agno ``Model`` instance through untouched (callers may
+    construct e.g. ``agno.models.anthropic.Claude`` directly to set
+    provider-specific options like prompt-cache flags or beta headers).
 
     Accepts:
       - "anthropic:claude-sonnet-4-6"  (combined, no provider arg needed)
@@ -287,6 +290,10 @@ def _resolve_model(model: str | None, provider: str | None, config: HarnessConfi
 
     Provider aliases: "aws"/"bedrock" → "aws-bedrock", "grok" → "xai"
     """
+    if model is not None and not isinstance(model, str):
+        # Pre-built Agno Model instance — Agno's Agent accepts it as-is.
+        return model  # type: ignore[return-value]
+
     model_str = model or config.default_model
     prov = provider or config.default_provider
 
@@ -1032,8 +1039,19 @@ class AgentHarness:
         self._include_learning = _enable_learning
         self._plan_mode = False
 
-        # Assemble system prompt (skills are injected per-run, then reset)
-        system_prompt = self._build_system_prompt(session_id=session_id)
+        # Assemble system prompt (skills are injected per-run, then reset).
+        # Split-prompt cache mode (cache-enabled Anthropic model instance):
+        # the volatile "# Runtime" trailer moves to an uncached trailing
+        # system block so the stable prefix stays byte-identical across
+        # rebuilds and sessions — see _split_prompt_cache_mode.
+        self._prompt_session_id: str | None = session_id
+        if self._split_prompt_cache_mode():
+            system_prompt = self._build_system_prompt(
+                session_id=session_id, include_runtime=False
+            )
+            self._model.system_prompt_blocks = self._runtime_system_blocks
+        else:
+            system_prompt = self._build_system_prompt(session_id=session_id)
 
         # Storage backend
         provided_db = db
@@ -1620,8 +1638,15 @@ class AgentHarness:
         *,
         skill_content: str | None = None,
         session_id: str | None = None,
+        include_runtime: bool = True,
     ) -> str:
-        """Build the canonical system prompt for this harness instance."""
+        """Build the canonical system prompt for this harness instance.
+
+        ``include_runtime=False`` omits the volatile "# Runtime" trailer
+        (date / session ID) so the returned prompt is byte-stable across
+        rebuilds — the split-prompt cache mode delivers the runtime
+        block as a separate uncached system block instead.
+        """
         include_learning = self._include_learning and not self._plan_mode
 
         # Compose extra context: user instructions + skill catalog for auto-selection
@@ -1647,8 +1672,41 @@ class AgentHarness:
             extra_context=extra_context,
             include_learning=include_learning,
             include_plan_mode=self._plan_mode,
+            include_datetime=include_runtime,
             session_id=session_id if session_id is not None else self.session_id,
         )
+
+    def _split_prompt_cache_mode(self) -> bool:
+        """True when the model carries the volatile runtime block itself.
+
+        Split mode activates for pre-built Anthropic ``Claude`` model
+        instances that opted into system-prompt caching. The stable
+        prompt (everything except "# Runtime") goes into
+        ``system_message`` — cached — and the runtime block rides as a
+        trailing uncached system block via ``system_prompt_blocks``, so
+        a mid-run prompt rebuild (skill activation) or a new session no
+        longer invalidates the cached prefix just because the clock
+        moved. String model specs keep the legacy inline behavior.
+        """
+        model = self._model
+        return (
+            not isinstance(model, str)
+            and getattr(model, "cache_system_prompt", False)
+            and hasattr(model, "system_prompt_blocks")
+        )
+
+    def _runtime_system_blocks(self) -> list[Any]:
+        """Zero-arg callable target for ``Claude.system_prompt_blocks``.
+
+        Evaluated by Agno on every request, so the date stays fresh
+        without ever touching the cached stable prefix.
+        """
+        from agno.models.anthropic.claude import SystemPromptBlock
+
+        text = self._prompt_builder.build_runtime_block(
+            session_id=self._prompt_session_id or self.session_id
+        )
+        return [SystemPromptBlock(text=text, cache=False)]
 
     def _set_system_prompt(
         self,
@@ -1657,6 +1715,17 @@ class AgentHarness:
         session_id: str | None = None,
     ) -> None:
         """Update the underlying agent's system prompt."""
+        self._prompt_session_id = (
+            session_id if session_id is not None else self.session_id
+        )
+        if self._split_prompt_cache_mode():
+            self._agent.system_message = self._build_system_prompt(
+                skill_content=skill_content,
+                session_id=session_id,
+                include_runtime=False,
+            )
+            self._model.system_prompt_blocks = self._runtime_system_blocks
+            return
         self._agent.system_message = self._build_system_prompt(
             skill_content=skill_content,
             session_id=session_id,
@@ -4876,9 +4945,18 @@ class AgentHarness:
                     skill_obj = self.skills._get_skill(run_input.skill)
                     if skill_obj and skill_obj.meta.context == "fork":
                         from .tools.tasks import _run_subagent
-                        active_provider = self._model.split(":", 1)[0] if ":" in self._model else None
+                        if isinstance(self._model, str):
+                            base_model = self._model
+                        else:
+                            # Model instance — recover "provider:id" for the
+                            # subagent fork (which builds its own model).
+                            _prov = (getattr(self._model, "provider", "") or "").lower()
+                            base_model = (
+                                f"{_prov}:{self._model.id}" if _prov else self._model.id
+                            )
+                        active_provider = base_model.split(":", 1)[0] if ":" in base_model else None
                         subagent_model = _resolve_model(
-                            skill_obj.meta.model or self._model,
+                            skill_obj.meta.model or base_model,
                             active_provider,
                             self.config,
                         )
@@ -6419,7 +6497,11 @@ class AgentHarness:
     @property
     def model_name(self) -> str:
         """Return the resolved model string (provider:model_id)."""
-        return self._model
+        if isinstance(self._model, str):
+            return self._model
+        _prov = (getattr(self._model, "provider", "") or "").lower()
+        model_id = getattr(self._model, "id", "") or ""
+        return f"{_prov}:{model_id}" if _prov else model_id
 
     @property
     def storage(self):
