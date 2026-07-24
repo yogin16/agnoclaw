@@ -161,7 +161,12 @@ class SystemPromptBuilder:
             if self.sandbox_mode:
                 runtime_lines.append(f"Sandbox mode: {self.sandbox_mode}")
         if session_id:
-            runtime_lines.append(f"Session ID: {session_id}")
+            # Collapse whitespace (incl. newlines): session IDs are
+            # caller-supplied and this block can reach the model outside
+            # the harness's prompt-policy inspection in split-cache mode —
+            # a newline here must not open a new instruction line.
+            safe_session_id = " ".join(str(session_id).split())
+            runtime_lines.append(f"Session ID: {safe_session_id}")
         return "# Runtime\n\n" + "\n".join(runtime_lines)
 
     def _load_workspace_context(self) -> str | None:

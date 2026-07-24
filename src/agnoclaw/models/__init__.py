@@ -16,18 +16,18 @@ from __future__ import annotations
 from typing import Any
 
 
-def _anthropic_adapter(
-    spec: str, *, cache_prompts: bool, effort: str | None
-) -> Any:
+def _anthropic_adapter(spec: str, *, cache_prompts: bool, effort: str | None) -> Any:
     from .anthropic import materialize_anthropic_model
 
-    return materialize_anthropic_model(
-        spec, cache_prompts=cache_prompts, effort=effort
-    )
+    return materialize_anthropic_model(spec, cache_prompts=cache_prompts, effort=effort)
 
 
 # provider prefix → adapter callable. Add new providers here as their
-# Agno model classes grow optimization levers worth configuring.
+# Agno model classes grow optimization levers worth configuring. Each
+# adapter applies that provider's own best practice — e.g. Anthropic
+# needs explicit cache_control breakpoints, while OpenAI caches prompt
+# prefixes automatically server-side (no lever to set, so no adapter;
+# it still benefits from the harness's stable-prefix prompt ordering).
 _ADAPTERS = {
     "anthropic": _anthropic_adapter,
 }

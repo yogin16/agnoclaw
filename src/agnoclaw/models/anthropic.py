@@ -16,7 +16,15 @@ re-processing it.
 
 Breakpoint budget per request (Anthropic allows 4):
 ``cache_tools`` uses 1, ``cache_system_prompt`` uses 1, and this module
-adds at most 2 on messages.
+adds at most 2 on messages. Pre-existing ``cache_control`` markers on
+message blocks count against the message budget so the request-level cap
+holds even for caller-annotated content.
+
+Cost note: conversation-prefix caching is tuned for agentic loops, where
+each request is followed by more requests sharing the prefix within the
+cache TTL. One-shot requests, or interactive chats whose turns are spaced
+beyond the TTL, pay the ~1.25x cache-write premium without ever getting a
+read — leave ``cache_prompts`` off for those workloads.
 """
 
 from __future__ import annotations
@@ -26,29 +34,42 @@ from typing import Any
 
 from agno.models.anthropic import Claude
 
-# Legacy models that reject ``output_config: {"effort": ...}`` — effort
-# is GA on Sonnet 4.6 / Opus 4.5 and everything after; only these older
-# tiers error on it. A denylist keeps future models working by default.
+# Models that reject ``output_config: {"effort": ...}`` outright. Effort
+# shipped with Sonnet 4.6 / Opus 4.5; every tier released before those —
+# including still-served Claude 4.0/4.1 aliases and dated IDs — errors on
+# it. A denylist keeps future models working by default.
 _EFFORT_UNSUPPORTED_PREFIXES = (
+    "claude-3-",
     "claude-haiku-4-5",
     "claude-sonnet-4-5",
-    "claude-3-",
+    "claude-opus-4-0",
+    "claude-opus-4-1",
+    "claude-sonnet-4-0",
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514",
 )
 
-# Per-model beta headers worth auto-applying. Token-efficient tool use
-# is Claude 3.7 Sonnet only per Anthropic's docs — newer models silently
-# ignore the header but lose prompt-cache hits over it, so gate tightly.
-_TOKEN_EFFICIENT_TOOLS_BETA = "token-efficient-tools-2025-02-19"
+# Models where effort exists but only a subset of levels is accepted
+# ("xhigh" arrived with Opus 4.7; "max" with the 4.6 family). Models not
+# listed here and not in the denylist accept every level.
+_EFFORT_PARTIAL_SUPPORT: tuple[tuple[str, frozenset[str]], ...] = (
+    ("claude-opus-4-5", frozenset({"low", "medium", "high"})),
+    ("claude-opus-4-6", frozenset({"low", "medium", "high", "max"})),
+    ("claude-sonnet-4-6", frozenset({"low", "medium", "high", "max"})),
+)
 
 
-def _supports_effort(model_id: str) -> bool:
-    return not model_id.strip().lower().startswith(_EFFORT_UNSUPPORTED_PREFIXES)
-
-
-def _resolve_betas(model_id: str) -> list[str]:
-    if model_id.strip().lower().startswith("claude-3-7-sonnet"):
-        return [_TOKEN_EFFICIENT_TOOLS_BETA]
-    return []
+def _effective_effort(model_id: str, effort: str | None) -> str | None:
+    """Return ``effort`` when the model accepts that level, else None."""
+    if not effort:
+        return None
+    mid = model_id.strip().lower()
+    if mid.startswith(_EFFORT_UNSUPPORTED_PREFIXES):
+        return None
+    for prefix, levels in _EFFORT_PARTIAL_SUPPORT:
+        if mid.startswith(prefix):
+            return effort if effort in levels else None
+    return effort
 
 
 def materialize_anthropic_model(
@@ -63,17 +84,20 @@ def materialize_anthropic_model(
     + tools (Agno's native ``cache_system_prompt`` / ``cache_tools``
     flags) and the conversation prefix (``CacheAwareClaude``). ``effort``
     maps to ``output_config.effort`` and is silently dropped on models
-    that reject it. When no option applies, the spec string is returned
-    unchanged so Agno's normal string resolution takes over.
+    (or effort levels) the API rejects. When no option applies, the spec
+    string is returned unchanged so Agno's normal string resolution takes
+    over.
+
+    A cache-enabled instance returned here should be owned by exactly one
+    ``AgentHarness`` — the harness installs its own runtime system block
+    on the instance, so sharing one across harnesses leaks one harness's
+    session metadata into the other's requests.
     """
     model_id = spec.split(":", 1)[1].strip()
-    betas = _resolve_betas(model_id)
-    effective_effort = effort if (effort and _supports_effort(model_id)) else None
-    if not cache_prompts and not betas and effective_effort is None:
+    effective_effort = _effective_effort(model_id, effort)
+    if not cache_prompts and effective_effort is None:
         return spec
     kwargs: dict[str, Any] = {"id": model_id}
-    if betas:
-        kwargs["betas"] = betas
     if cache_prompts:
         kwargs["cache_system_prompt"] = True
         kwargs["cache_tools"] = True
@@ -97,32 +121,63 @@ _INELIGIBLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
 _BLOCK_WINDOW = 15
 
 
+def _block_is_annotatable(block: dict[str, Any]) -> bool:
+    block_type = block.get("type")
+    if block_type in _INELIGIBLE_BLOCK_TYPES:
+        return False
+    # The API rejects empty text blocks as cache targets.
+    if block_type == "text" and not (block.get("text") or "").strip():
+        return False
+    return True
+
+
 def annotate_conversation_breakpoints(
     messages: Any,
     *,
     block_window: int = _BLOCK_WINDOW,
     max_message_breakpoints: int = 2,
 ) -> None:
-    """Tag Anthropic-format ``messages`` with cache breakpoints, in place.
+    """Tag Anthropic-format ``messages`` with cache breakpoints.
 
     Walking from the end of the conversation backwards:
 
     * the last eligible content block always gets ``cache_control`` —
       that is the breakpoint the *next* request's prefix lookup hits;
-    * after each placed breakpoint, another is placed once more than
+    * after each breakpoint, another is placed once more than
       ``block_window`` blocks have been walked without one, keeping every
       gap inside Anthropic's 20-block lookback window;
-    * at most ``max_message_breakpoints`` are placed in total;
+    * blocks already carrying ``cache_control`` count toward
+      ``max_message_breakpoints`` and act as breakpoints for the window
+      walk, so the per-request marker total stays bounded even when the
+      caller annotated content themselves;
     * string message content is promoted to a single text block when it
-      needs the annotation; thinking blocks are skipped (the API rejects
-      ``cache_control`` on them); blocks already carrying a
-      ``cache_control`` are left untouched.
+      needs the annotation; thinking blocks and empty text blocks are
+      never annotated (the API rejects both); non-dict blocks (SDK
+      objects in assistant turns) can't carry the annotation but still
+      count toward the lookback window.
+
+    Only the per-request message dicts are modified. Content lists and
+    block dicts are never mutated — Agno passes some of them by reference
+    from its stored session messages, and an in-place ``cache_control``
+    write there would persist across requests, accumulate markers past
+    Anthropic's 4-breakpoint cap, and pollute stored session state.
+    Blocks that need an annotation are replaced by copies inside a fresh
+    content list.
 
     A no-op on empty or non-list input.
     """
     if not isinstance(messages, list) or not messages:
         return
-    placed = 0
+    # Pre-scan: every marker already present counts against the budget,
+    # wherever it sits — otherwise our additions could push the request
+    # past Anthropic's 4-breakpoint cap.
+    placed = sum(
+        1
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for block in message["content"]
+        if isinstance(block, dict) and "cache_control" in block
+    )
     blocks_since_breakpoint = 0
     want_breakpoint = True  # the final eligible block always gets one
     for m_idx in range(len(messages) - 1, -1, -1):
@@ -141,17 +196,27 @@ def annotate_conversation_breakpoints(
             continue
         for b_idx in range(len(content) - 1, -1, -1):
             block = content[b_idx]
-            if not isinstance(block, dict):
-                continue
             blocks_since_breakpoint += 1
             if blocks_since_breakpoint > block_window:
                 want_breakpoint = True
+            if not isinstance(block, dict):
+                continue
+            if "cache_control" in block:
+                # Pre-existing marker (already counted by the pre-scan):
+                # a valid lookback anchor — reset the window around it.
+                want_breakpoint = False
+                blocks_since_breakpoint = 0
+                continue
             if not want_breakpoint:
                 continue
-            if block.get("type") in _INELIGIBLE_BLOCK_TYPES:
+            if not _block_is_annotatable(block):
                 continue
-            if "cache_control" not in block:
-                block["cache_control"] = dict(_CACHE_CONTROL)
+            annotated = dict(block)
+            annotated["cache_control"] = dict(_CACHE_CONTROL)
+            fresh_content = list(content)
+            fresh_content[b_idx] = annotated
+            message["content"] = fresh_content
+            content = fresh_content
             placed += 1
             want_breakpoint = False
             blocks_since_breakpoint = 0
@@ -221,6 +286,11 @@ class CacheAwareClaude(Claude):
 
     Set ``cache_conversation=False`` to fall back to plain ``Claude``
     behavior (system/tools caching only, per the inherited flags).
+
+    A cache-enabled instance should be owned by exactly one
+    ``AgentHarness``: the harness installs its runtime system block via
+    ``system_prompt_blocks``, and sharing one instance across harnesses
+    would serve the last harness's session metadata to all of them.
     """
 
     cache_conversation: bool = True

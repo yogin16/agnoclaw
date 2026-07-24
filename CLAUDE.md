@@ -25,6 +25,9 @@ src/agnoclaw/
 ├── memory.py         # Memory hierarchy loader (AGENTS.md, SOUL.md, USER.md, MEMORY.md)
 ├── config.py         # Settings via pydantic-settings + TOML
 ├── teams.py          # Pre-built team factories (research, code, data)
+├── models/
+│   ├── __init__.py   # materialize_model — provider-agnostic adapter dispatch
+│   └── anthropic.py  # CacheAwareClaude (conversation-prefix caching), effort gating
 ├── plugins.py        # PluginLoader + PluginManifest — entry-point-based plugin system
 ├── prompts/
 │   ├── system.py     # System prompt assembler (layered composition)
@@ -122,6 +125,9 @@ from agnoclaw.tools.notebook import NotebookToolkit
 
 # Skills
 from agnoclaw.skills import SkillRegistry, ClawHubClient
+
+# Provider model adapters (prompt caching, effort — provider-agnostic dispatch)
+from agnoclaw.models import materialize_model
 
 # Workspace
 from agnoclaw.workspace import Workspace

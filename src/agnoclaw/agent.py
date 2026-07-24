@@ -71,7 +71,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from agno.agent import Agent
@@ -80,6 +80,9 @@ from agno.exceptions import AgentRunException
 from agno.run.agent import RunOutput, RunOutputEvent
 from agno.tools.function import Function
 from agno.tools.toolkit import Toolkit
+
+if TYPE_CHECKING:
+    from agno.models.base import Model
 
 from .backends import RuntimeBackend, SandboxMode, normalize_sandbox_mode
 from .config import HarnessConfig, get_config
@@ -276,7 +279,9 @@ def _run_output_is_error(value: Any) -> bool:
     return _run_output_status_value(value) == "error"
 
 
-def _resolve_model(model: str | None, provider: str | None, config: HarnessConfig) -> str:
+def _resolve_model(
+    model: str | Model | None, provider: str | None, config: HarnessConfig
+) -> str | Model:
     """
     Return an Agno-compatible 'provider:model_id' string, or pass a
     pre-built Agno ``Model`` instance through untouched (callers may
@@ -292,7 +297,7 @@ def _resolve_model(model: str | None, provider: str | None, config: HarnessConfi
     """
     if model is not None and not isinstance(model, str):
         # Pre-built Agno Model instance — Agno's Agent accepts it as-is.
-        return model  # type: ignore[return-value]
+        return model
 
     model_str = model or config.default_model
     prov = provider or config.default_provider
@@ -1040,12 +1045,19 @@ class AgentHarness:
         self._plan_mode = False
 
         # Assemble system prompt (skills are injected per-run, then reset).
-        # Split-prompt cache mode (cache-enabled Anthropic model instance):
-        # the volatile "# Runtime" trailer moves to an uncached trailing
+        # Split-prompt cache mode (duck-typed: any model exposing Agno's
+        # cache_system_prompt + system_prompt_blocks contract): the
+        # volatile "# Runtime" trailer moves to an uncached trailing
         # system block so the stable prefix stays byte-identical across
         # rebuilds and sessions — see _split_prompt_cache_mode.
         self._prompt_session_id: str | None = session_id
+        self._caller_system_blocks: Any = None
         if self._split_prompt_cache_mode():
+            # Preserve caller-configured blocks: our callable composes
+            # them ahead of the runtime block instead of dropping them.
+            self._caller_system_blocks = getattr(
+                self._model, "system_prompt_blocks", None
+            )
             system_prompt = self._build_system_prompt(
                 session_id=session_id, include_runtime=False
             )
@@ -1679,9 +1691,12 @@ class AgentHarness:
     def _split_prompt_cache_mode(self) -> bool:
         """True when the model carries the volatile runtime block itself.
 
-        Split mode activates for pre-built Anthropic ``Claude`` model
-        instances that opted into system-prompt caching. The stable
-        prompt (everything except "# Runtime") goes into
+        Split mode is duck-typed on Agno's model contract — any pre-built
+        model instance exposing ``cache_system_prompt`` (opted in) and
+        ``system_prompt_blocks`` qualifies; in Agno that is the Claude
+        family across providers (Anthropic API, Bedrock, Vertex, Azure).
+        The harness stays provider-agnostic: no isinstance checks. The
+        stable prompt (everything except "# Runtime") goes into
         ``system_message`` — cached — and the runtime block rides as a
         trailing uncached system block via ``system_prompt_blocks``, so
         a mid-run prompt rebuild (skill activation) or a new session no
@@ -1699,14 +1714,22 @@ class AgentHarness:
         """Zero-arg callable target for ``Claude.system_prompt_blocks``.
 
         Evaluated by Agno on every request, so the date stays fresh
-        without ever touching the cached stable prefix.
+        without ever touching the cached stable prefix. Blocks the caller
+        had configured on the model instance are preserved ahead of the
+        uncached runtime trailer.
         """
         from agno.models.anthropic.claude import SystemPromptBlock
 
+        blocks: list[Any] = []
+        caller_blocks = self._caller_system_blocks
+        if caller_blocks is not None:
+            resolved = caller_blocks() if callable(caller_blocks) else caller_blocks
+            blocks.extend(resolved or [])
         text = self._prompt_builder.build_runtime_block(
             session_id=self._prompt_session_id or self.session_id
         )
-        return [SystemPromptBlock(text=text, cache=False)]
+        blocks.append(SystemPromptBlock(text=text, cache=False))
+        return blocks
 
     def _set_system_prompt(
         self,
@@ -1840,7 +1863,7 @@ class AgentHarness:
     def admin_runtime_info(self) -> dict[str, Any]:
         """Return harness runtime metadata without exposing mutable internals."""
         return {
-            "model": self._model,
+            "model": self.model_name,
             "session_id": self.session_id,
             "workspace_id": str(self.workspace.path),
             "sandbox_dir": str(self.sandbox_dir),
@@ -4868,6 +4891,10 @@ class AgentHarness:
             },
         )
         base_prompt = self._agent.system_message
+        # Runtime-block session scoping mirrors the system_message
+        # save/restore: set for this run, restored wherever base_prompt is.
+        base_prompt_session = self._prompt_session_id
+        self._prompt_session_id = effective_session
         stream_cleanup_deferred = False
         tool_scope: _ToolScope | None = None
         scoped_skill_obj: Any = None
@@ -4945,15 +4972,11 @@ class AgentHarness:
                     skill_obj = self.skills._get_skill(run_input.skill)
                     if skill_obj and skill_obj.meta.context == "fork":
                         from .tools.tasks import _run_subagent
-                        if isinstance(self._model, str):
-                            base_model = self._model
-                        else:
-                            # Model instance — recover "provider:id" for the
-                            # subagent fork (which builds its own model).
-                            _prov = (getattr(self._model, "provider", "") or "").lower()
-                            base_model = (
-                                f"{_prov}:{self._model.id}" if _prov else self._model.id
-                            )
+                        # Subagent forks build their own model from the
+                        # "provider:id" spec — instance-level options on
+                        # this harness's model (caching, effort, custom
+                        # clients) intentionally don't propagate.
+                        base_model = self.model_name
                         active_provider = base_model.split(":", 1)[0] if ":" in base_model else None
                         subagent_model = _resolve_model(
                             skill_obj.meta.model or base_model,
@@ -4974,6 +4997,7 @@ class AgentHarness:
                         )
                         if self._agent.system_message != base_prompt:
                             self._agent.system_message = base_prompt
+                        self._prompt_session_id = base_prompt_session
                         return fork_result
 
                     # ── Skill enforcement: command-dispatch ──────────────
@@ -4992,6 +5016,7 @@ class AgentHarness:
                         )
                         if self._agent.system_message != base_prompt:
                             self._agent.system_message = base_prompt
+                        self._prompt_session_id = base_prompt_session
                         return tool_result
 
                     self._set_system_prompt(skill_content=skill_content, session_id=effective_session)
@@ -5098,6 +5123,7 @@ class AgentHarness:
 
             if self._agent.system_message != base_prompt:
                 self._agent.system_message = base_prompt
+            self._prompt_session_id = base_prompt_session
 
             if stream:
 
@@ -5309,6 +5335,7 @@ class AgentHarness:
         except Exception as exc:
             if self._agent.system_message != base_prompt:
                 self._agent.system_message = base_prompt
+            self._prompt_session_id = base_prompt_session
             harness_error = self._extract_harness_error(exc)
             error_code = harness_error.code if harness_error is not None else None
             self._emit_event_sync(
@@ -5398,6 +5425,10 @@ class AgentHarness:
             },
         )
         base_prompt = self._agent.system_message
+        # Runtime-block session scoping mirrors the system_message
+        # save/restore: set for this run, restored wherever base_prompt is.
+        base_prompt_session = self._prompt_session_id
+        self._prompt_session_id = effective_session
         stream_cleanup_deferred = False
         tool_scope: _ToolScope | None = None
         scoped_skill_obj: Any = None
@@ -5578,6 +5609,7 @@ class AgentHarness:
 
             if self._agent.system_message != base_prompt:
                 self._agent.system_message = base_prompt
+            self._prompt_session_id = base_prompt_session
 
             if stream and hasattr(result, "__aiter__"):
 
@@ -5789,6 +5821,7 @@ class AgentHarness:
         except Exception as exc:
             if self._agent.system_message != base_prompt:
                 self._agent.system_message = base_prompt
+            self._prompt_session_id = base_prompt_session
             harness_error = self._extract_harness_error(exc)
             error_code = harness_error.code if harness_error is not None else None
             await self._emit_event_async(
