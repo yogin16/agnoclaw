@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from ..workspace import BOOTSTRAP_MAX_CHARS, BOOTSTRAP_TOTAL_MAX_CHARS, MEMORY_STARTUP_LINES
 from .sections import (
@@ -63,7 +62,7 @@ class SystemPromptBuilder:
         self.sandbox_mode = sandbox_mode
         self._custom_sections: list[str] = []
 
-    def add_section(self, content: str) -> "SystemPromptBuilder":
+    def add_section(self, content: str) -> SystemPromptBuilder:
         """Append a custom section (e.g. from enterprise config)."""
         self._custom_sections.append(content)
         return self
@@ -71,13 +70,13 @@ class SystemPromptBuilder:
     def build(
         self,
         *,
-        skill_content: Optional[str] = None,
+        skill_content: str | None = None,
         include_datetime: bool = True,
-        extra_context: Optional[str] = None,
+        extra_context: str | None = None,
         include_learning: bool = False,
         include_plan_mode: bool = False,
         include_heartbeat: bool = False,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
     ) -> str:
         """
         Build the full system prompt string.
@@ -141,7 +140,7 @@ class SystemPromptBuilder:
 
         return "\n\n---\n\n".join(parts)
 
-    def build_runtime_block(self, *, session_id: Optional[str] = None) -> str:
+    def build_runtime_block(self, *, session_id: str | None = None) -> str:
         """Build the volatile "# Runtime" section on its own.
 
         This is the only part of the system prompt that varies per
@@ -165,7 +164,7 @@ class SystemPromptBuilder:
             runtime_lines.append(f"Session ID: {session_id}")
         return "# Runtime\n\n" + "\n".join(runtime_lines)
 
-    def _load_workspace_context(self) -> Optional[str]:
+    def _load_workspace_context(self) -> str | None:
         """
         Load and concatenate workspace context files if they exist.
 

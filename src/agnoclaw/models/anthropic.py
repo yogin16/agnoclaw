@@ -56,7 +56,7 @@ def materialize_anthropic_model(
     *,
     cache_prompts: bool = False,
     effort: str | None = None,
-) -> "Claude | str":
+) -> Claude | str:
     """Build a configured Claude instance from an ``anthropic:<id>`` spec.
 
     ``cache_prompts=True`` enables the full caching stack: system prompt
