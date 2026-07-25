@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from ..workspace import BOOTSTRAP_MAX_CHARS, BOOTSTRAP_TOTAL_MAX_CHARS, MEMORY_STARTUP_LINES
 from .sections import (
@@ -63,7 +62,7 @@ class SystemPromptBuilder:
         self.sandbox_mode = sandbox_mode
         self._custom_sections: list[str] = []
 
-    def add_section(self, content: str) -> "SystemPromptBuilder":
+    def add_section(self, content: str) -> SystemPromptBuilder:
         """Append a custom section (e.g. from enterprise config)."""
         self._custom_sections.append(content)
         return self
@@ -71,13 +70,13 @@ class SystemPromptBuilder:
     def build(
         self,
         *,
-        skill_content: Optional[str] = None,
+        skill_content: str | None = None,
         include_datetime: bool = True,
-        extra_context: Optional[str] = None,
+        extra_context: str | None = None,
         include_learning: bool = False,
         include_plan_mode: bool = False,
         include_heartbeat: bool = False,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
     ) -> str:
         """
         Build the full system prompt string.
@@ -137,22 +136,53 @@ class SystemPromptBuilder:
 
         # 15: Runtime reminders
         if include_datetime:
-            now = datetime.now()
-            runtime_lines = [
-                f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}",
-                f"Workspace: {self.workspace_dir}",
-            ]
-            if self.sandbox_dir is not None:
-                runtime_lines.append(f"Session sandbox: {self.sandbox_dir}")
-                if self.sandbox_mode:
-                    runtime_lines.append(f"Sandbox mode: {self.sandbox_mode}")
-            if session_id:
-                runtime_lines.append(f"Session ID: {session_id}")
-            parts.append("# Runtime\n\n" + "\n".join(runtime_lines))
+            parts.append(self.build_runtime_block(session_id=session_id))
 
         return "\n\n---\n\n".join(parts)
 
-    def _load_workspace_context(self) -> Optional[str]:
+    def build_runtime_block(
+        self, *, session_id: str | None = None, include_time: bool = False
+    ) -> str:
+        """Build the volatile "# Runtime" section on its own.
+
+        This is the only part of the system prompt that varies per
+        session (session ID) or per day (date). Keeping it separable
+        lets callers place it OUTSIDE the cached prompt prefix — e.g.
+        as a trailing uncached Anthropic system block — so the stable
+        prompt stays byte-identical across sessions and prompt-cache
+        hits survive.
+
+        ``include_time`` adds wall-clock time (minute granularity). The
+        default is day-granular because the inline path embeds this
+        block in the prompt prefix, where a ticking clock would bust
+        provider caches (explicit breakpoints and OpenAI-style implicit
+        caching alike) on every rebuild. Callers that deliver the block
+        outside the cached prefix — the split-cache mode's uncached
+        trailing system block — pass ``include_time=True``: there it
+        costs no cache hits and keeps the model time-aware.
+        """
+        if include_time:
+            stamp = f"Current date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        else:
+            stamp = f"Current date: {datetime.now().strftime('%Y-%m-%d')}"
+        runtime_lines = [
+            stamp,
+            f"Workspace: {self.workspace_dir}",
+        ]
+        if self.sandbox_dir is not None:
+            runtime_lines.append(f"Session sandbox: {self.sandbox_dir}")
+            if self.sandbox_mode:
+                runtime_lines.append(f"Sandbox mode: {self.sandbox_mode}")
+        if session_id:
+            # Collapse whitespace (incl. newlines): session IDs are
+            # caller-supplied and this block can reach the model outside
+            # the harness's prompt-policy inspection in split-cache mode —
+            # a newline here must not open a new instruction line.
+            safe_session_id = " ".join(str(session_id).split())
+            runtime_lines.append(f"Session ID: {safe_session_id}")
+        return "# Runtime\n\n" + "\n".join(runtime_lines)
+
+    def _load_workspace_context(self) -> str | None:
         """
         Load and concatenate workspace context files if they exist.
 
