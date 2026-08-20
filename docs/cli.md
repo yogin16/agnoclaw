@@ -331,16 +331,22 @@ open production-certification gates.
 
 ## General automation boundary
 
-The current CLI is human-oriented. Stable JSON output, no-color mode, error explanation,
-support bundles, and the final exit-code registry remain 0.12 release gates. Until those
-land, Python APIs are the supported machine-to-machine interface and CLI output should
-not be parsed as a stable protocol.
+Human-readable output remains the default. `--no-color` (or `NO_COLOR=1`) is available
+at the root, while automation-safe commands expose `--json` and stable nonzero exits.
+Use `agnoclaw doctor --json` for an offline environment/configuration-shape preflight,
+`agnoclaw explain ERROR_CODE --json` for offline remediation, and
+`agnoclaw support-bundle --output FILE --json` for a content-free redacted report. A
+support bundle is created with mode `0600` and never includes paths, credentials,
+environment values, prompts, outputs, or tool arguments.
 
-The current exceptions are `inspect run`, the versioned local migration workflow, and
-all service migration JSON/exit contracts:
+The remaining versioned automation contracts are `inspect run`, diagnostics, the local
+migration workflow, and all service migration JSON/exit contracts:
 
 ```bash
 agnoclaw inspect run RUN_ID STORE_AND_OWNER_OPTIONS --json
+agnoclaw doctor --json
+agnoclaw explain RUNTIME_RUN_NOT_FOUND --json
+agnoclaw support-bundle --output agnoclaw-support.json --json
 agnoclaw migrate 0.12 check --learning-db PATH --schedules PATH --json
 agnoclaw migrate 0.12 service check OPTIONS --json
 agnoclaw migrate 0.12 service plan OPTIONS --output PLAN --json

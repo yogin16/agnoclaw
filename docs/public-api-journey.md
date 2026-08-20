@@ -1,7 +1,6 @@
 # Provider-free public API journey
 
-Status: executable source-side clean-room foundation; exact-wheel/network-denied gate
-remains release-blocking
+Status: executable source-side and exact-wheel clean-room release gate
 
 This probe exercises the copyable public grammar before packaging. It imports only
 top-level `agnoclaw` exports, constructs no provider SDK client, writes only to a fresh
@@ -40,17 +39,13 @@ this stable shape (version and elapsed time vary):
 
 ## What it does not prove
 
-This source-side probe is not the final installed demonstration. It does not build a
-wheel, deny networking at the operating-system/container boundary, kill a process,
-exercise PostgreSQL/service deployment, contact a live provider, benchmark cold
-installation, or certify production recovery. Those remain separate gates so a
-provider-free model is never mislabeled as an air-gapped environment and source imports
-are never mislabeled as installed-artifact proof.
-
-Before release, this exact file must run unchanged outside the repository against the
-exact candidate wheel. T16 must additionally run the real-process restart demonstration
-with OS-level network denial and record wall time. Packaging stays last; developing and
-testing the journey now prevents package iterations from hiding API/documentation bugs.
+The source-side invocation alone is not installed proof. CI and the publish workflow
+build a container from the exact candidate wheel, then run this file unchanged with
+Docker networking disabled. In the same network-denied, read-only container they run
+the four-crash `agno_stack_restart_probe.py` against the installed package. This proves
+the candidate can complete its public journey and bounded process-restart contract
+without network access. It does not exercise PostgreSQL/service deployment, contact a
+live provider, benchmark cold installation, or certify production recovery.
 
 ## Current retained evidence
 
@@ -60,3 +55,6 @@ seven owned model closes, two reopened completed runs, one promoted learning eff
 migration rollback, zero provider network calls, and complete temporary cleanup. The
 corresponding tests also reject private imports, response/learning/user content on
 stdout, and nonempty operator roots.
+
+The exact-wheel/container run is a release-workflow gate; each candidate run records
+its own JSON evidence rather than treating this source-side result as reusable proof.

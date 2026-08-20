@@ -1,5 +1,7 @@
 """Tests for the agnoclaw CLI."""
 
+import json
+import stat
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -174,8 +176,7 @@ def test_skill_inspect_is_parse_only_and_shows_trust(runner, tmp_workspace, tmp_
     skill_dir.mkdir(parents=True)
     marker = tmp_path / "skill-inspect-executed"
     skill_dir.joinpath("SKILL.md").write_text(
-        "---\nname: dangerous\ndescription: inspect only\n---\n\n"
-        f"# Dangerous\n!`touch {marker}`\n",
+        f"---\nname: dangerous\ndescription: inspect only\n---\n\n# Dangerous\n!`touch {marker}`\n",
         encoding="utf-8",
     )
 
@@ -241,6 +242,81 @@ def test_root_help_shows_init(runner):
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
     assert "init" in result.output
+
+
+def test_root_no_color_is_available_for_automation(runner):
+    result = runner.invoke(cli, ["--no-color", "--help"])
+
+    assert result.exit_code == 0
+    assert "--no-color" in result.output
+
+
+def test_doctor_json_is_offline_redacted_and_path_free(runner, tmp_path, monkeypatch):
+    secret = "support-secret-must-not-appear"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+
+    result = runner.invoke(
+        cli,
+        ["doctor", "--workspace", str(tmp_path / "private-workspace"), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["schema_version"] == "1.0"
+    assert payload["offline"] is True
+    assert payload["redacted"] is True
+    assert secret not in result.output
+    assert str(tmp_path) not in result.output
+
+
+def test_explain_known_and_unknown_codes_have_stable_json_and_exits(runner):
+    known = runner.invoke(cli, ["explain", "CONTEXT_WINDOW_EXCEEDED", "--json"])
+    unknown = runner.invoke(cli, ["explain", "NOT_A_REAL_CODE", "--json"])
+
+    assert known.exit_code == 0
+    assert json.loads(known.output)["found"] is True
+    assert unknown.exit_code == 2
+    assert json.loads(unknown.output) == {
+        "cause": "This installed release does not have offline guidance for the supplied code.",
+        "code": "NOT_A_REAL_CODE",
+        "docs": "https://github.com/yogin16/agnoclaw/blob/main/docs/cli.md",
+        "fix": (
+            "Confirm the exact code, run `agnoclaw doctor --json`, and include a "
+            "redacted support bundle when opening an issue."
+        ),
+        "found": False,
+        "schema_version": "1.0",
+        "title": "Unknown error code",
+    }
+
+
+def test_support_bundle_is_mode_0600_redacted_and_refuses_overwrite(
+    runner,
+    tmp_path,
+    monkeypatch,
+):
+    secret = "bundle-secret-must-not-appear"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    output = tmp_path / "support.json"
+
+    created = runner.invoke(
+        cli,
+        ["support-bundle", "--output", str(output), "--workspace", str(tmp_path), "--json"],
+    )
+    refused = runner.invoke(
+        cli,
+        ["support-bundle", "--output", str(output), "--workspace", str(tmp_path), "--json"],
+    )
+
+    assert created.exit_code == 0
+    assert json.loads(created.output)["output_created"] is True
+    bundle = output.read_text(encoding="utf-8")
+    assert secret not in bundle
+    assert str(tmp_path) not in bundle
+    assert json.loads(bundle)["redacted"] is True
+    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    assert refused.exit_code == 73
+    assert json.loads(refused.stderr)["error"]["code"] == "SUPPORT_BUNDLE_WRITE_FAILED"
 
 
 def test_init_help(runner):

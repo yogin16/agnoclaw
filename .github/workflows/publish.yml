@@ -14,12 +14,17 @@ on:
     branches: [main]
   workflow_dispatch: {}  # allow a manual re-run if a publish needs retrying
 
+concurrency:
+  group: agnoclaw-publish
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   check:
     name: Detect version bump
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       publish: ${{ steps.v.outputs.publish }}
@@ -91,6 +96,15 @@ jobs:
           uv pip install --python .venv-release-wheel/bin/python dist/*.whl
           uv pip check --python .venv-release-wheel/bin/python
           .venv-release-wheel/bin/python -I scripts/smoke_core_install.py
+
+      - name: Prove exact-wheel journeys with OS networking denied
+        run: |
+          docker build --file scripts/release-journey.Dockerfile --tag agnoclaw-release-journey .
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev \
+            agnoclaw-release-journey /opt/agnoclaw/public_api_journey_probe.py
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev \
+            agnoclaw-release-journey /opt/agnoclaw/agno_stack_restart_probe.py \
+            --allow-process-crash
 
       - name: Verify the exact source distribution in a clean environment
         run: |

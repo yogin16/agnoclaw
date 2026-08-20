@@ -241,7 +241,8 @@ remains a backward-compatible alias for `AgentHarness`.
 uv sync --extra dev
 uv run ruff check src/ tests/ scripts/
 ```
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md), [support](SUPPORT.md), [security](SECURITY.md),
+and [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 

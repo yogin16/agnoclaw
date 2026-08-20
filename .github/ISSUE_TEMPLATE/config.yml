@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup and usage discussion
+    url: https://github.com/yogin16/agnoclaw/discussions
+    about: Ask questions and discuss integration designs.
+  - name: Private security report
+    url: https://github.com/yogin16/agnoclaw/security/advisories/new
+    about: Report a suspected vulnerability without public disclosure.

@@ -231,10 +231,29 @@ def test_public_api_journey_docs_separate_source_from_installed_proof() -> None:
     for content in (journey, evaluation, progress):
         assert "scripts/public_api_journey_probe.py" in content
     assert "imports only" in journey and "top-level `agnoclaw` exports" in journey
-    assert "OS network denial is a separate installed-wheel gate" in journey
+    assert "Docker networking disabled" in journey
+    assert "exact candidate wheel" in journey
+    assert "agno_stack_restart_probe.py" in journey
     assert "production_certification" in journey
     assert "tests/test_public_api_journey_probe.py" in evaluation
-    assert "unchanged outside the repository against the exact wheel" in evaluation
+    assert "same file unchanged against the exact wheel" in evaluation
+
+
+def test_exact_wheel_public_journeys_are_release_gates() -> None:
+    dockerfile = ROOT / "scripts" / "release-journey.Dockerfile"
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(
+        encoding="utf-8"
+    )
+
+    for workflow in (ci, publish):
+        assert "scripts/release-journey.Dockerfile" in workflow
+        assert "--network none" in workflow
+        assert "/opt/agnoclaw/public_api_journey_probe.py" in workflow
+        assert "/opt/agnoclaw/agno_stack_restart_probe.py" in workflow
+    content = dockerfile.read_text(encoding="utf-8")
+    assert "dist/*.whl" in content
+    assert "USER 65532:65532" in content
 
 
 def test_long_run_continuity_gate_is_documented_with_honest_boundaries() -> None:

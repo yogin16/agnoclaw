@@ -1,5 +1,8 @@
 # Contributing to agnoclaw
 
+Participation is governed by the [community code of conduct](CODE_OF_CONDUCT.md).
+Security reports follow [SECURITY.md](SECURITY.md), not the public issue tracker.
+
 ## Quick start
 
 ```bash

@@ -1018,9 +1018,10 @@ emit no response, learning, user, artifact, or path content; refuse nonempty ope
 roots; and report zero provider network calls. See [Provider-free public API
 journey](public-api-journey.md) for the exact oracle and limitations.
 
-This is source-side proof, not the release artifact gate. T16 reruns the same file
-unchanged outside the repository against the exact wheel and separately denies network
-access at the OS/container boundary while executing the real process-kill/restart demo.
+The release workflow reruns the same file unchanged against the exact wheel inside a
+read-only Docker container with `--network none`. The same installed, network-denied
+container executes the four-crash real-process restart probe. This is bounded
+single-host release evidence, not a live-provider or production-resilience claim.
 
 ## Documentation gates
 

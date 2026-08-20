@@ -11,6 +11,9 @@ order.
   run, session continuation, learning, and cleanup using public APIs only.
 - [CLI reference](cli.md) — command groups, common options, and automation/durability
   boundaries, including the full PostgreSQL `service` migration lifecycle contract.
+- [Support](../SUPPORT.md) — diagnostics, safe issue reports, and help channels.
+- [Security policy](../SECURITY.md) — private reporting and supported response scope.
+- [Community conduct](../CODE_OF_CONDUCT.md) — participation expectations.
 - [Configuration reference](configuration.md) — exact precedence, TOML/environment
   mapping, runtime controls, and a safe service baseline.
 - [Generated Python API reference](reference/api.md) — every supported top-level

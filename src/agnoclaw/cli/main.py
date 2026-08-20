@@ -74,9 +74,17 @@ def _build_agent(
 
 @click.group()
 @click.version_option(package_name="agnoclaw")
-def cli():
+@click.option(
+    "--no-color",
+    is_flag=True,
+    default=False,
+    envvar="NO_COLOR",
+    help="Disable ANSI color for logs, CI, and support transcripts.",
+)
+def cli(no_color):
     """agnoclaw — a hackable, model-agnostic agent harness built on Agno."""
-    pass
+    if no_color:
+        console.no_color = True
 
 
 # ── Global options (shared across subcommands) ─────────────────────────────────
@@ -1752,6 +1760,101 @@ WantedBy=default.target
 
 
 # ── agnoclaw inspect ─────────────────────────────────────────────────────────
+
+
+@cli.command()
+@WORKSPACE_OPT
+@click.option("--json", "json_output", is_flag=True, default=False)
+def doctor(workspace, json_output):
+    """Run bounded offline environment and compatibility checks."""
+    import json
+
+    from agnoclaw.diagnostics import collect_diagnostics
+
+    report = collect_diagnostics(workspace=workspace)
+    if json_output:
+        click.echo(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    else:
+        table = Table(title="agnoclaw doctor", border_style="dim")
+        table.add_column("Check")
+        table.add_column("Status")
+        table.add_column("Result")
+        for check in report["checks"]:
+            table.add_row(check["id"], check["status"].upper(), check["summary"])
+        console.print(table)
+        console.print(
+            f"[dim]Offline, redacted: {report['summary']['passed']} passed, "
+            f"{report['summary']['warnings']} warnings, "
+            f"{report['summary']['errors']} errors.[/dim]"
+        )
+    if report["summary"]["errors"]:
+        raise click.exceptions.Exit(78)
+
+
+@cli.command("explain")
+@click.argument("error_code")
+@click.option("--json", "json_output", is_flag=True, default=False)
+def explain_error(error_code, json_output):
+    """Explain one stable ERROR_CODE without network access."""
+    import json
+
+    from agnoclaw.diagnostics import explain_error_code
+
+    explanation = explain_error_code(error_code)
+    if json_output:
+        click.echo(json.dumps(explanation, sort_keys=True, separators=(",", ":")))
+    else:
+        console.print(f"[bold]{explanation['code']}: {explanation['title']}[/bold]")
+        console.print(explanation["cause"])
+        console.print(f"Fix: {explanation['fix']}")
+        console.print(f"[dim]{explanation['docs']}[/dim]")
+    if not explanation["found"]:
+        raise click.exceptions.Exit(2)
+
+
+@cli.command("support-bundle")
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path, dir_okay=False),
+    required=True,
+    help="Destination JSON file. Existing files require --overwrite.",
+)
+@WORKSPACE_OPT
+@click.option("--overwrite", is_flag=True, default=False)
+@click.option("--json", "json_output", is_flag=True, default=False)
+def support_bundle(output, workspace, overwrite, json_output):
+    """Write a redacted offline diagnostic bundle for a support request."""
+    import json
+
+    from agnoclaw.diagnostics import write_support_bundle
+
+    try:
+        payload = write_support_bundle(output, workspace=workspace, overwrite=overwrite)
+    except (OSError, ValueError) as exc:
+        error = {
+            "schema_version": "1.0",
+            "status": "error",
+            "error": {"code": "SUPPORT_BUNDLE_WRITE_FAILED", "message": str(exc)},
+            "exit_code": 73,
+        }
+        click.echo(
+            json.dumps(error, sort_keys=True, separators=(",", ":"))
+            if json_output
+            else f"SUPPORT_BUNDLE_WRITE_FAILED: {exc}",
+            err=True,
+        )
+        raise click.exceptions.Exit(73) from exc
+    result = {
+        "schema_version": "1.0",
+        "status": "ok",
+        "redacted": payload["redacted"],
+        "output_created": True,
+    }
+    if json_output:
+        click.echo(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    else:
+        console.print(f"[green]Redacted support bundle written to {output}[/green]")
+        console.print("[dim]Review the JSON before attaching it to a public issue.[/dim]")
 
 
 @cli.group()

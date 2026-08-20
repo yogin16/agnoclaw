@@ -465,6 +465,15 @@ jobs:
       - name: Smoke-test the installed artifact
         run: .venv-wheel/bin/python -I scripts/smoke_core_install.py
 
+      - name: Prove exact-wheel journeys with OS networking denied
+        run: |
+          docker build --file scripts/release-journey.Dockerfile --tag agnoclaw-release-journey .
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev \
+            agnoclaw-release-journey /opt/agnoclaw/public_api_journey_probe.py
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev \
+            agnoclaw-release-journey /opt/agnoclaw/agno_stack_restart_probe.py \
+            --allow-process-crash
+
       - name: Install and smoke-test the built source distribution
         run: |
           uv venv .venv-sdist --python 3.13
