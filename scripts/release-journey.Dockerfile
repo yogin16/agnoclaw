@@ -7,5 +7,6 @@ COPY scripts/public_api_journey_probe.py /opt/agnoclaw/public_api_journey_probe.
 COPY scripts/agno_stack_restart_probe.py /opt/agnoclaw/agno_stack_restart_probe.py
 
 USER 65532:65532
+ENV HOME=/tmp/home
 WORKDIR /tmp
 ENTRYPOINT ["python", "-I"]

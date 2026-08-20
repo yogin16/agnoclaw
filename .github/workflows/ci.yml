@@ -242,6 +242,7 @@ jobs:
         run: >-
           uv run python scripts/benchmark_postgres_runtime.py
           --dsn postgresql://postgres:agnoclaw_test_only@127.0.0.1:5432/agnoclaw_test
+          --max-p95-slowdown-ratio 6
 
       - name: Run bounded learning evaluation archive gate
         run: >-

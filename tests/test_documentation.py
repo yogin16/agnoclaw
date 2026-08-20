@@ -254,6 +254,7 @@ def test_exact_wheel_public_journeys_are_release_gates() -> None:
     content = dockerfile.read_text(encoding="utf-8")
     assert "dist/*.whl" in content
     assert "USER 65532:65532" in content
+    assert "ENV HOME=/tmp/home" in content
 
 
 def test_long_run_continuity_gate_is_documented_with_honest_boundaries() -> None:

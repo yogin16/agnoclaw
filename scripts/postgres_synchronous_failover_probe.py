@@ -285,13 +285,16 @@ def _prove_blocked_runtime_acknowledgement(
         )
         if not _network_connected(standby_container, standby_network, timeout=timeout):
             raise RuntimeError("standby did not reattach to the replication network")
-        if not bool(
-            base._query(
-                standby_dsn,
-                "SELECT pg_is_in_recovery() AS value",
-            )["value"]
-        ):
-            raise RuntimeError("reconnected standby left recovery before promotion")
+        base._wait_for(
+            "reconnected standby recovery readiness",
+            lambda: bool(
+                base._query(
+                    standby_dsn,
+                    "SELECT pg_is_in_recovery() AS value",
+                )["value"]
+            ),
+            timeout=timeout,
+        )
         _wait_synchronous(primary_dsn, standby_name, timeout=timeout)
     except BaseException as exc:  # noqa: BLE001 - unblock the database worker below
         reconnect_error = exc
