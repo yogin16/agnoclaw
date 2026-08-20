@@ -9,8 +9,8 @@ Fixtures:
                      (uses Ollama if available, else skips)
 
 Integration tests:
-  Tests that make real model calls are marked @pytest.mark.integration
-  and skipped by default. Run them with:
+  Tests that make real model calls or run longer end-to-end certification probes are
+  marked @pytest.mark.integration and skipped by the standard CI lane. Run them with:
 
     # With Ollama (local, no API key):
     uv run pytest tests/ -m integration
@@ -24,22 +24,83 @@ Integration tests:
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import os
+from functools import wraps
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from agnoclaw.workspace import Workspace
 
-
 # ── pytest marks ─────────────────────────────────────────────────────────────
+
 
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
-        "integration: tests that make real model calls (Ollama or cloud API)",
+        (
+            "integration: tests that make real model calls or run longer "
+            "end-to-end certification probes"
+        ),
     )
+
+
+def pytest_sessionstart(session) -> None:
+    """Prevent pytest-asyncio from preserving an implicitly created old loop."""
+    del session
+    asyncio.set_event_loop(None)
+
+
+@pytest.fixture(autouse=True)
+def close_test_owned_databases(monkeypatch):
+    """Give every test-created local database one deterministic teardown owner.
+
+    Product code still has explicit caller-versus-harness ownership contracts. The
+    test process is the ultimate owner for direct constructor use, including tests
+    that intentionally reopen a store or inject it into a non-owning harness.
+    """
+    from agno.db.sqlite import SqliteDb
+
+    from agnoclaw.learning_candidates import SQLiteLearningLedger
+    from agnoclaw.runtime.store import SQLiteRuntimeStore
+
+    resources: list[Any] = []
+
+    def track_constructor(resource_type: type[Any]) -> None:
+        original = resource_type.__init__
+
+        @wraps(original)
+        def tracked(instance: Any, *args: Any, **kwargs: Any) -> None:
+            original(instance, *args, **kwargs)
+            resources.append(instance)
+
+        monkeypatch.setattr(resource_type, "__init__", tracked)
+
+    for resource_type in (SQLiteRuntimeStore, SQLiteLearningLedger, SqliteDb):
+        track_constructor(resource_type)
+
+    yield
+
+    close_errors: list[BaseException] = []
+    seen: set[int] = set()
+    for resource in reversed(resources):
+        identity = id(resource)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        closer = getattr(resource, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except BaseException as exc:
+                close_errors.append(exc)
+    gc.collect()
+    if close_errors:
+        raise ExceptionGroup("test-owned database cleanup failed", close_errors)
 
 
 # ── Workspace fixtures ────────────────────────────────────────────────────────
@@ -187,12 +248,15 @@ def live_agent(tmp_workspace_path: Path):
 
     from agnoclaw import HarnessAgent
 
-    return HarnessAgent(
+    agent = HarnessAgent(
+        model=f"{provider}:{model}",
         name="live-test-agent",
-        provider=provider,
-        model_id=model,
         workspace_dir=tmp_workspace_path,
     )
+    try:
+        yield agent
+    finally:
+        agent.close()
 
 
 # ── ProgressToolkit fixture ───────────────────────────────────────────────────

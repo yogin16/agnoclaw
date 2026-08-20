@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Awaitable, Protocol, runtime_checkable
+from enum import StrEnum
+from typing import Any, Protocol, runtime_checkable
 
 from .hooks import PromptEnvelope, RunInput, SkillLoadRequest, ToolCallRequest, ToolCallResult
 
 
-class PolicyAction(str, Enum):
+class PolicyAction(StrEnum):
     ALLOW = "ALLOW"
     DENY = "DENY"
     ALLOW_WITH_REDACTION = "ALLOW_WITH_REDACTION"
@@ -31,11 +32,11 @@ class PolicyDecision:
     redactions: tuple[RedactionRule, ...] = ()
 
     @classmethod
-    def allow(cls) -> "PolicyDecision":
+    def allow(cls) -> PolicyDecision:
         return cls(action=PolicyAction.ALLOW, reason_code="ALLOW_DEFAULT")
 
     @classmethod
-    def deny(cls, *, reason_code: str, message: str) -> "PolicyDecision":
+    def deny(cls, *, reason_code: str, message: str) -> PolicyDecision:
         return cls(action=PolicyAction.DENY, reason_code=reason_code, message=message)
 
 
@@ -53,36 +54,33 @@ def apply_redactions(text: str, redactions: tuple[RedactionRule, ...]) -> str:
 class PolicyEngine(Protocol):
     """Policy checks over run lifecycle checkpoints."""
 
-    def before_run(self, run_input: RunInput, context) -> PolicyDecision | Awaitable[PolicyDecision]:
-        ...
+    def before_run(
+        self, run_input: RunInput, context
+    ) -> PolicyDecision | Awaitable[PolicyDecision]: ...
 
     def before_prompt_send(
         self,
         prompt: PromptEnvelope,
         context,
-    ) -> PolicyDecision | Awaitable[PolicyDecision]:
-        ...
+    ) -> PolicyDecision | Awaitable[PolicyDecision]: ...
 
     def before_skill_load(
         self,
         request: SkillLoadRequest,
         context,
-    ) -> PolicyDecision | Awaitable[PolicyDecision]:
-        ...
+    ) -> PolicyDecision | Awaitable[PolicyDecision]: ...
 
     def before_tool_call(
         self,
         request: ToolCallRequest,
         context,
-    ) -> PolicyDecision | Awaitable[PolicyDecision]:
-        ...
+    ) -> PolicyDecision | Awaitable[PolicyDecision]: ...
 
     def after_tool_call(
         self,
         result: ToolCallResult,
         context,
-    ) -> PolicyDecision | Awaitable[PolicyDecision]:
-        ...
+    ) -> PolicyDecision | Awaitable[PolicyDecision]: ...
 
 
 class AllowAllPolicyEngine:

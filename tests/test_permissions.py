@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from agnoclaw.runtime.context import ExecutionContext
 from agnoclaw.runtime.hooks import ToolCallRequest
 from agnoclaw.runtime.permissions import (
     ElevatedSessionMode,
@@ -233,27 +234,49 @@ def test_approver_rejects():
     assert decision.reason_code == "PERMISSION_REJECTED"
 
 
-# ── preapproval via context metadata ────────────────────────────────────
+# ── trusted per-run preapproval channel ─────────────────────────────────
 
 
-def test_preapproved_via_context_metadata_tool():
+def test_untrusted_context_metadata_cannot_preapprove_tool():
     ctrl = PermissionController(mode=PermissionMode.DEFAULT)
     req = _make_request("bash")
-    ctx = MagicMock()
-    ctx.metadata = {"permission_preapproved_tools": ["bash"]}
+    ctx = ExecutionContext.create(
+        user_id="u-1",
+        session_id="s-1",
+        workspace_id="ws-1",
+        metadata={"permission_preapproved_tools": ["bash"]},
+    )
+    decision = ctrl.check_tool_call(req, ctx, resolve_sync_value=_identity)
+    assert decision.action == PolicyAction.ALLOW
+    assert decision.reason_code == "PERMISSION_NO_APPROVER_ALLOW"
+
+
+def test_preapproved_via_trusted_context_category():
+    ctrl = PermissionController(mode=PermissionMode.DONT_ASK)
+    req = _make_request("bash")
+    ctx = ExecutionContext.create(
+        user_id="u-1",
+        session_id="s-1",
+        workspace_id="ws-1",
+        trusted_permission_categories=("exec",),
+    )
     decision = ctrl.check_tool_call(req, ctx, resolve_sync_value=_identity)
     assert decision.action == PolicyAction.ALLOW
     assert decision.reason_code == "PERMISSION_PREAPPROVED"
 
 
-def test_preapproved_via_context_metadata_category():
-    ctrl = PermissionController(mode=PermissionMode.DEFAULT)
+def test_approver_does_not_preapprove_later_calls():
+    approver = MagicMock()
+    approver.approve.side_effect = [True, False]
+    ctrl = PermissionController(mode=PermissionMode.DEFAULT, approver=approver)
     req = _make_request("bash")
-    ctx = MagicMock()
-    ctx.metadata = {"permission_preapproved_categories": ["exec"]}
-    decision = ctrl.check_tool_call(req, ctx, resolve_sync_value=_identity)
-    assert decision.action == PolicyAction.ALLOW
-    assert decision.reason_code == "PERMISSION_PREAPPROVED"
+
+    first = ctrl.check_tool_call(req, None, resolve_sync_value=_identity)
+    second = ctrl.check_tool_call(req, None, resolve_sync_value=_identity)
+
+    assert first.action == PolicyAction.ALLOW
+    assert second.action == PolicyAction.DENY
+    assert approver.approve.call_count == 2
 
 
 # ── set_mode / current_mode ─────────────────────────────────────────────

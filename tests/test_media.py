@@ -1,5 +1,6 @@
 """Tests for the media toolkit."""
 
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -81,8 +82,6 @@ def test_read_pdf_no_reader(media_toolkit, tmp_path):
 
 
 # ── PDF reader backend tests (mocked) ──────────────────────────────────
-
-from unittest.mock import patch, MagicMock
 
 
 def test_read_pdf_pymupdf_success(media_toolkit, tmp_path):
@@ -168,7 +167,9 @@ def test_read_pdf_pypdf_fallback_success(media_toolkit, tmp_path):
 
     with patch.object(MediaToolkit, "_read_pdf_pymupdf", side_effect=ImportError):
         with patch("agnoclaw.tools.media.MediaToolkit._read_pdf_pypdf") as mock_pypdf:
-            mock_pypdf.return_value = "PDF: test.pdf (1 pages)\n\n--- Page 1 ---\nFallback page text"
+            mock_pypdf.return_value = (
+                "PDF: test.pdf (1 pages)\n\n--- Page 1 ---\nFallback page text"
+            )
             result = media_toolkit.read_pdf(str(pdf_path))
     assert "Fallback page text" in result
 

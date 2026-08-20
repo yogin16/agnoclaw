@@ -42,9 +42,7 @@ class SkillPickerScreen(ModalScreen[str]):
             for s in self._skills:
                 invocable = "user" if s.get("user_invocable") else "model"
                 items.append(
-                    ListItem(
-                        Label(f"[cyan]{s['name']}[/cyan]  {s['description']}  [{invocable}]")
-                    )
+                    ListItem(Label(f"[cyan]{s['name']}[/cyan]  {s['description']}  [{invocable}]"))
                 )
             yield ListView(*items, id="skill-list")
 

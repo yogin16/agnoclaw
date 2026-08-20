@@ -56,9 +56,7 @@ class SessionPickerScreen(ModalScreen[str]):
                     summary = s.get("summary", "")[:60]
                     runs = s.get("run_count", 0)
                     label_text = (
-                        f"[cyan]{session_id[:12]}[/cyan]  "
-                        f"[dim]{created}[/dim]  "
-                        f"runs: {runs}"
+                        f"[cyan]{session_id[:12]}[/cyan]  [dim]{created}[/dim]  runs: {runs}"
                     )
                     if summary:
                         label_text += f"  {summary}"

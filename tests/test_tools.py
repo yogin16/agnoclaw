@@ -2,11 +2,12 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agnoclaw.backends import RuntimeBackend
+from agnoclaw.runtime import HarnessError
 from agnoclaw.skills.backends import SkillInstallResult
 from agnoclaw.tools.backends import (
     BackgroundCommandHandle,
@@ -48,8 +49,7 @@ class FakeWorkspaceAdapter:
         max_results: int = 50,
     ) -> str:
         return (
-            f"adapter-grep:{pattern}:{path}:{glob}:{case_insensitive}:"
-            f"{context_lines}:{max_results}"
+            f"adapter-grep:{pattern}:{path}:{glob}:{case_insensitive}:{context_lines}:{max_results}"
         )
 
     def list_dir(self, path: str | None = None) -> str:
@@ -59,13 +59,13 @@ class FakeWorkspaceAdapter:
 class FakeCommandExecutor:
     def __init__(self, workspace_dir: str | Path | None = None):
         self.workspace_dir = (
-            str(Path(workspace_dir).expanduser().resolve())
-            if workspace_dir is not None
-            else None
+            str(Path(workspace_dir).expanduser().resolve()) if workspace_dir is not None else None
         )
         self.calls: list[tuple] = []
 
-    def run(self, *, command: str, workdir: str | None, timeout_seconds: int | None) -> CommandResult:
+    def run(
+        self, *, command: str, workdir: str | None, timeout_seconds: int | None
+    ) -> CommandResult:
         self.calls.append(("run", command, workdir, timeout_seconds))
         return CommandResult(stdout=f"executor-run:{command}:{workdir}:{timeout_seconds}")
 
@@ -109,7 +109,9 @@ class FakeSkillRuntimeBackend:
     def __init__(self):
         self.calls = []
 
-    def run_inline_command(self, *, command: str, timeout_seconds: int = 10, working_dir: str | None = None) -> str:
+    def run_inline_command(
+        self, *, command: str, timeout_seconds: int = 10, working_dir: str | None = None
+    ) -> str:
         self.calls.append(("inline", command, timeout_seconds, working_dir))
         return f"skill-inline:{command}"
 
@@ -125,12 +127,17 @@ class FakeSkillRuntimeBackend:
         self.calls.append(("dist", name))
         return True
 
-    def run_install(self, *, installer_type: str, package_spec: str, timeout_seconds: int = 120) -> SkillInstallResult:
+    def run_install(
+        self, *, installer_type: str, package_spec: str, timeout_seconds: int = 120
+    ) -> SkillInstallResult:
         self.calls.append(("install", installer_type, package_spec, timeout_seconds))
         return SkillInstallResult(success=True, exit_code=0)
 
 
 class FakeBrowserBackend:
+    def set_network_policy(self, policy) -> None:
+        self.network_policy = policy
+
     def navigate(self, *, url: str, wait_until: str = "domcontentloaded") -> str:
         return f"browser:{url}:{wait_until}"
 
@@ -328,10 +335,13 @@ def test_multi_edit_file_applies_all_edits(tmp_path):
     content = "def foo():\n    return 1\n\ndef bar():\n    return 2\n"
     (tmp_path / "multi.py").write_text(content, encoding="utf-8")
 
-    result = toolkit.multi_edit_file(file_path, [
-        {"old_string": "return 1", "new_string": "return 100"},
-        {"old_string": "return 2", "new_string": "return 200"},
-    ])
+    result = toolkit.multi_edit_file(
+        file_path,
+        [
+            {"old_string": "return 1", "new_string": "return 100"},
+            {"old_string": "return 2", "new_string": "return 200"},
+        ],
+    )
     assert "2 replacements" in result
     final = (tmp_path / "multi.py").read_text(encoding="utf-8")
     assert "return 100" in final
@@ -347,9 +357,12 @@ def test_multi_edit_file_fails_on_missing_old_string(tmp_path):
     file_path = str(tmp_path / "multi.py")
     (tmp_path / "multi.py").write_text("hello world", encoding="utf-8")
 
-    result = toolkit.multi_edit_file(file_path, [
-        {"old_string": "NOT_PRESENT", "new_string": "x"},
-    ])
+    result = toolkit.multi_edit_file(
+        file_path,
+        [
+            {"old_string": "NOT_PRESENT", "new_string": "x"},
+        ],
+    )
     assert "[error]" in result
     # File should be unchanged
     assert (tmp_path / "multi.py").read_text(encoding="utf-8") == "hello world"
@@ -362,9 +375,12 @@ def test_multi_edit_file_fails_on_duplicate_old_string(tmp_path):
     file_path = str(tmp_path / "multi.py")
     (tmp_path / "multi.py").write_text("x = 1\nx = 1\n", encoding="utf-8")
 
-    result = toolkit.multi_edit_file(file_path, [
-        {"old_string": "x = 1", "new_string": "x = 2"},
-    ])
+    result = toolkit.multi_edit_file(
+        file_path,
+        [
+            {"old_string": "x = 1", "new_string": "x = 2"},
+        ],
+    )
     assert "[error]" in result
 
 
@@ -383,7 +399,9 @@ def test_multi_edit_file_nonexistent(tmp_path):
     from agnoclaw.tools.files import FilesToolkit
 
     toolkit = FilesToolkit()
-    result = toolkit.multi_edit_file(str(tmp_path / "missing.py"), [{"old_string": "x", "new_string": "y"}])
+    result = toolkit.multi_edit_file(
+        str(tmp_path / "missing.py"), [{"old_string": "x", "new_string": "y"}]
+    )
     assert "[error]" in result
 
 
@@ -467,6 +485,7 @@ def test_bash_toolkit_registers_background_functions():
 def test_bash_toolkit_background_lifecycle():
     import sys
     import time
+
     from agnoclaw.tools.bash import BashToolkit
 
     toolkit = BashToolkit(timeout=10)
@@ -501,27 +520,98 @@ def test_local_command_executor_reads_persisted_background_output(tmp_path):
 
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
-    executor = LocalCommandExecutor(workspace_dir=tmp_path)
-    executor._tasks_dir = tasks_dir
-    handle = executor.start(
-        command=f'"{sys.executable}" -c "print(\'persisted-output\')"',
-        workdir=None,
-        description="persist output across executor instances",
-    )
+    with LocalCommandExecutor(workspace_dir=tmp_path) as executor:
+        executor._tasks_dir = tasks_dir
+        handle = executor.start(
+            command=f'"{sys.executable}" -c "print(\'persisted-output\')"',
+            workdir=None,
+            description="persist output across executor instances",
+        )
 
-    fresh_executor = LocalCommandExecutor(workspace_dir=tmp_path)
-    fresh_executor._tasks_dir = tasks_dir
-    output = None
-    for _ in range(20):
-        output = fresh_executor.output(task_id=handle.task_id)
-        if "persisted-output" in output.output:
-            break
-        time.sleep(0.05)
+        with LocalCommandExecutor(workspace_dir=tmp_path) as fresh_executor:
+            fresh_executor._tasks_dir = tasks_dir
+            output = None
+            for _ in range(20):
+                output = fresh_executor.output(task_id=handle.task_id)
+                if "persisted-output" in output.output:
+                    break
+                time.sleep(0.05)
 
     assert output is not None
     assert output.task_id == handle.task_id
     assert output.pid == handle.pid
     assert "persisted-output" in output.output
+
+
+def test_local_command_executor_close_terminates_and_reaps_owned_process(tmp_path):
+    import os
+    import shlex
+    import sys
+    import time
+
+    from agnoclaw.tools.backends import LocalCommandExecutor
+
+    executor = LocalCommandExecutor(workspace_dir=tmp_path)
+    executor._tasks_dir = tmp_path / "tasks"
+    executor._tasks_dir.mkdir()
+    child_pid_path = tmp_path / "child.pid"
+    child_code = (
+        "import os,time; from pathlib import Path; "
+        f"Path({str(child_pid_path)!r}).write_text(str(os.getpid())); "
+        "time.sleep(30)"
+    )
+    handle = executor.start(
+        command=shlex.join([sys.executable, "-c", child_code]),
+        workdir=None,
+    )
+    process = executor._tasks[handle.task_id].process
+    child_pid = None
+    for _ in range(40):
+        try:
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.025)
+            continue
+        break
+    assert child_pid is not None
+
+    executor.close()
+    executor.close()
+
+    assert process.poll() is not None
+    if os.name == "posix":
+        for _ in range(40):
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.025)
+        else:
+            pytest.fail("owned background child process survived executor.close()")
+    with pytest.raises(RuntimeError, match="executor is closed"):
+        executor.start(command="echo no", workdir=None)
+
+
+def test_local_command_executor_reclaims_finished_capacity(tmp_path):
+    import sys
+    import time
+
+    from agnoclaw.tools.backends import LocalCommandExecutor
+
+    with LocalCommandExecutor(workspace_dir=tmp_path, max_background_tasks=1) as executor:
+        executor._tasks_dir = tmp_path / "tasks"
+        executor._tasks_dir.mkdir()
+        first = executor.start(
+            command=f'"{sys.executable}" -c "print(\'done\')"',
+            workdir=None,
+        )
+        for _ in range(40):
+            if executor.output(task_id=first.task_id).status == "exited":
+                break
+            time.sleep(0.025)
+        second = executor.start(command="echo second", workdir=None)
+
+    assert second.task_id != first.task_id
 
 
 def test_bash_toolkit_background_start_raises_for_invalid_working_dir():
@@ -547,10 +637,7 @@ def test_bash_toolkit_delegates_to_custom_executor(tmp_path):
 
     assert bash("echo hi") == "executor-run:echo hi:None:10"
     assert bash_start(command="sleep 5") == (
-        "Started background task task_custom\n"
-        "pid: 1234\n"
-        "status: running\n"
-        "log: /tmp/custom.log"
+        "Started background task task_custom\npid: 1234\nstatus: running\nlog: /tmp/custom.log"
     )
     assert bash_output(task_id="task_custom") == (
         "[task task_custom] status=exited exit_code=0 pid=1234\nexecutor-output"
@@ -582,7 +669,9 @@ def test_web_toolkit_search_disabled_not_registered():
 
     toolkit = WebToolkit(search_enabled=False)
     # The method should not be in the registered functions
-    registered_names = [f.name for f in toolkit.functions.values()] if hasattr(toolkit, "functions") else []
+    registered_names = (
+        [f.name for f in toolkit.functions.values()] if hasattr(toolkit, "functions") else []
+    )
     assert "web_search" not in registered_names
 
 
@@ -591,7 +680,9 @@ def test_web_toolkit_fetch_disabled_not_registered():
     from agnoclaw.tools.web import WebToolkit
 
     toolkit = WebToolkit(fetch_enabled=False)
-    registered_names = [f.name for f in toolkit.functions.values()] if hasattr(toolkit, "functions") else []
+    registered_names = (
+        [f.name for f in toolkit.functions.values()] if hasattr(toolkit, "functions") else []
+    )
     assert "web_fetch" not in registered_names
 
 
@@ -600,7 +691,7 @@ def test_web_toolkit_search_returns_string():
 
     toolkit = WebToolkit()
 
-    with patch("duckduckgo_search.DDGS") as mock_ddgs:
+    with patch("ddgs.DDGS") as mock_ddgs:
         mock_instance = MagicMock()
         mock_ddgs.return_value.__enter__ = MagicMock(return_value=mock_instance)
         mock_ddgs.return_value.__exit__ = MagicMock(return_value=False)
@@ -612,6 +703,8 @@ def test_web_toolkit_search_returns_string():
 
 
 def test_web_toolkit_fetch_returns_string():
+    import socket
+
     from agnoclaw.tools.web import WebToolkit
 
     toolkit = WebToolkit()
@@ -625,7 +718,13 @@ def test_web_toolkit_fetch_returns_string():
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
         mock_client.get.return_value = mock_response
-        result = toolkit.web_fetch("https://example.com")
+        with patch(
+            "agnoclaw.runtime.guardrails.socket.getaddrinfo",
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+            ],
+        ):
+            result = toolkit.web_fetch("https://example.com")
         assert isinstance(result, str)
 
 
@@ -765,8 +864,8 @@ def test_plan_signal_toolkit_records_exit_plan_mode():
 
 
 def test_get_default_tools_returns_list():
-    from agnoclaw.tools import get_default_tools
     from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
 
     cfg = HarnessConfig()
     tools = get_default_tools(cfg)
@@ -775,9 +874,9 @@ def test_get_default_tools_returns_list():
 
 
 def test_get_default_tools_includes_files():
+    from agnoclaw.config import HarnessConfig
     from agnoclaw.tools import get_default_tools
     from agnoclaw.tools.files import FilesToolkit
-    from agnoclaw.config import HarnessConfig
 
     cfg = HarnessConfig()
     tools = get_default_tools(cfg)
@@ -785,9 +884,9 @@ def test_get_default_tools_includes_files():
 
 
 def test_get_default_tools_includes_todos():
+    from agnoclaw.config import HarnessConfig
     from agnoclaw.tools import get_default_tools
     from agnoclaw.tools.tasks import TodoToolkit
-    from agnoclaw.config import HarnessConfig
 
     cfg = HarnessConfig()
     tools = get_default_tools(cfg)
@@ -805,9 +904,9 @@ def test_get_default_tools_includes_plan_signals():
 
 
 def test_get_default_tools_respects_disable_bash():
+    from agnoclaw.config import HarnessConfig
     from agnoclaw.tools import get_default_tools
     from agnoclaw.tools.bash import BashToolkit
-    from agnoclaw.config import HarnessConfig
 
     cfg = HarnessConfig(enable_bash=False)
     tools = get_default_tools(cfg)
@@ -816,9 +915,9 @@ def test_get_default_tools_respects_disable_bash():
 
 
 def test_get_default_tools_background_bash_opt_in():
+    from agnoclaw.config import HarnessConfig
     from agnoclaw.tools import get_default_tools
     from agnoclaw.tools.bash import BashToolkit
-    from agnoclaw.config import HarnessConfig
 
     cfg = HarnessConfig(enable_bash=True, enable_background_bash_tools=True)
     tools = get_default_tools(cfg)
@@ -826,8 +925,8 @@ def test_get_default_tools_background_bash_opt_in():
 
 
 def test_get_default_tools_count_without_bash():
-    from agnoclaw.tools import get_default_tools
     from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
 
     cfg_with = HarnessConfig(enable_bash=True)
     cfg_without = HarnessConfig(enable_bash=False)
@@ -837,10 +936,10 @@ def test_get_default_tools_count_without_bash():
 
 
 def test_get_default_tools_workspace_override_applies_to_files_and_progress(tmp_path):
+    from agnoclaw.config import HarnessConfig
     from agnoclaw.tools import get_default_tools
     from agnoclaw.tools.files import FilesToolkit
     from agnoclaw.tools.tasks import ProgressToolkit
-    from agnoclaw.config import HarnessConfig
 
     cfg = HarnessConfig(workspace_dir="~/.agnoclaw/workspace")
     tools = get_default_tools(cfg, workspace_dir=tmp_path / "embedder-ws")
@@ -998,9 +1097,9 @@ def test_get_default_tools_sandboxed_bash_can_read_workspace_and_write_both_outp
 
     command = (
         f'"{sys.executable}" -c "from pathlib import Path; '
-        f'workspace = Path(r\'{workspace_dir / "input.txt"}\').read_text(); '
-        f'Path(\'session.txt\').write_text(workspace.upper()); '
-        f'Path(r\'{workspace_dir / "output.txt"}\').write_text(workspace + \'!\')"'
+        f"workspace = Path(r'{workspace_dir / 'input.txt'}').read_text(); "
+        f"Path('session.txt').write_text(workspace.upper()); "
+        f"Path(r'{workspace_dir / 'output.txt'}').write_text(workspace + '!')\""
     )
     bash.entrypoint(command)
 
@@ -1135,22 +1234,26 @@ def test_progress_toolkit_read_missing(tmp_path):
 
 
 def test_progress_toolkit_write_features(tmp_path):
-    from agnoclaw.tools.tasks import ProgressToolkit
     import json
 
+    from agnoclaw.tools.tasks import ProgressToolkit
+
     tk = ProgressToolkit(project_dir=str(tmp_path))
-    features = json.dumps([
-        {"id": "auth-01", "description": "Users can register"},
-        {"id": "auth-02", "description": "Users can log in"},
-    ])
+    features = json.dumps(
+        [
+            {"id": "auth-01", "description": "Users can register"},
+            {"id": "auth-02", "description": "Users can log in"},
+        ]
+    )
     result = tk.write_features(features)
     assert isinstance(result, str)
     assert "features.md" in result
 
 
 def test_progress_toolkit_read_features(tmp_path):
-    from agnoclaw.tools.tasks import ProgressToolkit
     import json
+
+    from agnoclaw.tools.tasks import ProgressToolkit
 
     tk = ProgressToolkit(project_dir=str(tmp_path))
     features = json.dumps([{"id": "api-01", "description": "GET /items returns list"}])
@@ -1171,8 +1274,9 @@ def test_progress_toolkit_read_features_missing(tmp_path):
 
 
 def test_progress_toolkit_update_feature_passing(tmp_path):
-    from agnoclaw.tools.tasks import ProgressToolkit
     import json
+
+    from agnoclaw.tools.tasks import ProgressToolkit
 
     tk = ProgressToolkit(project_dir=str(tmp_path))
     tk.write_features(json.dumps([{"id": "feat-01", "description": "Basic CRUD"}]))
@@ -1186,11 +1290,14 @@ def test_progress_toolkit_update_feature_passing(tmp_path):
 
 
 def test_progress_toolkit_update_feature_failing(tmp_path):
-    from agnoclaw.tools.tasks import ProgressToolkit
     import json
 
+    from agnoclaw.tools.tasks import ProgressToolkit
+
     tk = ProgressToolkit(project_dir=str(tmp_path))
-    tk.write_features(json.dumps([{"id": "feat-01", "description": "Basic CRUD", "status": "passing"}]))
+    tk.write_features(
+        json.dumps([{"id": "feat-01", "description": "Basic CRUD", "status": "passing"}])
+    )
 
     result = tk.update_feature_status("feat-01", "failing")
     assert "failing" in result
@@ -1200,8 +1307,9 @@ def test_progress_toolkit_update_feature_failing(tmp_path):
 
 
 def test_progress_toolkit_update_feature_not_found(tmp_path):
-    from agnoclaw.tools.tasks import ProgressToolkit
     import json
+
+    from agnoclaw.tools.tasks import ProgressToolkit
 
     tk = ProgressToolkit(project_dir=str(tmp_path))
     tk.write_features(json.dumps([{"id": "feat-01", "description": "CRUD"}]))
@@ -1211,8 +1319,9 @@ def test_progress_toolkit_update_feature_not_found(tmp_path):
 
 
 def test_progress_toolkit_update_feature_invalid_status(tmp_path):
-    from agnoclaw.tools.tasks import ProgressToolkit
     import json
+
+    from agnoclaw.tools.tasks import ProgressToolkit
 
     tk = ProgressToolkit(project_dir=str(tmp_path))
     tk.write_features(json.dumps([{"id": "feat-01", "description": "CRUD"}]))
@@ -1239,16 +1348,18 @@ def test_progress_toolkit_update_without_features_file(tmp_path):
 
 def test_progress_toolkit_default_project_dir():
     from pathlib import Path
+
     from agnoclaw.tools.tasks import ProgressToolkit
+
     tk = ProgressToolkit()
     # Default resolves to absolute CWD path (not relative ".")
     assert tk._project_dir == str(Path(".").expanduser().resolve())
 
 
 def test_get_default_tools_includes_progress():
+    from agnoclaw.config import HarnessConfig
     from agnoclaw.tools import get_default_tools
     from agnoclaw.tools.tasks import ProgressToolkit
-    from agnoclaw.config import HarnessConfig
 
     cfg = HarnessConfig()
     tools = get_default_tools(cfg)
@@ -1287,12 +1398,14 @@ def test_subagent_definition_custom_fields():
 def test_subagent_definition_importable_from_package():
     """SubagentDefinition should be importable from the top-level package."""
     from agnoclaw import SubagentDefinition
+
     assert SubagentDefinition is not None
 
 
 def test_subagent_definition_importable_from_tools():
     """SubagentDefinition should be importable from agnoclaw.tools."""
     from agnoclaw.tools import SubagentDefinition
+
     assert SubagentDefinition is not None
 
 
@@ -1309,7 +1422,7 @@ def test_make_subagent_tool_returns_function():
 
 def test_make_subagent_tool_with_named_agents():
     """Named agents should appear in the tool description."""
-    from agnoclaw.tools.tasks import make_subagent_tool, SubagentDefinition
+    from agnoclaw.tools.tasks import SubagentDefinition, make_subagent_tool
 
     subagents = {
         "researcher": SubagentDefinition(description="Searches the web for information"),
@@ -1331,6 +1444,21 @@ def test_make_subagent_tool_no_named_agents():
     assert "Named agents" not in tool.description
 
 
+@pytest.mark.parametrize("profile", ["quick", "durable", "service"])
+def test_make_subagent_tool_rejects_explicit_profiles(profile):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools.tasks import make_subagent_tool
+
+    with pytest.raises(HarnessError) as caught:
+        make_subagent_tool(config=HarnessConfig(profile=profile))
+
+    assert caught.value.code == "RAW_SUBAGENT_LIFECYCLE_UNSUPPORTED"
+    assert caught.value.details == {
+        "profile": profile,
+        "replacement": "declared_child_runs",
+    }
+
+
 def test_make_subagent_tool_runs_subagent():
     """spawn_subagent should create and run an Agent."""
     from agnoclaw.tools.tasks import make_subagent_tool
@@ -1346,7 +1474,7 @@ def test_make_subagent_tool_runs_subagent():
 
 def test_make_subagent_tool_named_agent_lookup():
     """When agent_name matches, use the named definition's prompt and model."""
-    from agnoclaw.tools.tasks import make_subagent_tool, SubagentDefinition
+    from agnoclaw.tools.tasks import SubagentDefinition, make_subagent_tool
 
     subagents = {
         "analyst": SubagentDefinition(
@@ -1490,8 +1618,10 @@ def test_run_subagent_truncates_long_output():
     mock_response = MagicMock()
     mock_response.content = "x" * 10000
 
-    with patch("agnoclaw.agent.Agent") as mock_agent_cls, \
-         patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+    with (
+        patch("agnoclaw.agent.Agent") as mock_agent_cls,
+        patch("agnoclaw.agent._make_db", return_value=MagicMock()),
+    ):
         mock_agent = MagicMock()
         mock_agent.run.return_value = mock_response
         mock_agent_cls.return_value = mock_agent
@@ -1501,47 +1631,26 @@ def test_run_subagent_truncates_long_output():
 
 
 def test_run_subagent_resolves_model_before_agent_creation():
+    from agnoclaw.config import HarnessConfig
     from agnoclaw.tools.tasks import _run_subagent
 
     mock_response = MagicMock()
     mock_response.content = "ok"
 
-    with patch("agnoclaw.agent.Agent") as mock_agent_cls, \
-         patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+    with (
+        patch("agnoclaw.agent.Agent") as mock_agent_cls,
+        patch("agnoclaw.agent._make_db", return_value=MagicMock()),
+    ):
         mock_agent = MagicMock()
         mock_agent.run.return_value = mock_response
         mock_agent_cls.return_value = mock_agent
 
-        cfg = MagicMock()
-        cfg.default_provider = "openai"
-        cfg.default_model = "gpt-4o"
-        cfg.workspace_dir = "/tmp/ws"
-        cfg.global_workspace_dir = "~/.agnoclaw/global"
-        cfg.project_workspace_dir = ".agnoclaw"
-        cfg.enable_plugins = False
-        cfg.enable_learning = False
-        cfg.learning_mode = "agentic"
-        cfg.enable_compression = False
-        cfg.compress_token_limit = None
-        cfg.enable_session_summary = False
-        cfg.session_history_runs = 10
-        cfg.guardrails_enabled = True
-        cfg.path_guardrails_enabled = True
-        cfg.path_allowed_roots = []
-        cfg.path_blocked_roots = []
-        cfg.network_enabled = True
-        cfg.network_enforce_https = True
-        cfg.network_allowed_hosts = []
-        cfg.network_blocked_hosts = []
-        cfg.network_block_private_hosts = True
-        cfg.network_block_in_bash = True
-        cfg.event_sink_mode = "best_effort"
-        cfg.policy_fail_open = False
-        cfg.permission_mode = "bypass"
-        cfg.permission_require_approver = False
-        cfg.permission_preapproved_tools = []
-        cfg.permission_preapproved_categories = []
-        cfg.debug = False
+        cfg = HarnessConfig(
+            default_provider="openai",
+            default_model="gpt-4o",
+            workspace_dir="/tmp/ws",
+            enable_plugins=False,
+        )
 
         result = _run_subagent("task", "instructions", "gpt-4", config=cfg)
 
@@ -1549,14 +1658,92 @@ def test_run_subagent_resolves_model_before_agent_creation():
         assert mock_agent_cls.call_args[1]["model"] == "openai:gpt-4"
 
 
+def test_run_subagent_closes_child_harness():
+    from agnoclaw.tools.tasks import _run_subagent
+
+    child = MagicMock()
+    child.run.return_value = MagicMock(content="ok")
+    harness_type = MagicMock(return_value=child)
+    harness_type._build_subagent_execution_context.return_value = None
+
+    with patch("agnoclaw.agent.AgentHarness", harness_type):
+        assert _run_subagent("task", "instructions", "model", tool_names=["web"]) == "ok"
+
+    child.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_arun_subagent_closes_child_harness():
+    from agnoclaw.tools.tasks import _arun_subagent
+
+    child = MagicMock()
+    child.arun = AsyncMock(return_value=MagicMock(content="ok"))
+    child.aclose = AsyncMock()
+    harness_type = MagicMock(return_value=child)
+    harness_type._build_subagent_execution_context.return_value = None
+
+    with patch("agnoclaw.agent.AgentHarness", harness_type):
+        result = await _arun_subagent("task", "instructions", "model", tool_names=["web"])
+
+    assert result == "ok"
+    child.aclose.assert_awaited_once_with()
+
+
+def test_raw_subagent_helper_rejects_explicit_profile_before_child_creation():
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools.tasks import _run_subagent
+
+    with patch("agnoclaw.agent.AgentHarness") as harness_type:
+        with pytest.raises(HarnessError) as caught:
+            _run_subagent(
+                "task",
+                "instructions",
+                "model",
+                config=HarnessConfig.quick(),
+            )
+
+    assert caught.value.code == "RAW_SUBAGENT_LIFECYCLE_UNSUPPORTED"
+    harness_type.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_raw_async_subagent_helper_rejects_explicit_profile_before_child_creation():
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools.tasks import _arun_subagent
+
+    with patch("agnoclaw.agent.AgentHarness") as harness_type:
+        with pytest.raises(HarnessError) as caught:
+            await _arun_subagent(
+                "task",
+                "instructions",
+                "model",
+                config=HarnessConfig.durable(),
+            )
+
+    assert caught.value.code == "RAW_SUBAGENT_LIFECYCLE_UNSUPPORTED"
+    harness_type.assert_not_called()
+
+
+def test_explicit_profile_default_tools_omit_raw_spawn_subagent(tmp_path):
+    from agnoclaw.config import HarnessConfig
+    from agnoclaw.tools import get_default_tools
+
+    tools = get_default_tools(HarnessConfig.quick(), workspace_dir=tmp_path)
+
+    assert "spawn_subagent" not in {
+        getattr(tool, "name", None)
+        for tool in tools
+    }
+
+
 # ── get_default_tools subagent passthrough test ──────────────────────────
 
 
 def test_get_default_tools_passes_subagents():
     """get_default_tools should pass subagents to make_subagent_tool."""
+    from agnoclaw.config import HarnessConfig
     from agnoclaw.tools import get_default_tools
     from agnoclaw.tools.tasks import SubagentDefinition
-    from agnoclaw.config import HarnessConfig
 
     subagents = {
         "test-agent": SubagentDefinition(description="test"),

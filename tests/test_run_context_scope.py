@@ -8,9 +8,9 @@ Covers issue #52:
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from agnoclaw.config import HarnessConfig
 
@@ -113,9 +113,7 @@ def test_run_merges_per_run_dependencies(tmp_path):
 
 def test_run_without_per_run_deps_does_not_forward(tmp_path):
     """Default path leaves Agno to use the agent-level dependency default."""
-    harness, mock_agent, _ = _build_harness(
-        tmp_path, dependencies={"tenant_id": "acme"}
-    )
+    harness, mock_agent, _ = _build_harness(tmp_path, dependencies={"tenant_id": "acme"})
     mock_agent.run.return_value = SimpleNamespace(content="ok")
 
     harness.run("hi")
@@ -124,9 +122,7 @@ def test_run_without_per_run_deps_does_not_forward(tmp_path):
 
 
 def test_run_per_run_session_state_merged(tmp_path):
-    harness, mock_agent, _ = _build_harness(
-        tmp_path, session_state={"a": 1}
-    )
+    harness, mock_agent, _ = _build_harness(tmp_path, session_state={"a": 1})
     mock_agent.run.return_value = SimpleNamespace(content="ok")
 
     harness.run("hi", session_state={"b": 2})
@@ -154,9 +150,7 @@ def test_run_forwards_context_flags(tmp_path):
 
 def test_run_does_not_mutate_construction_dependencies(tmp_path):
     """Sequential runs never leak per-run dependencies into the harness default."""
-    harness, mock_agent, _ = _build_harness(
-        tmp_path, dependencies={"tenant_id": "acme"}
-    )
+    harness, mock_agent, _ = _build_harness(tmp_path, dependencies={"tenant_id": "acme"})
     mock_agent.run.return_value = SimpleNamespace(content="ok")
 
     harness.run("first", dependencies={"req": "r1"})
@@ -174,9 +168,7 @@ def test_run_does_not_mutate_construction_dependencies(tmp_path):
 def test_run_exception_leaves_dependencies_intact(tmp_path):
     from agnoclaw.runtime import HarnessError
 
-    harness, mock_agent, _ = _build_harness(
-        tmp_path, dependencies={"tenant_id": "acme"}
-    )
+    harness, mock_agent, _ = _build_harness(tmp_path, dependencies={"tenant_id": "acme"})
     mock_agent.run.side_effect = RuntimeError("boom")
 
     with pytest.raises(HarnessError):
@@ -186,9 +178,7 @@ def test_run_exception_leaves_dependencies_intact(tmp_path):
 
 
 def test_run_streaming_forwards_dependencies(tmp_path):
-    harness, mock_agent, _ = _build_harness(
-        tmp_path, dependencies={"tenant_id": "acme"}
-    )
+    harness, mock_agent, _ = _build_harness(tmp_path, dependencies={"tenant_id": "acme"})
     mock_agent.run.return_value = iter([])
 
     stream = harness.run("hi", stream=True, dependencies={"req": "r1"})
@@ -203,9 +193,7 @@ def test_run_streaming_forwards_dependencies(tmp_path):
 
 @pytest.mark.asyncio
 async def test_arun_merges_per_run_dependencies(tmp_path):
-    harness, mock_agent, _ = _build_harness(
-        tmp_path, dependencies={"tenant_id": "acme"}
-    )
+    harness, mock_agent, _ = _build_harness(tmp_path, dependencies={"tenant_id": "acme"})
     mock_agent.arun = AsyncMock(return_value=SimpleNamespace(content="ok"))
 
     await harness.arun("hi", dependencies={"req": "r1"})
@@ -219,7 +207,7 @@ async def test_arun_merges_per_run_dependencies(tmp_path):
 
 
 def test_get_current_run_context_default_none():
-    from agnoclaw.agent import get_current_run_context, get_current_dependencies
+    from agnoclaw.agent import get_current_dependencies, get_current_run_context
 
     assert get_current_run_context() is None
     assert get_current_dependencies() is None
@@ -228,8 +216,8 @@ def test_get_current_run_context_default_none():
 def test_active_run_context_set_and_cleared():
     from agnoclaw.agent import (
         AgentHarness,
-        get_current_run_context,
         get_current_dependencies,
+        get_current_run_context,
     )
 
     fc = SimpleNamespace()

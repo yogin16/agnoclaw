@@ -2,7 +2,8 @@
 Plugin system — Python entry-point-based plugin discovery.
 
 Pythonic alternative to OpenClaw's JS plugin system. Plugins can provide:
-  - Additional tools (Toolkit instances)
+  - Governed CapabilitySpec values (preferred)
+  - Compatibility-only Agno tools (direct run/arun only)
   - Skill directories
   - Pre/post-run hooks
 
@@ -17,13 +18,14 @@ Plugin contract:
 Example plugin module:
 
     from agnoclaw.plugins import PluginManifest
+    from my_plugin.capabilities import my_capability_spec
 
     def agnoclaw_plugin() -> PluginManifest:
         from my_toolkit import MyToolkit
         return PluginManifest(
             name="my-plugin",
             version="1.0.0",
-            tools=[MyToolkit()],
+            capabilities=[my_capability_spec],
             skills_dirs=["path/to/my/skills"],
         )
 
@@ -38,15 +40,18 @@ Usage:
     loader = PluginLoader()
     manifests = loader.discover()
     for m in manifests:
-        print(f"Plugin: {m.name} — {len(m.tools)} tools, {len(m.skills_dirs)} skill dirs")
+        print(f"Plugin: {m.name} — {len(m.capabilities)} governed capabilities")
 """
 
 from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
+
+from .capabilities import CapabilitySpec
 
 logger = logging.getLogger("agnoclaw.plugins")
 
@@ -63,7 +68,10 @@ class PluginManifest:
     version: str = "0.0.0"
     description: str = ""
 
-    # Tools to add to the agent's tool suite
+    # Immutable governed capabilities exposed to lifecycle runs.
+    capabilities: list[CapabilitySpec] = field(default_factory=list)
+
+    # Raw Agno tools retained for direct run/arun compatibility only.
     tools: list[Any] = field(default_factory=list)
 
     # Additional skill directories to scan
@@ -99,7 +107,7 @@ class PluginLoader:
         Returns:
             List of PluginManifest from discovered plugins.
         """
-        manifests = []
+        manifests: list[PluginManifest] = []
 
         try:
             from importlib.metadata import entry_points
@@ -107,12 +115,8 @@ class PluginLoader:
             logger.debug("importlib.metadata not available, skipping entry point discovery")
             return manifests
 
-        eps = entry_points()
-        # Python 3.12+: eps.select(); 3.9-3.11: eps.get()
-        if hasattr(eps, "select"):
-            plugin_eps = eps.select(group=self.ENTRY_POINT_GROUP)
-        else:
-            plugin_eps = eps.get(self.ENTRY_POINT_GROUP, [])
+        # ``select`` is available throughout agnoclaw's Python 3.11+ range.
+        plugin_eps = entry_points().select(group=self.ENTRY_POINT_GROUP)
 
         for ep in plugin_eps:
             try:
@@ -127,7 +131,7 @@ class PluginLoader:
 
         return manifests
 
-    def load_from_path(self, module_path: str) -> Optional[PluginManifest]:
+    def load_from_path(self, module_path: str) -> PluginManifest | None:
         """
         Load a plugin from an explicit Python module path.
 
@@ -148,19 +152,15 @@ class PluginLoader:
             logger.warning("Failed to load plugin from '%s': %s", module_path, e)
             return None
 
-    def _extract_manifest(self, module, source_name: str) -> Optional[PluginManifest]:
+    def _extract_manifest(self, module, source_name: str) -> PluginManifest | None:
         """Extract PluginManifest from a loaded module."""
         func = getattr(module, self.PLUGIN_FUNC_NAME, None)
         if func is None:
-            logger.warning(
-                "Plugin '%s' has no %s() function", source_name, self.PLUGIN_FUNC_NAME
-            )
+            logger.warning("Plugin '%s' has no %s() function", source_name, self.PLUGIN_FUNC_NAME)
             return None
 
         if not callable(func):
-            logger.warning(
-                "Plugin '%s': %s is not callable", source_name, self.PLUGIN_FUNC_NAME
-            )
+            logger.warning("Plugin '%s': %s is not callable", source_name, self.PLUGIN_FUNC_NAME)
             return None
 
         try:
@@ -172,7 +172,9 @@ class PluginLoader:
         if not isinstance(manifest, PluginManifest):
             logger.warning(
                 "Plugin '%s': %s() returned %s, expected PluginManifest",
-                source_name, self.PLUGIN_FUNC_NAME, type(manifest).__name__,
+                source_name,
+                self.PLUGIN_FUNC_NAME,
+                type(manifest).__name__,
             )
             return None
 
@@ -184,11 +186,18 @@ class PluginLoader:
         return dict(self._loaded)
 
     def get_all_tools(self) -> list:
-        """Collect all tools from all loaded plugins."""
+        """Collect compatibility-only raw tools from all loaded plugins."""
         tools = []
         for manifest in self._loaded.values():
             tools.extend(manifest.tools)
         return tools
+
+    def get_all_capabilities(self) -> list[CapabilitySpec]:
+        """Collect governed capability descriptors from all loaded plugins."""
+        capabilities = []
+        for manifest in self._loaded.values():
+            capabilities.extend(manifest.capabilities)
+        return capabilities
 
     def get_all_skills_dirs(self) -> list[str]:
         """Collect all skill directories from all loaded plugins."""

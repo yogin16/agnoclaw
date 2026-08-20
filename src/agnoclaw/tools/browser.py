@@ -10,6 +10,7 @@ from __future__ import annotations
 from agno.tools.toolkit import Toolkit
 
 from .browser_backends import BrowserBackend, LocalPlaywrightBrowserBackend, check_playwright
+from .web import NetworkURLPolicy
 
 
 def _check_playwright() -> bool:
@@ -26,13 +27,24 @@ class BrowserToolkit(Toolkit):
         viewport_width: int = 1280,
         viewport_height: int = 720,
         backend: BrowserBackend | None = None,
+        network_policy: NetworkURLPolicy | None = None,
     ):
         super().__init__(name="browser")
+        self._owns_backend = backend is None
         self.backend = backend or LocalPlaywrightBrowserBackend(
             headless=headless,
             viewport_width=viewport_width,
             viewport_height=viewport_height,
+            network_policy=network_policy,
         )
+        if backend is not None and network_policy is not None:
+            configure_policy = getattr(backend, "set_network_policy", None)
+            if not callable(configure_policy):
+                raise ValueError(
+                    "Custom browser backends must implement set_network_policy() "
+                    "to enforce every request, redirect, and click navigation."
+                )
+            configure_policy(network_policy)
 
         self.register(self.browser_navigate)
         self.register(self.browser_click)
@@ -67,8 +79,13 @@ class BrowserToolkit(Toolkit):
     def browser_close(self) -> str:
         return self.backend.close()
 
+    def close(self) -> None:
+        """Close only the browser backend created by this toolkit."""
+        if self._owns_backend:
+            self.backend.close()
+
     def __del__(self):
         try:
-            self.browser_close()
+            self.close()
         except Exception:
             pass

@@ -1,11 +1,39 @@
 """Tests for the plugin system."""
 
-from unittest.mock import MagicMock, patch
 import types
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agnoclaw import (
+    AgentHarness,
+    CapabilityConcurrency,
+    CapabilityKind,
+    CapabilityLifetime,
+    CapabilityRecovery,
+    CapabilitySpec,
+    CapabilityTrust,
+    EffectClass,
+    HarnessConfig,
+    HarnessError,
+)
 from agnoclaw.plugins import PluginLoader, PluginManifest
+
+
+def _capability(name="plugin_lookup"):
+    return CapabilitySpec(
+        name=name,
+        version="1.0.0",
+        kind=CapabilityKind.TOOL,
+        effect_class=EffectClass.READ_ONLY,
+        trust=CapabilityTrust.VERIFIED,
+        lifetime=CapabilityLifetime.RUN,
+        concurrency=CapabilityConcurrency.ISOLATED,
+        recovery=CapabilityRecovery.RECREATABLE,
+        implementation_digest="sha256:" + "a" * 64,
+        input_schema={"type": "object", "additionalProperties": False},
+        factory=lambda: lambda: "ok",
+    )
 
 
 @pytest.fixture
@@ -18,6 +46,7 @@ def test_plugin_manifest_defaults():
     manifest = PluginManifest(name="test-plugin")
     assert manifest.name == "test-plugin"
     assert manifest.version == "0.0.0"
+    assert manifest.capabilities == []
     assert manifest.tools == []
     assert manifest.skills_dirs == []
     assert manifest.pre_run_hooks == []
@@ -110,6 +139,67 @@ def test_get_all_tools(loader):
     assert len(tools) == 2
     assert tool1 in tools
     assert tool2 in tools
+
+
+def test_get_all_capabilities(loader):
+    first = _capability("first_lookup")
+    second = _capability("second_lookup")
+    loader._loaded = {
+        "p1": PluginManifest(name="p1", capabilities=[first]),
+        "p2": PluginManifest(name="p2", capabilities=[second]),
+    }
+
+    assert loader.get_all_capabilities() == [first, second]
+
+
+def test_harness_registers_plugin_capabilities_without_raw_tool_bypass(tmp_path):
+    plugin_loader = PluginLoader()
+    plugin_loader._loaded = {
+        "governed": PluginManifest(name="governed", capabilities=[_capability()])
+    }
+    with patch.object(plugin_loader, "discover", return_value=list(plugin_loader._loaded.values())):
+        with patch("agnoclaw.plugins.PluginLoader", return_value=plugin_loader):
+            with patch("agnoclaw.agent.Agent", MagicMock()):
+                with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+                    harness = AgentHarness(
+                        model="model",
+                        provider="custom",
+                        workspace_dir=tmp_path,
+                        config=HarnessConfig(enable_plugins=True),
+                        include_default_tools=False,
+                    )
+
+    registry = harness.admin_harness_capabilities()["registry"]
+    assert registry["model_tools"][0]["reference"] == "plugin_lookup@1.0.0"
+    assert registry["extension_compatibility_tools"] == []
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_rejects_raw_plugin_tool_before_run_creation(tmp_path):
+    raw_tool = MagicMock(name="raw_plugin_tool")
+    raw_tool.name = "raw_plugin_tool"
+    plugin_loader = PluginLoader()
+    plugin_loader._loaded = {"raw": PluginManifest(name="raw", tools=[raw_tool])}
+    runtime_store = MagicMock()
+    with patch.object(plugin_loader, "discover", return_value=list(plugin_loader._loaded.values())):
+        with patch("agnoclaw.plugins.PluginLoader", return_value=plugin_loader):
+            with patch("agnoclaw.agent.Agent", MagicMock()):
+                with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+                    harness = AgentHarness(
+                        model="model",
+                        provider="custom",
+                        workspace_dir=tmp_path,
+                        config=HarnessConfig(enable_plugins=True),
+                        include_default_tools=False,
+                        runtime_store=runtime_store,
+                    )
+
+    with pytest.raises(HarnessError) as caught:
+        await harness.start("call plugin")
+
+    assert caught.value.code == "EXTENSION_TOOL_LIFECYCLE_UNSUPPORTED"
+    assert caught.value.details["sources"] == ("plugins",)
+    runtime_store.create_run.assert_not_called()
 
 
 def test_get_all_skills_dirs(loader):

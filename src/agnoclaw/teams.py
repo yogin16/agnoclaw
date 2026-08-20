@@ -20,11 +20,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agno.models.base import Model
 from agno.team import Team, TeamMode
 
 from .agent import AgentHarness, _make_db, _resolve_model
 from .backends import RuntimeBackend
-from .config import HarnessConfig, get_config
+from .config import HarnessConfig, RuntimeProfile, get_config
+from .runtime.errors import HarnessError
 from .skills.backends import SkillInstallApprover
 from .tools import (
     FilesToolkit,
@@ -38,11 +40,30 @@ def _tool_workspace_dir(cfg: HarnessConfig) -> Path:
     return Path(cfg.workspace_dir).expanduser().resolve()
 
 
+def _legacy_team_config(config: HarnessConfig | None) -> HarnessConfig:
+    """Admit only the deliberately named raw-Agno-Team compatibility profile."""
+    cfg = config or get_config()
+    profile = RuntimeProfile(cfg.profile)
+    if profile is not RuntimeProfile.LEGACY:
+        raise HarnessError(
+            code="TEAM_LIFECYCLE_UNSUPPORTED",
+            category="lifecycle",
+            message=(
+                "Raw Agno Team presets do not provide agnoclaw lifecycle lineage. "
+                "Use declared child runs, or select HarnessConfig.legacy() for the "
+                "temporary compatibility surface."
+            ),
+            retryable=False,
+            details={"profile": profile.value, "replacement": "declared_child_runs"},
+        )
+    return cfg
+
+
 def _build_member_agent(
     *,
     name: str,
     role: str,
-    model: str,
+    model: str | Model,
     cfg: HarnessConfig,
     db,
     tools: list,
@@ -60,7 +81,9 @@ def _build_member_agent(
         tools=tools,
         name=name,
         instructions=role,
-        enable_learning=enable_learning,
+        # Shared team learning is attached below; do not construct a second
+        # unscoped LearningMachine inside each member harness.
+        enable_learning=enable_learning and learning is None,
         debug=cfg.debug,
         backend=backend,
         skill_install_approver=skill_install_approver,
@@ -78,6 +101,7 @@ def research_team(
     config: HarnessConfig | None = None,
     session_id: str | None = None,
     enable_learning: bool = False,
+    learning_knowledge=None,
     backend: RuntimeBackend | None = None,
     skill_install_approver: SkillInstallApprover | None = None,
 ) -> Team:
@@ -89,7 +113,7 @@ def research_team(
 
     TeamMode: coordinate (leader delegates, synthesizes final output)
     """
-    cfg = config or get_config()
+    cfg = _legacy_team_config(config)
     model_id = model_id or cfg.default_model
     provider = provider or cfg.default_provider
     db = _make_db(cfg)
@@ -101,7 +125,12 @@ def research_team(
     _learning = None
     if enable_learning:
         from .memory import build_learning_machine
-        _learning = build_learning_machine(db=db, namespace="research-team")
+
+        _learning = build_learning_machine(
+            db=db,
+            namespace="research-team",
+            knowledge=learning_knowledge,
+        )
 
     researcher = _build_member_agent(
         name="Researcher",
@@ -178,6 +207,7 @@ def code_team(
     config: HarnessConfig | None = None,
     session_id: str | None = None,
     enable_learning: bool = False,
+    learning_knowledge=None,
     backend: RuntimeBackend | None = None,
     skill_install_approver: SkillInstallApprover | None = None,
 ) -> Team:
@@ -189,7 +219,7 @@ def code_team(
 
     TeamMode: coordinate
     """
-    cfg = config or get_config()
+    cfg = _legacy_team_config(config)
     model_id = model_id or cfg.default_model
     provider = provider or cfg.default_provider
     db = _make_db(cfg)
@@ -210,7 +240,12 @@ def code_team(
     _learning = None
     if enable_learning:
         from .memory import build_learning_machine
-        _learning = build_learning_machine(db=db, namespace="code-team")
+
+        _learning = build_learning_machine(
+            db=db,
+            namespace="code-team",
+            knowledge=learning_knowledge,
+        )
 
     architect = _build_member_agent(
         name="Architect",
@@ -299,7 +334,7 @@ def data_team(
 
     TeamMode: coordinate
     """
-    cfg = config or get_config()
+    cfg = _legacy_team_config(config)
     model_id = model_id or cfg.default_model
     provider = provider or cfg.default_provider
     db = _make_db(cfg)

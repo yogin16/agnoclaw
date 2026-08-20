@@ -513,9 +513,7 @@ def test_run_streaming_scopes_during_iteration_and_restores(
     }
 
 
-def test_run_streaming_unconsumed_does_not_leak_scope(
-    harness: AgentHarness, monkeypatch
-) -> None:
+def test_run_streaming_unconsumed_does_not_leak_scope(harness: AgentHarness, monkeypatch) -> None:
     """An abandoned stream must not permanently corrupt the harness toolset.
 
     Regression for the leak where the scope was applied before the generator was
@@ -597,11 +595,7 @@ def test_loader_ignores_non_object_tool_schema(tmp_path: Path) -> None:
     skill_dir = tmp_path / "bad"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: bad\n"
-        "tool-schemas:\n"
-        "  save_artifact: not-a-schema\n"
-        "---\n\n# Bad\n",
+        "---\nname: bad\ntool-schemas:\n  save_artifact: not-a-schema\n---\n\n# Bad\n",
         encoding="utf-8",
     )
     skill = load_skill_from_path(skill_dir / "SKILL.md")

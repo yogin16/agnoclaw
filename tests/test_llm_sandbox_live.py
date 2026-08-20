@@ -91,9 +91,9 @@ def test_llm_sandbox_live_session_sandbox_boundary(tmp_path):
         session_artifact = sandbox / "session-artifact.txt"
         script = (
             "from pathlib import Path\n"
-            f"source = Path(r\"{workspace_input}\").read_text(encoding=\"utf-8\")\n"
-            "Path(\"session-artifact.txt\").write_text(source.upper(), encoding=\"utf-8\")\n"
-            f"Path(r\"{workspace_output}\").write_text(source + \"done\\n\", encoding=\"utf-8\")\n"
+            f'source = Path(r"{workspace_input}").read_text(encoding="utf-8")\n'
+            'Path("session-artifact.txt").write_text(source.upper(), encoding="utf-8")\n'
+            f'Path(r"{workspace_output}").write_text(source + "done\\n", encoding="utf-8")\n'
         )
 
         write_result = files.write_file(script_path, script)

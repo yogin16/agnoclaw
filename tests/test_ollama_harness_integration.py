@@ -3,7 +3,8 @@ Reliable Ollama integration checks for harness behavior.
 
 These tests intentionally validate harness-level guarantees rather than model IQ.
 Run with:
-    AGNOCLAW_TEST_MODEL=qwen3:0.6b uv run pytest tests/test_ollama_harness_integration.py -m integration -q
+    AGNOCLAW_TEST_MODEL=qwen3:0.6b uv run pytest \
+        tests/test_ollama_harness_integration.py -m integration -q
 """
 
 from __future__ import annotations
@@ -149,4 +150,3 @@ def test_ollama_stream_path_returns_events_and_tool_event_mapping():
         # Tool events are best-effort depending on model behavior.
         if "tool.call.started" in event_types:
             assert "tool.call.completed" in event_types
-

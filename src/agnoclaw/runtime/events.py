@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Any, Awaitable, Protocol, runtime_checkable
+from enum import StrEnum
+from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from .context import ExecutionContext
@@ -13,7 +14,7 @@ from .context import ExecutionContext
 EVENT_VERSION = "0.2"
 
 
-class EventSinkMode(str, Enum):
+class EventSinkMode(StrEnum):
     BEST_EFFORT = "best_effort"
     FAIL_CLOSED = "fail_closed"
 
@@ -58,8 +59,7 @@ class HarnessEvent:
 class EventSink(Protocol):
     """Event sink protocol. Implementations may be sync or async."""
 
-    def emit(self, event: HarnessEvent) -> None | Awaitable[None]:
-        ...
+    def emit(self, event: HarnessEvent) -> None | Awaitable[None]: ...
 
 
 class NullEventSink:
@@ -97,4 +97,3 @@ def build_event(
         context=context,
         payload=payload or {},
     )
-

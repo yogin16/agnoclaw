@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from agno.tools.toolkit import Toolkit
 
@@ -26,6 +27,7 @@ logger = logging.getLogger("agnoclaw.tools.notebook")
 def _check_nbformat():
     try:
         import nbformat  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -131,9 +133,7 @@ class NotebookToolkit(Toolkit):
 
         return f"Updated cell {cell_index} [{old_type}] in {file_path.name}"
 
-    def notebook_add_cell(
-        self, path: str, cell_type: str, source: str, position: int = -1
-    ) -> str:
+    def notebook_add_cell(self, path: str, cell_type: str, source: str, position: int = -1) -> str:
         """
         Add a new cell to a notebook.
 
@@ -236,7 +236,7 @@ class NotebookToolkit(Toolkit):
             return f"[error] Failed to read notebook: {e}"
 
         cells = data.get("cells", [])
-        new_cell = {
+        new_cell: dict[str, Any] = {
             "cell_type": cell_type,
             "metadata": {},
             "source": source.split("\n"),

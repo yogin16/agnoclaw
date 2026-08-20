@@ -2,12 +2,12 @@
 
 from pathlib import Path
 from unittest.mock import patch
+
 import pytest
 
 from agnoclaw.skills.backends import SkillInstallResult
 from agnoclaw.skills.loader import load_skill_from_path
 from agnoclaw.skills.registry import SkillRegistry, _validate_package_name
-
 
 SAMPLE_SKILL_MD = """---
 name: test-skill
@@ -29,7 +29,9 @@ class FakeSkillRuntimeBackend:
     def __init__(self):
         self.calls = []
 
-    def run_inline_command(self, *, command: str, timeout_seconds: int = 10, working_dir: str | None = None) -> str:
+    def run_inline_command(
+        self, *, command: str, timeout_seconds: int = 10, working_dir: str | None = None
+    ) -> str:
         self.calls.append(("inline", command, timeout_seconds, working_dir))
         return f"inline:{command}:{working_dir}"
 
@@ -45,7 +47,9 @@ class FakeSkillRuntimeBackend:
         self.calls.append(("dist", name))
         return name == "httpx"
 
-    def run_install(self, *, installer_type: str, package_spec: str, timeout_seconds: int = 120) -> SkillInstallResult:
+    def run_install(
+        self, *, installer_type: str, package_spec: str, timeout_seconds: int = 120
+    ) -> SkillInstallResult:
         self.calls.append(("install", installer_type, package_spec, timeout_seconds))
         return SkillInstallResult(success=True, exit_code=0, stdout="ok")
 
@@ -80,6 +84,48 @@ def test_load_skill_from_path(skill_dir):
     assert skill.meta.disable_model_invocation is False
     assert "bash" in skill.meta.allowed_tools
     assert "web_search" in skill.meta.allowed_tools
+
+
+def test_load_skill_without_frontmatter_uses_directory_name(tmp_path):
+    skill_path = tmp_path / "plain-skill"
+    skill_path.mkdir()
+    skill_md = skill_path / "SKILL.md"
+    skill_md.write_text("# Plain skill\n\nDo the work.", encoding="utf-8")
+
+    skill = load_skill_from_path(skill_md)
+
+    assert skill is not None
+    assert skill.name == "plain-skill"
+    assert skill.content == "# Plain skill\n\nDo the work."
+
+
+def test_load_skill_accepts_utf8_bom_and_yaml_end_marker(tmp_path):
+    skill_path = tmp_path / "bom-skill"
+    skill_path.mkdir()
+    skill_md = skill_path / "SKILL.md"
+    skill_md.write_text(
+        "\ufeff---\nname: explicit-name\nuser-invocable: false\n...\nBody\n",
+        encoding="utf-8",
+    )
+
+    skill = load_skill_from_path(skill_md)
+
+    assert skill is not None
+    assert skill.name == "explicit-name"
+    assert skill.meta.user_invocable is False
+    assert skill.content == "Body"
+
+
+def test_load_skill_rejects_unclosed_or_non_mapping_frontmatter(tmp_path):
+    skill_path = tmp_path / "invalid-skill"
+    skill_path.mkdir()
+    skill_md = skill_path / "SKILL.md"
+
+    skill_md.write_text("---\nname: never-closed\n", encoding="utf-8")
+    assert load_skill_from_path(skill_md) is None
+
+    skill_md.write_text("---\n- list-value\n---\nBody\n", encoding="utf-8")
+    assert load_skill_from_path(skill_md) is None
 
 
 def test_skill_render_arguments(skill_dir):
@@ -181,6 +227,7 @@ def test_render_blocks_inline_exec_by_default(exec_skill_dir):
     assert "!`date`" in rendered
     # Verify the inline command pattern count matches expectations
     import re
+
     inline_cmds = re.findall(r"!`([^`]+)`", rendered)
     assert len(inline_cmds) == 2, f"Expected 2 preserved !`cmd` blocks, got {len(inline_cmds)}"
 
@@ -198,6 +245,7 @@ def test_render_allows_inline_exec_when_enabled(exec_skill_dir):
 
 
 # ── Security: package name validation ──────────────────────────────────────────
+
 
 def test_validate_package_name_valid():
     """Normal package names should pass validation."""
@@ -263,6 +311,7 @@ def test_validate_package_name_too_long():
 
 
 # ── Security: trust levels ─────────────────────────────────────────────────────
+
 
 def test_trust_level_local(skill_dir):
     """Skills in workspace_skills_dir should be 'local' trust."""
@@ -347,7 +396,7 @@ def test_install_approval_declined(install_skill_dir):
     """Declining install should still render the skill (without the dependency)."""
     registry = SkillRegistry(workspace_skills_dir=install_skill_dir)
     # Mock the approval to decline
-    with patch.object(SkillRegistry, '_prompt_install_approval', return_value=False):
+    with patch.object(SkillRegistry, "_prompt_install_approval", return_value=False):
         content = registry.load_skill("install-test")
     assert content is not None  # skill still loads, install just skipped
 
@@ -384,6 +433,7 @@ def test_install_runtime_backend_skips_install_when_dependency_present(install_s
 
 
 # ── Security: community skill inline exec blocked ─────────────────────────────
+
 
 def test_community_skill_inline_exec_blocked(tmp_path):
     """Community skills should NOT have !`cmd` executed."""
@@ -423,7 +473,7 @@ argument-hint: "[task description]"
 homepage: https://clawhub.ai/skills/coding-agent
 metadata:
   openclaw:
-    emoji: "\U0001F4BB"
+    emoji: "\U0001f4bb"
     os: [darwin, linux]
     always: false
     requires:
@@ -473,7 +523,7 @@ user-invocable: true
 allowed-tools: bash, read_file
 metadata:
   clawdbot:
-    emoji: "\U0001F50D"
+    emoji: "\U0001f50d"
     os: [darwin, linux, win32]
     always: true
     requires:
@@ -493,7 +543,7 @@ name: quick-fix
 description: "Quick code fix agent"
 metadata:
   openclaw:
-    emoji: "\u26A1"
+    emoji: "\u26a1"
 ---
 
 Fix this: $ARGUMENTS
@@ -535,7 +585,7 @@ def test_clawhub_full_skill_parse(clawhub_skill_dir):
     assert "web_search" in skill.meta.allowed_tools
 
     # OpenClaw metadata
-    assert skill.meta.emoji == "\U0001F4BB"
+    assert skill.meta.emoji == "\U0001f4bb"
     assert skill.meta.os_platforms == ["darwin", "linux"]
     assert skill.meta.always is False
     assert skill.meta.requires_bins == ["git"]
@@ -578,7 +628,7 @@ def test_clawdbot_alias_parse(clawhub_skill_dir):
 
     assert skill is not None
     assert skill.name == "pr-reviewer"
-    assert skill.meta.emoji == "\U0001F50D"
+    assert skill.meta.emoji == "\U0001f50d"
     assert skill.meta.os_platforms == ["darwin", "linux", "win32"]
     assert skill.meta.always is True
     assert skill.meta.requires_bins == ["gh"]
@@ -591,7 +641,7 @@ def test_minimal_clawhub_skill(clawhub_skill_dir):
 
     assert skill is not None
     assert skill.name == "quick-fix"
-    assert skill.meta.emoji == "\u26A1"
+    assert skill.meta.emoji == "\u26a1"
     # Defaults
     assert skill.meta.user_invocable is True
     assert skill.meta.always is False
@@ -615,12 +665,16 @@ def test_clawhub_registry_integration(clawhub_skill_dir):
     assert "fix the login bug" in content
 
 
-def test_clawhub_skill_descriptions(clawhub_skill_dir):
-    """Skill descriptions for system prompt should include ClawHub skills."""
+def test_skill_descriptions_include_only_inline_model_activatable_skills(
+    clawhub_skill_dir,
+):
+    """Catalog disclosure must not promise semantics that require caller activation."""
     registry = SkillRegistry(workspace_skills_dir=clawhub_skill_dir)
     descriptions = registry.get_skill_descriptions()
 
-    assert "coding-agent" in descriptions
+    # This skill declares both a model override and context:fork, neither of which
+    # can be honored after a model turn has already started.
+    assert "coding-agent" not in descriptions
     assert "pr-reviewer" in descriptions
     assert "quick-fix" in descriptions
     assert "Available Skills" in descriptions

@@ -12,7 +12,9 @@ def test_bootstrap_reports_missing_cli_dependencies(monkeypatch, capsys):
 
     def fake_import_module(name):
         if name == "agnoclaw.cli.main":
-            raise ImportError("CLI dependencies not installed. Install with: pip install 'agnoclaw[cli]'")
+            raise ImportError(
+                "CLI dependencies not installed. Install with: pip install 'agnoclaw[cli]'"
+            )
         return original_import_module(name)
 
     monkeypatch.setattr(importlib, "import_module", fake_import_module)

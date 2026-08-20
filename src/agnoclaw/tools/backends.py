@@ -9,9 +9,10 @@ import re
 import shlex
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
@@ -19,7 +20,7 @@ from uuid import uuid4
 _MAX_READ_SIZE = 50 * 1024 * 1024  # 50MB guard for read_file
 
 
-class SandboxMode(str, Enum):
+class SandboxMode(StrEnum):
     """Session sandbox filesystem modes for built-in files/bash tools."""
 
     WORKSPACE_WRITE = "workspace_write"
@@ -96,8 +97,7 @@ class CommandExecutor(Protocol):
         command: str,
         workdir: str | None,
         timeout_seconds: int | None,
-    ) -> CommandResult:
-        ...
+    ) -> CommandResult: ...
 
     def start(
         self,
@@ -105,8 +105,7 @@ class CommandExecutor(Protocol):
         command: str,
         workdir: str | None,
         description: str | None = None,
-    ) -> BackgroundCommandHandle:
-        ...
+    ) -> BackgroundCommandHandle: ...
 
     def output(
         self,
@@ -114,11 +113,9 @@ class CommandExecutor(Protocol):
         task_id: str,
         max_chars: int = 8000,
         tail: bool = True,
-    ) -> BackgroundCommandOutput:
-        ...
+    ) -> BackgroundCommandOutput: ...
 
-    def kill(self, *, task_id: str, force: bool = False) -> str:
-        ...
+    def kill(self, *, task_id: str, force: bool = False) -> str: ...
 
 
 class WorkspaceAdapter(Protocol):
@@ -126,25 +123,20 @@ class WorkspaceAdapter(Protocol):
 
     workspace_dir: Path
 
-    def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str:
-        ...
+    def read_file(self, path: str, offset: int = 0, limit: int = 2000) -> str: ...
 
-    def write_file(self, path: str, content: str) -> str:
-        ...
+    def write_file(self, path: str, content: str) -> str: ...
 
-    def edit_file(self, path: str, old_string: str, new_string: str) -> str:
-        ...
+    def edit_file(self, path: str, old_string: str, new_string: str) -> str: ...
 
-    def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str:
-        ...
+    def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str: ...
 
     def glob_files(
         self,
         pattern: str,
         base_dir: str | None = None,
         path: str | None = None,
-    ) -> str:
-        ...
+    ) -> str: ...
 
     def grep_files(
         self,
@@ -154,11 +146,9 @@ class WorkspaceAdapter(Protocol):
         case_insensitive: bool = False,
         context_lines: int = 0,
         max_results: int = 50,
-    ) -> str:
-        ...
+    ) -> str: ...
 
-    def list_dir(self, path: str | None = None) -> str:
-        ...
+    def list_dir(self, path: str | None = None) -> str: ...
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -170,9 +160,7 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 def _session_path_error(path: str, *, workspace_dir: Path, sandbox_dir: Path) -> str:
-    return (
-        f"Path must be inside sandbox {sandbox_dir} or workspace {workspace_dir}: {path}"
-    )
+    return f"Path must be inside sandbox {sandbox_dir} or workspace {workspace_dir}: {path}"
 
 
 def _workspace_read_only_error(path: str, *, workspace_dir: Path, sandbox_dir: Path) -> str:
@@ -238,6 +226,12 @@ class SessionSandboxCommandExecutor:
 
     def kill(self, *, task_id: str, force: bool = False) -> str:
         return self._executor.kill(task_id=task_id, force=force)
+
+    def close(self) -> None:
+        """Close the wrapped executor when this wrapper owns its lifecycle."""
+        closer = getattr(self._executor, "close", None)
+        if callable(closer):
+            closer()
 
     def _resolve_workdir(self, workdir: str | None) -> str:
         if workdir is None:
@@ -345,7 +339,9 @@ class SessionSandboxWorkspaceAdapter:
         path: str | None = None,
     ) -> str:
         try:
-            resolved = self._resolve_path(base_dir or path) if (base_dir or path) else self._sandbox_dir
+            resolved = (
+                self._resolve_path(base_dir or path) if (base_dir or path) else self._sandbox_dir
+            )
         except ValueError as exc:
             return f"[error] {exc}"
         return self._adapter.glob_files(pattern=pattern, path=str(resolved))
@@ -398,9 +394,7 @@ class SessionSandboxWorkspaceAdapter:
 
         resolved = (self._sandbox_dir / candidate).resolve(strict=False)
         if not _is_within(resolved, self._sandbox_dir):
-            raise ValueError(
-                f"Relative paths must stay inside sandbox {self._sandbox_dir}: {path}"
-            )
+            raise ValueError(f"Relative paths must stay inside sandbox {self._sandbox_dir}: {path}")
         return resolved
 
     def _ensure_write_allowed(self, path: str, resolved: Path) -> None:
@@ -454,7 +448,6 @@ class _BackgroundTask:
     process: subprocess.Popen
     command: str
     output_path: Path
-    output_file: Any
     working_dir: str | None
     started_at: float
     description: str | None = None
@@ -470,14 +463,19 @@ class LocalCommandExecutor:
         max_background_tasks: int = 16,
     ) -> None:
         self.workspace_dir = (
-            str(Path(workspace_dir).expanduser().resolve())
-            if workspace_dir is not None
-            else None
+            str(Path(workspace_dir).expanduser().resolve()) if workspace_dir is not None else None
         )
         self.max_background_tasks = max_background_tasks
         self._tasks: dict[str, _BackgroundTask] = {}
+        self._state_lock = threading.RLock()
+        self._closed = False
         self._tasks_dir = Path.home() / ".agnoclaw" / "tmp" / "bash_tasks"
         self._tasks_dir.mkdir(parents=True, exist_ok=True)
+
+    def _require_open(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("Command executor is closed.")
 
     def _task_metadata_path(self, task_id: str) -> Path:
         return self._tasks_dir / f"{task_id}.json"
@@ -486,6 +484,7 @@ class LocalCommandExecutor:
         metadata = {
             "task_id": task.task_id,
             "pid": task.process.pid,
+            "process_group": os.name == "posix",
             "command": task.command,
             "output_path": str(task.output_path),
             "working_dir": task.working_dir,
@@ -535,22 +534,43 @@ class LocalCommandExecutor:
 
     @staticmethod
     def _cleanup_task(task: _BackgroundTask) -> None:
+        if task.process.poll() is None:
+            return
         try:
-            if task.output_file and not task.output_file.closed:
-                task.output_file.close()
-        except Exception:
-            pass
+            task.process.wait(timeout=0)
+        except (OSError, subprocess.TimeoutExpired):
+            return
+
+    @staticmethod
+    def _signal_task(task: _BackgroundTask, *, force: bool) -> None:
+        """Signal the full owned command group where the platform supports it."""
+        if task.process.poll() is not None:
+            return
+        if os.name == "posix":
+            os.killpg(task.process.pid, signal.SIGKILL if force else signal.SIGTERM)
+        elif force:
+            task.process.kill()
+        else:
+            task.process.terminate()
+
+    @classmethod
+    def _terminate_task(cls, task: _BackgroundTask, *, force: bool = False) -> None:
+        if task.process.poll() is not None:
+            task.process.wait(timeout=0)
+            return
+        cls._signal_task(task, force=force)
+        try:
+            task.process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            cls._signal_task(task, force=True)
+            task.process.wait(timeout=2.0)
 
     def _prune_finished_tasks(self) -> None:
-        if len(self._tasks) <= self.max_background_tasks:
-            return
         finished = [task for task in self._tasks.values() if task.process.poll() is not None]
         if not finished:
             return
         finished.sort(key=lambda task: task.started_at)
         for task in finished:
-            if len(self._tasks) <= self.max_background_tasks:
-                break
             self._cleanup_task(task)
             self._tasks.pop(task.task_id, None)
 
@@ -561,6 +581,7 @@ class LocalCommandExecutor:
         workdir: str | None,
         timeout_seconds: int | None,
     ) -> CommandResult:
+        self._require_open()
         cwd = self._resolve_cwd(workdir)
         started = time.monotonic()
         try:
@@ -592,44 +613,47 @@ class LocalCommandExecutor:
         workdir: str | None,
         description: str | None = None,
     ) -> BackgroundCommandHandle:
-        self._prune_finished_tasks()
-        if len(self._tasks) >= self.max_background_tasks:
-            raise RuntimeError(
-                f"[error] Too many background tasks ({len(self._tasks)}). "
-                "Use bash_kill or wait for tasks to finish."
-            )
+        with self._state_lock:
+            self._require_open()
+            self._prune_finished_tasks()
+            if len(self._tasks) >= self.max_background_tasks:
+                raise RuntimeError(
+                    f"[error] Too many background tasks ({len(self._tasks)}). "
+                    "Use bash_kill or wait for tasks to finish."
+                )
 
-        task_id = f"task_{uuid4().hex[:12]}"
-        output_path = self._tasks_dir / f"{task_id}.log"
-        cwd = self._resolve_cwd(workdir)
-        output_file = None
-        try:
-            output_file = output_path.open("w", encoding="utf-8")
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=output_file,
-                stderr=subprocess.STDOUT,
-                cwd=cwd,
-                text=True,
-            )
-        except Exception as exc:
-            if output_file is not None and not output_file.closed:
-                output_file.close()
-            raise RuntimeError(f"Failed to start background command: {exc}") from exc
+            task_id = f"task_{uuid4().hex[:12]}"
+            output_path = self._tasks_dir / f"{task_id}.log"
+            cwd = self._resolve_cwd(workdir)
+            output_file = None
+            try:
+                output_file = output_path.open("w", encoding="utf-8")
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=output_file,
+                    stderr=subprocess.STDOUT,
+                    cwd=cwd,
+                    text=True,
+                    start_new_session=os.name == "posix",
+                )
+            except Exception as exc:
+                raise RuntimeError(f"Failed to start background command: {exc}") from exc
+            finally:
+                if output_file is not None:
+                    output_file.close()
 
-        task = _BackgroundTask(
-            task_id=task_id,
-            process=process,
-            command=command,
-            output_path=output_path,
-            output_file=output_file,
-            working_dir=cwd,
-            started_at=time.time(),
-            description=description,
-        )
-        self._tasks[task_id] = task
-        self._write_task_metadata(task)
+            task = _BackgroundTask(
+                task_id=task_id,
+                process=process,
+                command=command,
+                output_path=output_path,
+                working_dir=cwd,
+                started_at=time.time(),
+                description=description,
+            )
+            self._tasks[task_id] = task
+            self._write_task_metadata(task)
         return BackgroundCommandHandle(
             task_id=task_id,
             pid=process.pid,
@@ -644,7 +668,9 @@ class LocalCommandExecutor:
         max_chars: int = 8000,
         tail: bool = True,
     ) -> BackgroundCommandOutput:
-        task = self._tasks.get(task_id)
+        self._require_open()
+        with self._state_lock:
+            task = self._tasks.get(task_id)
         if task is None:
             return self._output_from_persisted_task(
                 task_id=task_id,
@@ -707,7 +733,9 @@ class LocalCommandExecutor:
         )
 
     def kill(self, *, task_id: str, force: bool = False) -> str:
-        task = self._tasks.get(task_id)
+        self._require_open()
+        with self._state_lock:
+            task = self._tasks.get(task_id)
         if task is None:
             return self._kill_persisted_task(task_id=task_id, force=force)
 
@@ -716,20 +744,44 @@ class LocalCommandExecutor:
             return f"Task {task_id} already exited with code {code}."
 
         try:
-            if force:
-                task.process.kill()
-            else:
-                task.process.terminate()
-            try:
-                task.process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                task.process.kill()
-                task.process.wait(timeout=2.0)
+            self._terminate_task(task, force=force)
             code = task.process.poll()
             self._cleanup_task(task)
             return f"Killed task {task_id} (exit code {code})."
         except Exception as exc:
             raise RuntimeError(f"Failed to kill task {task_id}: {exc}") from exc
+
+    def close(self) -> None:
+        """Terminate and reap every process owned by this executor.
+
+        Persisted task metadata remains available to a fresh executor, but a clean
+        in-process shutdown never abandons a child process or parent-side file handle.
+        """
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            tasks = tuple(self._tasks.values())
+            self._tasks.clear()
+
+        for task in tasks:
+            try:
+                self._terminate_task(task)
+            except (OSError, subprocess.SubprocessError):
+                continue
+
+    def __enter__(self) -> LocalCommandExecutor:
+        self._require_open()
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _kill_persisted_task(self, *, task_id: str, force: bool = False) -> str:
         metadata = self._read_task_metadata(task_id)
@@ -737,11 +789,14 @@ class LocalCommandExecutor:
             raise RuntimeError(f"Unknown task id: {task_id}")
 
         pid = self._task_pid(metadata)
+        if pid is None:
+            raise RuntimeError(f"Task {task_id} has invalid persisted pid metadata.")
         if not self._pid_is_running(pid):
             return f"Task {task_id} is not running."
 
         try:
-            os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+            target = -pid if os.name == "posix" and metadata.get("process_group") is True else pid
+            os.kill(target, signal.SIGKILL if force else signal.SIGTERM)
         except ProcessLookupError:
             return f"Task {task_id} is not running."
         except Exception as exc:
@@ -819,7 +874,8 @@ class LocalWorkspaceAdapter:
             if count == 0:
                 return (
                     f"[error] old_string not found in {path}.\n"
-                    f"Make sure to read the file first and copy the exact text including whitespace."
+                    "Make sure to read the file first and copy the exact text "
+                    "including whitespace."
                 )
             if count > 1:
                 return (
@@ -849,7 +905,8 @@ class LocalWorkspaceAdapter:
                 if count == 0:
                     return (
                         f"[error] Edit {i}: old_string not found in {path}.\n"
-                        f"Make sure to read the file first and copy the exact text including whitespace."
+                        "Make sure to read the file first and copy the exact text "
+                        "including whitespace."
                     )
                 if count > 1:
                     return (
@@ -964,7 +1021,9 @@ class LocalWorkspaceAdapter:
             return f"[error] Not a directory: {dir_path}"
 
         try:
-            entries = sorted(dir_path.iterdir(), key=lambda candidate: (candidate.is_file(), candidate.name))
+            entries = sorted(
+                dir_path.iterdir(), key=lambda candidate: (candidate.is_file(), candidate.name)
+            )
             lines = []
             for entry in entries:
                 if entry.is_dir():

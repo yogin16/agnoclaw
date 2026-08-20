@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Mapping
+from typing import Any
+
+from .security import AdmissionEnvelope, IdentitySource
 
 
 def _normalize_sequence(values: Iterable[str] | None) -> tuple[str, ...]:
@@ -32,15 +35,28 @@ class ExecutionContext:
     scopes: tuple[str, ...] = ()
     request_id: str | None = None
     trace_id: str | None = None
+    trusted_permission_tools: tuple[str, ...] = ()
+    trusted_permission_categories: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    identity_source: IdentitySource = IdentitySource.TRUSTED_HOST
+    admission: AdmissionEnvelope | None = None
 
-    def with_metadata(self, updates: Mapping[str, Any] | None) -> "ExecutionContext":
+    def with_metadata(self, updates: Mapping[str, Any] | None) -> ExecutionContext:
         """Return a new context with merged metadata."""
         if not updates:
             return self
         merged = dict(self.metadata)
         merged.update({str(k): v for k, v in updates.items()})
         return replace(self, metadata=merged)
+
+    def with_identity(
+        self,
+        *,
+        user_id: str | None,
+        session_id: str | None,
+    ) -> ExecutionContext:
+        """Return a context with its canonical run identity resolved."""
+        return replace(self, user_id=user_id, session_id=session_id)
 
     @classmethod
     def create(
@@ -56,8 +72,12 @@ class ExecutionContext:
         scopes: Iterable[str] | None = None,
         request_id: str | None = None,
         trace_id: str | None = None,
+        trusted_permission_tools: Iterable[str] | None = None,
+        trusted_permission_categories: Iterable[str] | None = None,
         metadata: Mapping[str, Any] | None = None,
-    ) -> "ExecutionContext":
+        identity_source: IdentitySource = IdentitySource.TRUSTED_HOST,
+        admission: AdmissionEnvelope | None = None,
+    ) -> ExecutionContext:
         """Build a normalized execution context."""
         return cls(
             user_id=user_id,
@@ -70,6 +90,9 @@ class ExecutionContext:
             scopes=_normalize_sequence(scopes),
             request_id=request_id,
             trace_id=trace_id,
+            trusted_permission_tools=_normalize_sequence(trusted_permission_tools),
+            trusted_permission_categories=_normalize_sequence(trusted_permission_categories),
             metadata=_normalize_metadata(metadata),
+            identity_source=identity_source,
+            admission=admission,
         )
-

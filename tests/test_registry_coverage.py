@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 from agnoclaw.skills.registry import SkillRegistry
 
-
 # ── _build_install_cmd tests ────────────────────────────────────────────
 
 
@@ -156,6 +155,7 @@ def _make_registry():
     reg = SkillRegistry.__new__(SkillRegistry)
     reg._dirs = []
     reg._local_dirs = []
+    reg._directory_trust = {}
     reg._cache = {}
     return reg
 

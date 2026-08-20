@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import re
@@ -27,6 +28,7 @@ class PackTrustError(PackError):
 @dataclass(frozen=True)
 class PackProvides:
     skills: list[str] = field(default_factory=list)
+    capabilities: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
     hooks: list[str] = field(default_factory=list)
     context_providers: list[str] = field(default_factory=list)
@@ -37,6 +39,7 @@ class PackProvides:
     def code_entries(self) -> list[str]:
         entries: list[str] = []
         for values in (
+            self.capabilities,
             self.tools,
             self.hooks,
             self.context_providers,
@@ -49,7 +52,7 @@ class PackProvides:
 
 @dataclass(frozen=True)
 class PackTrust:
-    default: str = "local"
+    default: str = "community"
     requires_code_execution: bool = False
 
 
@@ -66,6 +69,8 @@ class PackManifest:
 @dataclass
 class LoadedPack:
     manifest: PackManifest
+    trusted: bool = False
+    capabilities: list[Any] = field(default_factory=list)
     tools: list[Any] = field(default_factory=list)
     skills_dirs: list[Path] = field(default_factory=list)
     pre_run_hooks: list[Callable] = field(default_factory=list)
@@ -89,6 +94,9 @@ def inspect_pack(path: str | Path) -> PackManifest:
     root_dir = manifest_path.parent
     provides_data = data.get("provides") or {}
     trust_data = data.get("trust") or {}
+    skill_trust = str(trust_data.get("default", "community"))
+    if skill_trust not in {"community", "local"}:
+        raise PackError("Pack trust.default must be 'community' or 'local'")
     return PackManifest(
         name=name,
         version=str(data.get("version", "0.0.0")),
@@ -96,6 +104,7 @@ def inspect_pack(path: str | Path) -> PackManifest:
         root=root_dir,
         provides=PackProvides(
             skills=_string_list(provides_data.get("skills")),
+            capabilities=_string_list(provides_data.get("capabilities")),
             tools=_string_list(provides_data.get("tools")),
             hooks=_string_list(provides_data.get("hooks")),
             context_providers=_string_list(provides_data.get("context_providers")),
@@ -103,7 +112,7 @@ def inspect_pack(path: str | Path) -> PackManifest:
             commands=_string_list(provides_data.get("commands")),
         ),
         trust=PackTrust(
-            default=str(trust_data.get("default", "local")),
+            default=skill_trust,
             requires_code_execution=bool(trust_data.get("requires_code_execution", False)),
         ),
     )
@@ -114,6 +123,34 @@ def pack_store_dir(root: str | Path | None = None) -> Path:
     if root is not None:
         return Path(root).expanduser().resolve()
     return Path.home().joinpath(".agnoclaw", "packs").resolve()
+
+
+def _pack_trust_record_path(name: str, *, root: str | Path | None = None) -> Path:
+    return pack_store_dir(root) / ".trust" / f"{_slugify(name)}.json"
+
+
+def _remove_pack_trust_record(name: str, *, root: str | Path | None = None) -> None:
+    _pack_trust_record_path(name, root=root).unlink(missing_ok=True)
+
+
+def _pack_digest(root: Path) -> str:
+    """Hash regular pack bytes and relative paths; reject link-based ambiguity."""
+    resolved_root = root.resolve()
+    digest = hashlib.sha256()
+    for path in sorted(resolved_root.rglob("*"), key=lambda item: item.as_posix()):
+        if path.is_symlink():
+            raise PackError(f"Pack trust cannot cover symbolic links: {path}")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(resolved_root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        size = path.stat().st_size
+        digest.update(size.to_bytes(8, "big"))
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
 
 
 def list_installed_packs(*, root: str | Path | None = None) -> list[PackManifest]:
@@ -167,7 +204,11 @@ def install_pack(
             if not overwrite:
                 raise PackError(f"Pack already installed: {manifest.name}")
             shutil.rmtree(dest)
+            _remove_pack_trust_record(manifest.name, root=store)
         shutil.copytree(src, dest)
+        # Legacy in-payload markers were forgeable. Never retain one while
+        # installing into the host-owned pack store.
+        (dest / ".agnoclaw-trust.json").unlink(missing_ok=True)
         return inspect_pack(dest)
     finally:
         if temp_dir is not None:
@@ -180,49 +221,83 @@ def remove_pack(name: str, *, root: str | Path | None = None) -> bool:
     if not dest.exists():
         return False
     shutil.rmtree(dest)
+    _remove_pack_trust_record(name, root=pack_store_dir(root))
     return True
 
 
 def trust_pack(name: str, *, root: str | Path | None = None) -> PackManifest:
-    """Mark an installed pack as trusted for code-executing registrations."""
-    manifest = _installed_manifest(name, root=root)
-    marker = manifest.root / ".agnoclaw-trust.json"
-    marker.write_text(json.dumps({"trusted": True}, indent=2) + "\n", encoding="utf-8")
+    """Trust one exact installed-pack digest in a host-owned sidecar store."""
+    store = pack_store_dir(root)
+    manifest = _installed_manifest(name, root=store)
+    marker = _pack_trust_record_path(manifest.name, root=store)
+    marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    marker.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "name": manifest.name,
+                "digest": _pack_digest(manifest.root),
+                "trusted": True,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    marker.chmod(0o600)
     return manifest
 
 
 def is_pack_trusted(path_or_name: str | Path, *, root: str | Path | None = None) -> bool:
-    """Return whether a pack path or installed pack name has a local trust marker."""
+    """Return whether a host-owned record trusts this exact installed-pack digest."""
+    store = pack_store_dir(root)
     try:
         manifest = inspect_pack(path_or_name)
     except PackError:
         try:
-            manifest = _installed_manifest(str(path_or_name), root=root)
+            manifest = _installed_manifest(str(path_or_name), root=store)
         except PackError:
             return False
-    marker = manifest.root / ".agnoclaw-trust.json"
+    try:
+        if manifest.root.parent.resolve() != store.resolve():
+            return False
+    except (OSError, ValueError):
+        return False
+    marker = _pack_trust_record_path(manifest.name, root=store)
     if not marker.exists():
         return False
     try:
         data = json.loads(marker.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        digest = _pack_digest(manifest.root)
+    except (json.JSONDecodeError, OSError, PackError):
         return False
-    return bool(data.get("trusted"))
+    return bool(
+        data.get("trusted")
+        and data.get("name") == manifest.name
+        and data.get("digest") == digest
+    )
 
 
-def load_pack(path: str | Path, *, trusted: bool = False) -> LoadedPack:
+def load_pack(
+    path: str | Path,
+    *,
+    trusted: bool = False,
+    trust_root: str | Path | None = None,
+) -> LoadedPack:
     """Load a pack manifest and, when trusted, execute registered Python providers."""
     manifest = inspect_pack(path)
-    trusted = trusted or is_pack_trusted(manifest.root)
-    loaded = LoadedPack(manifest=manifest)
+    trusted = trusted or is_pack_trusted(manifest.root, root=trust_root)
+    loaded = LoadedPack(manifest=manifest, trusted=trusted)
     loaded.skills_dirs.extend(_resolve_pack_paths(manifest, manifest.provides.skills))
 
     if manifest.provides.code_entries:
-        if manifest.trust.requires_code_execution and not trusted:
+        if not trusted:
             raise PackTrustError(
-                f"Pack {manifest.name!r} requires trust before executing Python registrations"
+                f"Pack {manifest.name!r} contains Python registrations and requires host trust"
             )
         with _pack_import_path(manifest.root):
+            loaded.capabilities.extend(_load_registered_items(manifest.provides.capabilities))
             loaded.tools.extend(_load_registered_items(manifest.provides.tools))
             hook_items = _load_registered_items(manifest.provides.hooks)
             for item in hook_items:

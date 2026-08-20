@@ -1,11 +1,14 @@
 """Tests for the browser toolkit."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 
 class FakeBrowserBackend:
+    def set_network_policy(self, policy) -> None:
+        self.network_policy = policy
+
     def navigate(self, *, url: str, wait_until: str = "domcontentloaded") -> str:
         return f"navigate:{url}:{wait_until}"
 
@@ -34,12 +37,14 @@ class FakeBrowserBackend:
 def test_browser_toolkit_import():
     """BrowserToolkit should import without playwright installed."""
     from agnoclaw.tools.browser import BrowserToolkit
+
     assert BrowserToolkit is not None
 
 
 def test_browser_check_playwright():
     """_check_playwright should return False when playwright is not installed."""
     from agnoclaw.tools.browser import _check_playwright
+
     # This test passes whether or not playwright is installed
     result = _check_playwright()
     assert isinstance(result, bool)
@@ -90,11 +95,87 @@ def test_browser_toolkit_delegates_to_custom_backend():
 
     toolkit = BrowserToolkit(backend=FakeBrowserBackend())
 
-    assert toolkit.browser_navigate("https://example.com") == "navigate:https://example.com:domcontentloaded"
+    assert (
+        toolkit.browser_navigate("https://example.com")
+        == "navigate:https://example.com:domcontentloaded"
+    )
     assert toolkit.browser_click("#submit") == "click:#submit"
     assert toolkit.browser_type("#email", "hello") == "type:#email:hello"
     assert toolkit.browser_screenshot(True) == "screenshot:True"
     assert toolkit.browser_snapshot() == "snapshot"
     assert toolkit.browser_scroll("down", 300) == "scroll:down:300"
-    assert toolkit.browser_fill_form("{\"#email\":\"a\"}") == 'fill:{"#email":"a"}'
+    assert toolkit.browser_fill_form('{"#email":"a"}') == 'fill:{"#email":"a"}'
     assert toolkit.browser_close() == "closed"
+
+
+def test_browser_toolkit_requires_request_policy_support_from_custom_backend():
+    from agnoclaw.tools.browser import BrowserToolkit
+
+    backend = MagicMock(spec=[])
+
+    with pytest.raises(ValueError, match="set_network_policy"):
+        BrowserToolkit(backend=backend, network_policy=MagicMock())
+
+
+def test_browser_toolkit_lifecycle_preserves_injected_backend():
+    from agnoclaw.tools.browser import BrowserToolkit
+
+    backend = MagicMock()
+    toolkit = BrowserToolkit(backend=backend)
+
+    toolkit.close()
+
+    backend.close.assert_not_called()
+    toolkit.browser_close()
+    backend.close.assert_called_once_with()
+
+
+def test_browser_toolkit_lifecycle_closes_owned_backend():
+    from agnoclaw.tools.browser import BrowserToolkit
+
+    backend = MagicMock()
+    with patch(
+        "agnoclaw.tools.browser.LocalPlaywrightBrowserBackend",
+        return_value=backend,
+    ):
+        toolkit = BrowserToolkit()
+
+    toolkit.close()
+
+    backend.close.assert_called_once_with()
+
+
+def test_local_browser_route_blocks_click_navigation_to_private_host():
+    from agnoclaw.runtime import GuardrailViolation
+    from agnoclaw.tools.browser_backends import LocalPlaywrightBrowserBackend
+
+    policy = MagicMock()
+    policy.validate_network_url.return_value = (
+        GuardrailViolation(
+            code="NETWORK_PRIVATE_HOST_BLOCKED",
+            message="private host blocked",
+        ),
+    )
+    backend = LocalPlaywrightBrowserBackend(network_policy=policy)
+    route = MagicMock()
+    request = MagicMock(url="http://169.254.169.254/latest/meta-data")
+
+    backend._route_request(route, request)
+
+    route.abort.assert_called_once_with("blockedbyclient")
+    route.continue_.assert_not_called()
+
+
+def test_local_browser_route_allows_policy_approved_request():
+    from agnoclaw.tools.browser_backends import LocalPlaywrightBrowserBackend
+
+    policy = MagicMock()
+    policy.validate_network_url.return_value = ()
+    backend = LocalPlaywrightBrowserBackend(network_policy=policy)
+    route = MagicMock()
+    request = MagicMock(url="https://example.com/app.js")
+
+    backend._route_request(route, request)
+
+    route.continue_.assert_called_once_with()
+    route.abort.assert_not_called()

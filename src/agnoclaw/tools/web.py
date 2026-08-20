@@ -22,12 +22,22 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from pathlib import Path
+from urllib.parse import urljoin
 
 import httpx
 from agno.tools.toolkit import Toolkit
 
+from agnoclaw.runtime.network import (
+    NetworkPolicyError,
+    NetworkURLPolicy,
+    PinnedHTTPTransport,
+    require_allowed_network_url,
+)
+
 logger = logging.getLogger("agnoclaw.tools.web")
+_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+_MAX_REDIRECTS = 5
 
 
 class WebToolkit(Toolkit):
@@ -38,10 +48,24 @@ class WebToolkit(Toolkit):
       Tavily → Exa → Brave → DuckDuckGo (always available)
     """
 
-    def __init__(self, search_enabled: bool = True, fetch_enabled: bool = True):
+    def __init__(
+        self,
+        search_enabled: bool = True,
+        fetch_enabled: bool = True,
+        *,
+        network_policy: NetworkURLPolicy | None = None,
+    ):
         super().__init__(name="web")
         self.search_enabled = search_enabled
         self.fetch_enabled = fetch_enabled
+        if network_policy is None:
+            from agnoclaw.runtime.guardrails import RuntimeGuardrails
+
+            network_policy = RuntimeGuardrails(
+                workspace_dir=Path.cwd(),
+                path_enabled=False,
+            )
+        self._network_policy = network_policy
         if search_enabled:
             self.register(self.web_search)
         if fetch_enabled:
@@ -75,7 +99,7 @@ class WebToolkit(Toolkit):
             return self._search_brave(query, max_results)
         return self._search_ddgs(query, max_results)
 
-    def web_fetch(self, url: str, prompt: Optional[str] = None) -> str:
+    def web_fetch(self, url: str, prompt: str | None = None) -> str:
         """
         Fetch the content of a URL and return it as text.
 
@@ -96,15 +120,39 @@ class WebToolkit(Toolkit):
             headers = {
                 "User-Agent": "Mozilla/5.0 (compatible; agnoclaw/0.1; +https://github.com/agnoclaw/agnoclaw)"
             }
-            with httpx.Client(timeout=30, follow_redirects=True) as client:
-                response = client.get(url, headers=headers)
-                response.raise_for_status()
+            transport = PinnedHTTPTransport(self._network_policy)
+            with httpx.Client(
+                timeout=30,
+                follow_redirects=False,
+                trust_env=False,
+                transport=transport,
+            ) as client:
+                current_url = url
+                for redirect_count in range(_MAX_REDIRECTS + 1):
+                    self._require_allowed_url(current_url)
+                    response = client.get(current_url, headers=headers)
+                    if response.status_code not in _REDIRECT_STATUS_CODES:
+                        response.raise_for_status()
+                        break
+                    location = response.headers.get("location")
+                    if not location:
+                        response.raise_for_status()
+                        break
+                    if redirect_count == _MAX_REDIRECTS:
+                        raise NetworkPolicyError(
+                            f"redirect limit exceeded ({_MAX_REDIRECTS})"
+                        )
+                    next_url = urljoin(current_url, location)
+                    self._require_allowed_url(next_url)
+                    current_url = next_url
+                else:  # pragma: no cover - loop always breaks or raises
+                    raise NetworkPolicyError("redirect handling did not settle")
 
             content_type = response.headers.get("content-type", "")
             if "text/html" in content_type:
-                result = _html_to_text(response.text, url)
+                result = _html_to_text(response.text, current_url)
             elif "application/json" in content_type:
-                result = f"[JSON from {url}]\n{response.text[:5000]}"
+                result = f"[JSON from {current_url}]\n{response.text[:5000]}"
             else:
                 result = response.text[:5000]
 
@@ -115,8 +163,18 @@ class WebToolkit(Toolkit):
             return f"[error] HTTP {e.response.status_code} fetching {url}"
         except httpx.RequestError as e:
             return f"[error] Request failed for {url}: {e}"
+        except NetworkPolicyError as e:
+            return f"[error] Network policy blocked {url}: {e}"
         except Exception as e:
             return f"[error] Could not fetch {url}: {e}"
+
+    def _require_allowed_url(self, url: str) -> None:
+        require_allowed_network_url(
+            self._network_policy,
+            url,
+            tool_name="web_fetch",
+            arg_key="url",
+        )
 
     # ── Search backends ────────────────────────────────────────────────────────
 
@@ -124,6 +182,7 @@ class WebToolkit(Toolkit):
         """Tavily search — best quality, structured results with content extraction."""
         try:
             from tavily import TavilyClient
+
             client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
             resp = client.search(query, max_results=max_results, search_depth="basic")
             results = []
@@ -143,6 +202,7 @@ class WebToolkit(Toolkit):
         """Exa neural search — good for technical and research content."""
         try:
             from exa_py import Exa
+
             client = Exa(api_key=os.environ["EXA_API_KEY"])
             resp = client.search_and_contents(
                 query,
@@ -153,9 +213,7 @@ class WebToolkit(Toolkit):
             for i, r in enumerate(resp.results, 1):
                 snippet = getattr(r, "text", "") or ""
                 results.append(
-                    f"{i}. **{r.title or 'No title'}**\n"
-                    f"   URL: {r.url}\n"
-                    f"   {snippet[:300]}"
+                    f"{i}. **{r.title or 'No title'}**\n   URL: {r.url}\n   {snippet[:300]}"
                 )
             return "\n\n".join(results) if results else f"[no results] No results for: {query}"
         except ImportError:
@@ -167,15 +225,12 @@ class WebToolkit(Toolkit):
         """Brave Search — privacy-first, good quality."""
         try:
             from brave_search import BraveSearch
+
             client = BraveSearch(api_key=os.environ["BRAVE_API_KEY"])
             resp = client.search(q=query, count=max_results)
             results = []
             for i, r in enumerate(resp.web.results, 1):
-                results.append(
-                    f"{i}. **{r.title}**\n"
-                    f"   URL: {r.url}\n"
-                    f"   {r.description or ''}"
-                )
+                results.append(f"{i}. **{r.title}**\n   URL: {r.url}\n   {r.description or ''}")
             return "\n\n".join(results) if results else f"[no results] No results for: {query}"
         except ImportError:
             return self._search_ddgs(query, max_results)
@@ -185,7 +240,8 @@ class WebToolkit(Toolkit):
     def _search_ddgs(self, query: str, max_results: int) -> str:
         """DuckDuckGo search — free fallback, no API key needed."""
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
+
             results = []
             with DDGS() as ddgs:
                 for i, r in enumerate(ddgs.text(query, max_results=max_results), 1):
@@ -196,7 +252,7 @@ class WebToolkit(Toolkit):
                     )
             return "\n\n".join(results) if results else f"[no results] No results for: {query}"
         except ImportError:
-            return "[error] duckduckgo-search not installed. Run: pip install duckduckgo-search"
+            return "[error] ddgs not installed. Run: pip install 'agnoclaw[web]'"
         except Exception as e:
             return f"[error] Search failed: {e}"
 

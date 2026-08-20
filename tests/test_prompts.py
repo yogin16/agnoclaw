@@ -1,19 +1,21 @@
 """Tests for the system prompt assembler and sections."""
 
+from datetime import datetime
+
 import pytest
 
-from agnoclaw.prompts.system import SystemPromptBuilder
 from agnoclaw.prompts.sections import (
-    IDENTITY,
-    TONE_AND_STYLE,
     DOING_TASKS,
-    TOOL_GUIDELINES,
-    SECURITY,
     GIT_PROTOCOL,
-    MEMORY_INSTRUCTIONS,
+    IDENTITY,
     LEARNING_INSTRUCTIONS,
+    MEMORY_INSTRUCTIONS,
     PLAN_MODE,
+    SECURITY,
+    TONE_AND_STYLE,
+    TOOL_GUIDELINES,
 )
+from agnoclaw.prompts.system import SystemPromptBuilder
 
 
 @pytest.fixture
@@ -103,6 +105,12 @@ def test_build_includes_runtime_section(builder):
     assert "Workspace:" in prompt
 
 
+def test_build_can_freeze_runtime_clock_for_durable_replay(builder):
+    prompt = builder.build(runtime_datetime=datetime(2026, 8, 17, 23, 59))
+
+    assert "Current date: 2026-08-17" in prompt
+
+
 def test_build_excludes_runtime_when_disabled(builder):
     prompt = builder.build(include_datetime=False)
     assert "# Runtime" not in prompt
@@ -122,6 +130,19 @@ def test_build_includes_sandbox_when_configured(tmp_path):
     prompt = builder.build()
     assert "Session sandbox:" in prompt
     assert "Sandbox mode: read_only" in prompt
+
+
+def test_build_can_exclude_process_local_sandbox_for_durable_replay(tmp_path):
+    builder = SystemPromptBuilder(
+        tmp_path,
+        sandbox_dir=tmp_path / "sandbox",
+        sandbox_mode="read_only",
+    )
+
+    prompt = builder.build(include_sandbox=False)
+
+    assert "Session sandbox:" not in prompt
+    assert "Sandbox mode:" not in prompt
 
 
 def test_build_no_session_id_by_default(builder):
@@ -185,8 +206,15 @@ def test_build_with_all_workspace_files(tmp_path):
     b = SystemPromptBuilder(tmp_path)
     prompt = b.build()
 
-    for content in ["agents content", "soul content", "identity content",
-                    "user content", "memory content", "tools content", "boot content"]:
+    for content in [
+        "agents content",
+        "soul content",
+        "identity content",
+        "user content",
+        "memory content",
+        "tools content",
+        "boot content",
+    ]:
         assert content in prompt, f"'{content}' missing from prompt"
 
 

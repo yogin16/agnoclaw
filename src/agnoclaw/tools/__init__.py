@@ -13,11 +13,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from agnoclaw.backends import RuntimeBackend
     from agnoclaw.config import HarnessConfig
+    from agnoclaw.runtime.guardrails import RuntimeGuardrails
 
 from .backends import (
     CommandExecutor,
@@ -81,6 +82,7 @@ def get_default_tools(
     sandbox_mode: str | SandboxMode | None = None,
     backend: RuntimeBackend | None = None,
     command_executor_wrapper: Callable[[CommandExecutor], CommandExecutor] | None = None,
+    network_policy: RuntimeGuardrails | None = None,
 ) -> list:
     """
     Build the default tool suite based on configuration.
@@ -95,7 +97,7 @@ def get_default_tools(
     Returns a list of tools and toolkits ready to pass to AgentHarness.
     """
     from agnoclaw.backends import RuntimeBackend
-    from agnoclaw.config import get_config
+    from agnoclaw.config import RuntimeProfile, get_config
 
     cfg = config or get_config()
 
@@ -104,13 +106,23 @@ def get_default_tools(
         if workspace_dir is not None
         else Path(cfg.workspace_dir).expanduser().resolve()
     )
-    tool_sandbox_dir = (
-        Path(sandbox_dir).expanduser().resolve()
-        if sandbox_dir is not None
-        else None
-    )
+    if network_policy is None:
+        from agnoclaw.runtime.guardrails import RuntimeGuardrails
+
+        network_policy = RuntimeGuardrails(
+            workspace_dir=tool_workspace_dir,
+            enabled=cfg.guardrails_enabled,
+            path_enabled=False,
+            network_enabled=cfg.network_enabled,
+            network_enforce_https=cfg.network_enforce_https,
+            network_allowed_hosts=cfg.network_allowed_hosts,
+            network_blocked_hosts=cfg.network_blocked_hosts,
+            network_block_private_hosts=cfg.network_block_private_hosts,
+            network_block_in_bash=cfg.network_block_in_bash,
+        )
+    tool_sandbox_dir = Path(sandbox_dir).expanduser().resolve() if sandbox_dir is not None else None
     effective_backend = backend or RuntimeBackend()
-    tools = []
+    tools: list[Any] = []
     resolved_backend = effective_backend.resolve(workspace_dir=tool_workspace_dir)
     effective_sandbox_mode = normalize_sandbox_mode(
         sandbox_mode if sandbox_mode is not None else resolved_backend.sandbox_mode
@@ -126,13 +138,17 @@ def get_default_tools(
         resolved_command_executor = command_executor_wrapper(resolved_command_executor)
     resolved_browser_backend = resolved_backend.browser_backend
 
-    tool_surface_dir = Path(
-        getattr(
-            resolved_workspace_adapter,
-            "workspace_dir",
-            tool_sandbox_dir or tool_workspace_dir,
+    tool_surface_dir = (
+        Path(
+            getattr(
+                resolved_workspace_adapter,
+                "workspace_dir",
+                tool_sandbox_dir or tool_workspace_dir,
+            )
         )
-    ).expanduser().resolve(strict=False)
+        .expanduser()
+        .resolve(strict=False)
+    )
 
     tools.append(
         FilesToolkit(
@@ -165,6 +181,7 @@ def get_default_tools(
         WebToolkit(
             search_enabled=cfg.enable_web_search,
             fetch_enabled=cfg.enable_web_fetch,
+            network_policy=network_policy,
         )
     )
 
@@ -175,16 +192,20 @@ def get_default_tools(
     # Multi-window project tracking (always enabled)
     tools.append(ProgressToolkit(project_dir=tool_workspace_dir))
 
-    # Sub-agent spawning (with optional named agents)
-    tools.append(make_subagent_tool(
-        default_model=cfg.default_model,
-        subagents=subagents,
-        workspace_dir=tool_workspace_dir,
-        sandbox_dir=tool_sandbox_dir,
-        sandbox_mode=effective_sandbox_mode,
-        config=cfg,
-        backend=effective_backend,
-    ))
+    # Raw text-returning subagents have no durable lineage. Keep this tool only
+    # on the named migration profile; explicit profiles use DeclaredChildTemplate.
+    if RuntimeProfile(cfg.profile) is RuntimeProfile.LEGACY:
+        tools.append(
+            make_subagent_tool(
+                default_model=cfg.default_model,
+                subagents=subagents,
+                workspace_dir=tool_workspace_dir,
+                sandbox_dir=tool_sandbox_dir,
+                sandbox_mode=effective_sandbox_mode,
+                config=cfg,
+                backend=effective_backend,
+            )
+        )
 
     # ── Optional toolkits (conditional on config + importability) ─────────
 
@@ -198,36 +219,36 @@ def get_default_tools(
             )
         try:
             from .browser import BrowserToolkit
+
             if resolved_browser_backend is None:
-                tools.append(BrowserToolkit())
+                tools.append(BrowserToolkit(network_policy=network_policy))
             else:
-                tools.append(BrowserToolkit(backend=resolved_browser_backend))
+                tools.append(
+                    BrowserToolkit(
+                        backend=resolved_browser_backend,
+                        network_policy=network_policy,
+                    )
+                )
             logger.debug("Browser toolkit enabled")
         except ImportError:
             logger.debug("Browser toolkit requested but playwright not installed")
 
-    # MCP toolkits (one per configured server)
-    for server_cfg in cfg.mcp_servers:
+    # MCP uses one stable deferred-disclosure surface across configured servers.
+    if cfg.mcp_servers:
         try:
-            from .mcp import MCPToolkit
+            from .mcp import MCPToolkit, validate_mcp_server_urls
 
-            toolkit = MCPToolkit(
-                name=server_cfg.get("name", "mcp"),
-                command=server_cfg.get("command"),
-                url=server_cfg.get("url"),
-                env=server_cfg.get("env"),
-            )
-            # Defer connection — connect on first tool call or explicitly
-            tools.append(toolkit)
-            logger.debug("MCP toolkit configured: %s", server_cfg.get("name", "mcp"))
+            validate_mcp_server_urls(cfg, workspace_dir=str(tool_workspace_dir))
+            tools.append(MCPToolkit(servers=cfg.mcp_servers))
+            logger.debug("MCP toolkit configured for %d server(s)", len(cfg.mcp_servers))
         except ImportError:
             logger.debug("MCP toolkit requested but mcp package not installed")
-            break
 
     # Media toolkit (requires agnoclaw[media])
     if cfg.enable_media_tools:
         try:
             from .media import MediaToolkit
+
             tools.append(MediaToolkit())
             logger.debug("Media toolkit enabled")
         except ImportError:
@@ -236,7 +257,13 @@ def get_default_tools(
     # Notebook toolkit (nbformat or raw JSON fallback)
     if cfg.enable_notebook_tools:
         from .notebook import NotebookToolkit
+
         tools.append(NotebookToolkit())
         logger.debug("Notebook toolkit enabled")
 
+    # The builder owns this surface, so every first-party function must declare
+    # replay semantics before it can reach lifecycle execution.
+    from ..runtime.tool_ingress import declare_builtin_effects
+
+    declare_builtin_effects(tools)
     return tools

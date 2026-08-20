@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from agno.tools.toolkit import Toolkit
 
@@ -27,7 +26,7 @@ class FilesToolkit(Toolkit):
 
     def __init__(
         self,
-        workspace_dir: Optional[str | Path] = None,
+        workspace_dir: str | Path | None = None,
         adapter: WorkspaceAdapter | None = None,
     ):
         super().__init__(name="files")
@@ -57,14 +56,14 @@ class FilesToolkit(Toolkit):
     def multi_edit_file(self, path: str, edits: list) -> str:
         return self.adapter.multi_edit_file(path=path, edits=edits)
 
-    def glob_files(self, pattern: str, base_dir: Optional[str] = None, path: Optional[str] = None) -> str:
+    def glob_files(self, pattern: str, base_dir: str | None = None, path: str | None = None) -> str:
         return self.adapter.glob_files(pattern=pattern, base_dir=base_dir, path=path)
 
     def grep_files(
         self,
         pattern: str,
-        path: Optional[str] = None,
-        glob: Optional[str] = None,
+        path: str | None = None,
+        glob: str | None = None,
         case_insensitive: bool = False,
         context_lines: int = 0,
         max_results: int = 50,
@@ -78,5 +77,5 @@ class FilesToolkit(Toolkit):
             max_results=max_results,
         )
 
-    def list_dir(self, path: Optional[str] = None) -> str:
+    def list_dir(self, path: str | None = None) -> str:
         return self.adapter.list_dir(path=path)

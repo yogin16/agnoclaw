@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -128,12 +128,13 @@ class ElevatedCommandResult:
 class PermissionApprover(Protocol):
     """Approver for default/accept-edits permission prompts."""
 
-    def approve(self, request: PermissionRequest, context) -> bool | Awaitable[bool]:
-        ...
+    def approve(self, request: PermissionRequest, context) -> bool | Awaitable[bool]: ...
 
 
 class InteractivePermissionApprover:
     """Interactive terminal approver for runtime permission requests."""
+
+    approval_version = "interactive-v1"
 
     def __init__(
         self,
@@ -197,9 +198,7 @@ def normalize_elevated_session_mode(
     if raw in _ELEVATED_MODE_ALIASES:
         return _ELEVATED_MODE_ALIASES[raw]
     valid = ", ".join(mode.value for mode in ElevatedSessionMode)
-    raise ValueError(
-        f"Invalid elevated session mode: {value!r}. Use one of: {valid}"
-    )
+    raise ValueError(f"Invalid elevated session mode: {value!r}. Use one of: {valid}")
 
 
 def classify_tool(tool_name: str) -> tuple[str, bool]:
@@ -237,8 +236,11 @@ class PermissionController:
         self.mode = normalize_permission_mode(mode)
         self.approver = approver
         self.require_approver = require_approver
-        self._approved_tools = set(preapproved_tools)
-        self._approved_categories = set(preapproved_categories)
+        # Construction-time grants are a trusted host channel. They are immutable
+        # for the controller's lifetime; per-call approvals must never widen a
+        # reusable harness for later runs.
+        self._approved_tools = frozenset(preapproved_tools)
+        self._approved_categories = frozenset(preapproved_categories)
 
     def set_mode(self, mode: str | PermissionMode) -> None:
         self.mode = normalize_permission_mode(mode)
@@ -255,6 +257,24 @@ class PermissionController:
     ) -> PolicyDecision:
         """Evaluate tool call permissions based on the active mode."""
         category, is_read_only = classify_tool(request.tool_name)
+        return self.check_capability_call(
+            request,
+            context,
+            category=category,
+            is_read_only=is_read_only,
+            resolve_sync_value=resolve_sync_value,
+        )
+
+    def _decision_before_approval(
+        self,
+        request: ToolCallRequest,
+        context,
+        *,
+        category: str,
+        is_read_only: bool,
+        defer_required_without_approver: bool = False,
+    ) -> PolicyDecision | None:
+        """Return a static decision, or ``None`` when an approver must decide."""
         mode = self.mode
 
         if mode == PermissionMode.BYPASS:
@@ -291,7 +311,6 @@ class PermissionController:
             )
 
         if mode == PermissionMode.ACCEPT_EDITS and category == "file_edit":
-            self._approved_categories.add("file_edit")
             return PolicyDecision(
                 action=PolicyAction.ALLOW,
                 reason_code="PERMISSION_ACCEPT_EDITS_AUTO_ALLOW",
@@ -305,6 +324,8 @@ class PermissionController:
 
         if self.approver is None:
             if self.require_approver:
+                if defer_required_without_approver:
+                    return None
                 return PolicyDecision.deny(
                     reason_code="PERMISSION_APPROVER_REQUIRED",
                     message=(
@@ -318,37 +339,136 @@ class PermissionController:
                 message="No approver configured; allowing tool call.",
             )
 
-        allowed = resolve_sync_value(
-            self.approver.approve(
-                PermissionRequest(
-                    run_id=request.run_id,
-                    tool_name=request.tool_name,
-                    category=category,
-                    arguments=dict(request.arguments),
-                ),
-                context,
-            ),
-            operation=f"permission.approve:{request.tool_name}",
+        return None
+
+    def decision_before_approval(
+        self,
+        request: ToolCallRequest,
+        context,
+        *,
+        category: str,
+        is_read_only: bool,
+        defer_required_without_approver: bool = False,
+    ) -> PolicyDecision | None:
+        """Classify static permission outcomes without invoking an approver."""
+        return self._decision_before_approval(
+            request,
+            context,
+            category=category,
+            is_read_only=is_read_only,
+            defer_required_without_approver=defer_required_without_approver,
         )
-        if bool(allowed):
-            self._approved_tools.add(request.tool_name)
-            self._approved_categories.add(category)
+
+    @staticmethod
+    def _approval_request(
+        request: ToolCallRequest,
+        *,
+        category: str,
+    ) -> PermissionRequest:
+        return PermissionRequest(
+            run_id=request.run_id,
+            tool_name=request.tool_name,
+            category=category,
+            arguments=dict(request.arguments),
+        )
+
+    def permission_request(
+        self,
+        request: ToolCallRequest,
+        *,
+        category: str,
+    ) -> PermissionRequest:
+        """Build the legacy/callback approval view for an already-governed call."""
+        return self._approval_request(request, category=category)
+
+    @staticmethod
+    def _approval_decision(*, allowed: bool, tool_name: str) -> PolicyDecision:
+        if allowed:
             return PolicyDecision(
                 action=PolicyAction.ALLOW,
                 reason_code="PERMISSION_APPROVED",
             )
         return PolicyDecision.deny(
             reason_code="PERMISSION_REJECTED",
-            message=f"Permission rejected for tool '{request.tool_name}'.",
+            message=f"Permission rejected for tool '{tool_name}'.",
+        )
+
+    def decision_from_approval(
+        self,
+        *,
+        allowed: bool,
+        tool_name: str,
+    ) -> PolicyDecision:
+        """Return the stable policy projection for a persisted approval result."""
+        return self._approval_decision(allowed=allowed, tool_name=tool_name)
+
+    def check_capability_call(
+        self,
+        request: ToolCallRequest,
+        context,
+        *,
+        category: str,
+        is_read_only: bool,
+        resolve_sync_value,
+    ) -> PolicyDecision:
+        """Evaluate a capability using its declared category and effect contract."""
+        decision = self._decision_before_approval(
+            request,
+            context,
+            category=category,
+            is_read_only=is_read_only,
+        )
+        if decision is not None:
+            return decision
+        approver = self.approver
+        if approver is None:  # pragma: no cover - handled by static decision
+            raise RuntimeError("permission decision unexpectedly needs no approver")
+        allowed = resolve_sync_value(
+            approver.approve(self._approval_request(request, category=category), context),
+            operation=f"permission.approve:{request.tool_name}",
+        )
+        return self._approval_decision(
+            allowed=bool(allowed),
+            tool_name=request.tool_name,
+        )
+
+    async def acheck_capability_call(
+        self,
+        request: ToolCallRequest,
+        context,
+        *,
+        category: str,
+        is_read_only: bool,
+        resolve_async_value: Callable[[Any], Awaitable[Any]],
+    ) -> PolicyDecision:
+        """Async permission evaluation without a sync-to-async loop bridge."""
+        decision = self._decision_before_approval(
+            request,
+            context,
+            category=category,
+            is_read_only=is_read_only,
+        )
+        if decision is not None:
+            return decision
+        approver = self.approver
+        if approver is None:  # pragma: no cover - handled by static decision
+            raise RuntimeError("permission decision unexpectedly needs no approver")
+        allowed = await resolve_async_value(
+            approver.approve(self._approval_request(request, category=category), context)
+        )
+        return self._approval_decision(
+            allowed=bool(allowed),
+            tool_name=request.tool_name,
         )
 
     def _is_preapproved(self, request: ToolCallRequest, category: str, context) -> bool:
         if request.tool_name in self._approved_tools or category in self._approved_categories:
             return True
 
-        metadata = getattr(context, "metadata", None) or {}
-        approved_tools = metadata.get("permission_preapproved_tools") or ()
-        approved_categories = metadata.get("permission_preapproved_categories") or ()
+        # Per-run grants travel through dedicated ExecutionContext fields that only
+        # host code can construct. Model/client metadata is data, never authority.
+        approved_tools = getattr(context, "trusted_permission_tools", ()) or ()
+        approved_categories = getattr(context, "trusted_permission_categories", ()) or ()
         if request.tool_name in set(str(v) for v in approved_tools):
             return True
         if category in set(str(v) for v in approved_categories):

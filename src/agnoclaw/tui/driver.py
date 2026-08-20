@@ -1,8 +1,9 @@
 """
 AgentDriver — async bridge between the Textual app and AgentHarness.
 
-Runs agent.arun(stream=True) as a Textual Worker and posts StreamChunk/StreamDone
-messages back to the app. Manages HeartbeatDaemon lifecycle on Textual's asyncio loop.
+Runs the profile-selected first-party stream as a Textual Worker and posts
+StreamChunk/StreamDone messages back to the app. Manages HeartbeatDaemon lifecycle on
+Textual's asyncio loop.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from textual.app import App
 
     from agnoclaw.agent import AgentHarness
+    from agnoclaw.heartbeat import HeartbeatDaemon
 
 logger = logging.getLogger("agnoclaw.tui.driver")
 
@@ -34,7 +36,7 @@ class AgentDriver:
     Bridges AgentHarness and the Textual app.
 
     Handles:
-    - Streaming agent responses via arun(stream=True)
+    - Profile-aware streaming through the lifecycle kernel
     - HeartbeatDaemon lifecycle (start/stop)
     - Heartbeat tick counter for StatusBar
     """
@@ -42,7 +44,7 @@ class AgentDriver:
     def __init__(self, app: App, agent: AgentHarness) -> None:
         self._app = app
         self._agent = agent
-        self._daemon = None
+        self._daemon: HeartbeatDaemon | None = None
         self._heartbeat_tick_task: asyncio.Task | None = None
         self._minutes_since_heartbeat = 0
         self._streaming = False
@@ -57,9 +59,7 @@ class AgentDriver:
     def tool_count(self) -> int:
         return self._tool_count
 
-    async def send_message(
-        self, text: str, *, skill: str | None = None
-    ) -> None:
+    async def send_message(self, text: str, *, skill: str | None = None) -> None:
         """
         Send a user message to the agent and stream the response.
 
@@ -69,11 +69,25 @@ class AgentDriver:
         self._streaming = True
         accumulated = []
         self._active_tool_labels.clear()
+        run = None
 
         try:
-            response = await self._agent.arun(text, stream=True, skill=skill)
+            from agnoclaw.runtime.first_party import first_party_stream
+            from agnoclaw.runtime.presentation import RunPresentationDetached
+
+            run, response = await first_party_stream(
+                self._agent,
+                text,
+                skill=skill,
+            )
 
             async for event in response:
+                if isinstance(event, RunPresentationDetached):
+                    logger.info(
+                        "Live presentation detached for %s; waiting for terminal result",
+                        event.run_id,
+                    )
+                    continue
                 # Extract text content
                 content = self._agent._extract_event_content(event)
                 if content:
@@ -93,9 +107,7 @@ class AgentDriver:
                     if tool_call_id:
                         self._active_tool_labels[str(tool_call_id)] = display_name
                     self._tool_count += 1
-                    self._app.post_message(
-                        ToolCallStarted(tool_name, display_name=display_name)
-                    )
+                    self._app.post_message(ToolCallStarted(tool_name, display_name=display_name))
                 elif event_type == "tool.call.completed":
                     summary = self._agent._stream_event_summary(event)
                     tool_name = str(summary.get("tool_name") or getattr(event, "tool_name", "tool"))
@@ -108,12 +120,18 @@ class AgentDriver:
                             summary.get("arguments"),
                         )
                     )
-                    self._app.post_message(
-                        ToolCallCompleted(tool_name, display_name=display_name)
-                    )
+                    self._app.post_message(ToolCallCompleted(tool_name, display_name=display_name))
 
-            self._app.post_message(StreamDone("".join(accumulated)))
+            final_text = "".join(accumulated)
+            if run.run_id is not None:
+                result = await run.wait()
+                final_text = str(getattr(result, "content", result) or "")
+            self._app.post_message(StreamDone(final_text))
 
+        except asyncio.CancelledError:
+            if run is not None and run.run_id is not None:
+                await run.cancel()
+            raise
         except Exception as e:
             logger.exception("Agent streaming error")
             self._app.post_message(StreamError(str(e)))
@@ -140,17 +158,16 @@ class AgentDriver:
             self._minutes_since_heartbeat = 0
             self._app.post_message(HeartbeatAlert(msg))
 
-        self._daemon = HeartbeatDaemon(self._agent, on_alert=on_alert, config=cfg)
-        self._daemon.start()
+        daemon = HeartbeatDaemon(self._agent, on_alert=on_alert, config=cfg)
+        self._daemon = daemon
+        daemon.start()
 
         # Start tick counter
         self._heartbeat_tick_task = asyncio.create_task(
             self._heartbeat_ticker(), name="agnoclaw-hb-tick"
         )
 
-        logger.info(
-            "Heartbeat started (interval=%dm)", cfg.heartbeat.interval_minutes
-        )
+        logger.info("Heartbeat started (interval=%dm)", cfg.heartbeat.interval_minutes)
 
     def stop_heartbeat(self) -> None:
         """Stop HeartbeatDaemon and tick counter."""
@@ -167,8 +184,6 @@ class AgentDriver:
             try:
                 await asyncio.sleep(60)
                 self._minutes_since_heartbeat += 1
-                self._app.post_message(
-                    HeartbeatTick(self._minutes_since_heartbeat)
-                )
+                self._app.post_message(HeartbeatTick(self._minutes_since_heartbeat))
             except asyncio.CancelledError:
                 break

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from agno.context.provider import Answer, ContextProvider, Status
 
-from agnoclaw import AgentHarness, HarnessConfig, InMemoryEventSink
+from agnoclaw import AgentHarness, HarnessConfig, HarnessError, InMemoryEventSink
 
 
 class DummyProvider(ContextProvider):
@@ -112,9 +112,7 @@ def test_context_provider_tool_events_are_emitted(tmp_path):
         event_sink=sink,
     )
     function = next(
-        tool
-        for tool in harness._agent.tools
-        if getattr(tool, "name", None) == "query_docs"
+        tool for tool in harness._agent.tools if getattr(tool, "name", None) == "query_docs"
     )
     fc = SimpleNamespace(
         function=SimpleNamespace(name="query_docs"),
@@ -130,3 +128,23 @@ def test_context_provider_tool_events_are_emitted(tmp_path):
     event_types = [event.event_type for event in sink.events]
     assert "context.provider.query.started" in event_types
     assert "context.provider.query.completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_rejects_opaque_context_provider_before_run_creation(tmp_path):
+    runtime_store = MagicMock()
+    harness, _ = _make_harness(
+        tmp_path,
+        context_providers=[DummyProvider()],
+        runtime_store=runtime_store,
+    )
+
+    with pytest.raises(HarnessError) as caught:
+        await harness.start("query provider")
+
+    assert caught.value.code == "EXTENSION_TOOL_LIFECYCLE_UNSUPPORTED"
+    assert caught.value.details["sources"] == ("context_providers",)
+    runtime_store.create_run.assert_not_called()
+
+    inventory = harness.admin_harness_capabilities()["registry"]
+    assert inventory["extension_compatibility_tools"][0]["source"] == "context_providers"

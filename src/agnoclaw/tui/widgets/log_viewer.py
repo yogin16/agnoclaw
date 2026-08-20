@@ -30,9 +30,7 @@ class LogViewer(RichLog):
     """
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(
-            highlight=True, markup=True, wrap=True, auto_scroll=True, **kwargs
-        )
+        super().__init__(highlight=True, markup=True, wrap=True, auto_scroll=True, **kwargs)
 
     def on_mount(self) -> None:
         self.write(Text.from_markup("[bold dim]Debug Log[/bold dim]"))

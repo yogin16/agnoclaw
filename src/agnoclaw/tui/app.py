@@ -185,13 +185,9 @@ class AgnoClawApp(App):
                     names = {s["name"] for s in self._agent.skills.list_skills()}
                     if skill_name in names:
                         self._queued_skill = skill_name
-                        chat.add_notification(
-                            f"Skill queued: {skill_name}", style="green"
-                        )
+                        chat.add_notification(f"Skill queued: {skill_name}", style="green")
                     else:
-                        chat.add_notification(
-                            f"Skill not found: {skill_name}", style="red"
-                        )
+                        chat.add_notification(f"Skill not found: {skill_name}", style="red")
                 else:
                     chat.add_notification("No skills available.", style="yellow")
             return
@@ -201,9 +197,7 @@ class AgnoClawApp(App):
                 skills = self._agent.skills.list_skills()
                 if skills:
                     lines = [f"  {s['name']}: {s['description']}" for s in skills]
-                    chat.add_notification(
-                        "Available skills:\n" + "\n".join(lines), style="cyan"
-                    )
+                    chat.add_notification("Available skills:\n" + "\n".join(lines), style="cyan")
                 else:
                     chat.add_notification("No skills found.", style="dim")
             return
@@ -295,7 +289,7 @@ class AgnoClawApp(App):
             chat.add_notification("No skills available.", style="yellow")
             return
 
-        def on_skill_selected(skill_name: str) -> None:
+        def on_skill_selected(skill_name: str | None) -> None:
             if skill_name:
                 self._queued_skill = skill_name
                 chat = self.query_one("#chat-log", ChatLog)
@@ -308,7 +302,7 @@ class AgnoClawApp(App):
         log = self.query_one("#log-viewer", LogViewer)
         log.toggle_visible()
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         """Clean up and exit."""
         self._agent_driver.stop_heartbeat()
         self.exit()

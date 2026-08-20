@@ -6,8 +6,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agnoclaw import AgentHarness, HarnessConfig, HarnessError, InMemoryEventSink
+from agnoclaw import (
+    AgentHarness,
+    CapabilityConcurrency,
+    CapabilityKind,
+    CapabilityLifetime,
+    CapabilityRecovery,
+    CapabilitySpec,
+    CapabilityTrust,
+    EffectClass,
+    HarnessConfig,
+    HarnessError,
+    InMemoryEventSink,
+)
 from agnoclaw.packs import (
+    LoadedPack,
     PackError,
     PackTrustError,
     inspect_pack,
@@ -26,6 +39,22 @@ def _write_pack(tmp_path, manifest: str):
     pack.mkdir()
     (pack / "agnoclaw-pack.toml").write_text(manifest, encoding="utf-8")
     return pack
+
+
+def _pack_capability():
+    return CapabilitySpec(
+        name="pack_lookup",
+        version="1.0.0",
+        kind=CapabilityKind.TOOL,
+        effect_class=EffectClass.READ_ONLY,
+        trust=CapabilityTrust.VERIFIED,
+        lifetime=CapabilityLifetime.RUN,
+        concurrency=CapabilityConcurrency.ISOLATED,
+        recovery=CapabilityRecovery.RECREATABLE,
+        implementation_digest="sha256:" + "b" * 64,
+        input_schema={"type": "object", "additionalProperties": False},
+        factory=lambda: lambda: "ok",
+    )
 
 
 def test_inspect_pack_parses_manifest_without_executing_code(tmp_path):
@@ -54,6 +83,47 @@ requires_code_execution = true
     assert manifest.trust.requires_code_execution is True
 
 
+def test_load_pack_collects_governed_capability_registrations(tmp_path):
+    pack = _write_pack(
+        tmp_path,
+        """
+name = "capability-pack"
+
+[provides]
+capabilities = ["capability_pack.tools:register"]
+""",
+    )
+    spec = _pack_capability()
+    with patch(
+        "agnoclaw.packs._load_registered_items",
+        side_effect=[[spec], [], [], [], []],
+    ):
+        loaded = load_pack(pack, trusted=True)
+
+    assert loaded.manifest.provides.capabilities == ["capability_pack.tools:register"]
+    assert loaded.capabilities == [spec]
+
+
+def test_harness_registers_pack_capability_as_model_tool(tmp_path):
+    pack = _write_pack(tmp_path, 'name = "governed-pack"\n')
+    loaded = LoadedPack(manifest=inspect_pack(pack), capabilities=[_pack_capability()])
+    with patch("agnoclaw.packs.load_pack", return_value=loaded):
+        with patch("agnoclaw.agent.Agent", MagicMock()):
+            with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+                harness = AgentHarness(
+                    model="model",
+                    provider="custom",
+                    workspace_dir=tmp_path / "workspace",
+                    config=HarnessConfig(enable_plugins=False),
+                    include_default_tools=False,
+                    packs=[pack],
+                )
+
+    registry = harness.admin_harness_capabilities()["registry"]
+    assert registry["model_tools"][0]["reference"] == "pack_lookup@1.0.0"
+    assert registry["extension_compatibility_tools"] == []
+
+
 def test_load_pack_rejects_untrusted_code_execution(tmp_path):
     pack = _write_pack(
         tmp_path,
@@ -69,6 +139,21 @@ requires_code_execution = true
     )
 
     with pytest.raises(PackTrustError):
+        load_pack(pack)
+
+
+def test_load_pack_rejects_code_when_manifest_omits_trust_claim(tmp_path):
+    pack = _write_pack(
+        tmp_path,
+        """
+name = "code-pack"
+
+[provides]
+tools = ["code_pack.tools:register"]
+""",
+    )
+
+    with pytest.raises(PackTrustError, match="requires host trust"):
         load_pack(pack)
 
 
@@ -88,6 +173,8 @@ skills = ["skills/"]
 
     assert loaded.manifest.name == "skills-pack"
     assert loaded.skills_dirs == [(pack / "skills").resolve()]
+    assert loaded.trusted is False
+    assert loaded.manifest.trust.default == "community"
 
 
 def test_harness_loads_pack_skill_directory(tmp_path):
@@ -121,6 +208,10 @@ skills = ["skills/"]
 
     assert "Pack body." in harness.skills.load_skill("pack-skill")
     assert harness._loaded_packs[0].manifest.name == "skills-pack"
+    skill = harness.skills._get_skill("pack-skill")
+    assert skill is not None
+    assert harness.skills._trust_level(skill) == "community"
+    assert "pack-skill" not in harness.skills.get_skill_descriptions()
 
 
 def test_pack_install_trust_list_and_remove(tmp_path):
@@ -183,10 +274,43 @@ requires_code_execution = true
     manifest = install_pack(pack, root=store)
     trust_pack(manifest.name, root=store)
 
-    loaded = load_pack(manifest.root)
+    loaded = load_pack(manifest.root, trust_root=store)
 
     assert loaded.manifest.name == "hook-pack"
     assert len(loaded.pre_run_hooks) == 1
+
+
+def test_install_pack_discards_forged_in_payload_trust_marker(tmp_path):
+    pack = _write_pack(
+        tmp_path,
+        """
+name = "forged-pack"
+
+[provides]
+tools = ["forged_pack.tools:register"]
+""",
+    )
+    (pack / ".agnoclaw-trust.json").write_text('{"trusted": true}\n', encoding="utf-8")
+    store = tmp_path / "store"
+
+    manifest = install_pack(pack, root=store)
+
+    assert not (manifest.root / ".agnoclaw-trust.json").exists()
+    assert is_pack_trusted(manifest.root, root=store) is False
+    with pytest.raises(PackTrustError):
+        load_pack(manifest.root, trust_root=store)
+
+
+def test_pack_trust_is_invalidated_when_installed_bytes_change(tmp_path):
+    pack = _write_pack(tmp_path, 'name = "digest-pack"\n')
+    store = tmp_path / "store"
+    manifest = install_pack(pack, root=store)
+    trust_pack(manifest.name, root=store)
+    assert is_pack_trusted(manifest.root, root=store) is True
+
+    (manifest.root / "new.py").write_text("print('changed')\n", encoding="utf-8")
+
+    assert is_pack_trusted(manifest.root, root=store) is False
 
 
 def test_load_pack_collects_lifecycle_hooks(tmp_path):
@@ -237,8 +361,7 @@ requires_code_execution = true
     module_dir.mkdir()
     (module_dir / "__init__.py").write_text("", encoding="utf-8")
     (module_dir / "hooks.py").write_text(
-        "def register():\n"
-        "    return {'lifecycle_hooks': {'session.end.completed': ['bad']}}\n",
+        "def register():\n    return {'lifecycle_hooks': {'session.end.completed': ['bad']}}\n",
         encoding="utf-8",
     )
 

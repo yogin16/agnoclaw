@@ -107,8 +107,7 @@ class PreRunHook(Protocol):
         self,
         run_input: RunInput,
         context,
-    ) -> RunInput | None | Awaitable[RunInput | None]:
-        ...
+    ) -> RunInput | None | Awaitable[RunInput | None]: ...
 
 
 @runtime_checkable
@@ -120,8 +119,7 @@ class PostRunHook(Protocol):
         run_input: RunInput,
         result: RunResultEnvelope,
         context,
-    ) -> RunResultEnvelope | None | Awaitable[RunResultEnvelope | None]:
-        ...
+    ) -> RunResultEnvelope | None | Awaitable[RunResultEnvelope | None]: ...
 
 
 @runtime_checkable
@@ -132,5 +130,4 @@ class LifecycleHook(Protocol):
         self,
         event: LifecycleHookRequest,
         context,
-    ) -> LifecycleHookRequest | None | Awaitable[LifecycleHookRequest | None]:
-        ...
+    ) -> LifecycleHookRequest | None | Awaitable[LifecycleHookRequest | None]: ...

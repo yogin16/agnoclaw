@@ -5,7 +5,13 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Browser, Page, Playwright, Request, Route
+
+    from .web import NetworkURLPolicy
 
 logger = logging.getLogger("agnoclaw.tools.browser")
 
@@ -23,29 +29,23 @@ def check_playwright() -> bool:
 class BrowserBackend(Protocol):
     """Backend interface for browser/computer-use tool operations."""
 
-    def navigate(self, *, url: str, wait_until: str = "domcontentloaded") -> str:
-        ...
+    def navigate(self, *, url: str, wait_until: str = "domcontentloaded") -> str: ...
 
-    def click(self, *, selector: str) -> str:
-        ...
+    def click(self, *, selector: str) -> str: ...
 
-    def type(self, *, selector: str, text: str) -> str:
-        ...
+    def type(self, *, selector: str, text: str) -> str: ...
 
-    def screenshot(self, *, full_page: bool = False) -> str:
-        ...
+    def screenshot(self, *, full_page: bool = False) -> str: ...
 
-    def snapshot(self) -> str:
-        ...
+    def snapshot(self) -> str: ...
 
-    def scroll(self, *, direction: str = "down", amount: int = 500) -> str:
-        ...
+    def scroll(self, *, direction: str = "down", amount: int = 500) -> str: ...
 
-    def fill_form(self, *, fields: str) -> str:
-        ...
+    def fill_form(self, *, fields: str) -> str: ...
 
-    def close(self) -> str:
-        ...
+    def close(self) -> str: ...
+
+    def set_network_policy(self, policy: NetworkURLPolicy) -> None: ...
 
 
 class LocalPlaywrightBrowserBackend:
@@ -57,16 +57,31 @@ class LocalPlaywrightBrowserBackend:
         headless: bool = True,
         viewport_width: int = 1280,
         viewport_height: int = 720,
+        network_policy: NetworkURLPolicy | None = None,
     ) -> None:
         self._headless = headless
         self._viewport = {"width": viewport_width, "height": viewport_height}
-        self._playwright = None
-        self._browser = None
-        self._page = None
+        self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
+        self._page: Page | None = None
+        if network_policy is None:
+            from agnoclaw.runtime.guardrails import RuntimeGuardrails
 
-    def _ensure_page(self) -> None:
+            network_policy = RuntimeGuardrails(
+                workspace_dir=Path.cwd(),
+                path_enabled=False,
+            )
+        self._network_policy = network_policy
+
+    def set_network_policy(self, policy: NetworkURLPolicy) -> None:
+        """Install the host URL policy before a browser context exists."""
         if self._page is not None:
-            return
+            raise RuntimeError("browser network policy cannot change after browser startup")
+        self._network_policy = policy
+
+    def _ensure_page(self) -> Page:
+        if self._page is not None:
+            return self._page
 
         if not check_playwright():
             raise ImportError(
@@ -76,51 +91,79 @@ class LocalPlaywrightBrowserBackend:
 
         from playwright.sync_api import sync_playwright
 
-        self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=self._headless)
-        context = self._browser.new_context(viewport=self._viewport)
-        self._page = context.new_page()
+        playwright = sync_playwright().start()
+        browser = playwright.chromium.launch(headless=self._headless)
+        context = browser.new_context(viewport=self._viewport)
+        context.route("**/*", self._route_request)
+        page = context.new_page()
+        self._playwright = playwright
+        self._browser = browser
+        self._page = page
         logger.debug("Browser initialized (headless=%s)", self._headless)
+        return page
 
     def navigate(self, *, url: str, wait_until: str = "domcontentloaded") -> str:
-        self._ensure_page()
+        self._require_allowed_url(url)
+        page = self._ensure_page()
         try:
-            self._page.goto(url, wait_until=wait_until, timeout=30000)
-            title = self._page.title()
-            return f"Navigated to: {self._page.url}\nTitle: {title}"
+            page.goto(url, wait_until=wait_until, timeout=30000)
+            title = page.title()
+            return f"Navigated to: {page.url}\nTitle: {title}"
         except Exception as exc:
             return f"[error] Navigation failed: {exc}"
 
-    def click(self, *, selector: str) -> str:
-        self._ensure_page()
+    def _route_request(self, route: Route, request: Request) -> None:
         try:
-            self._page.click(selector, timeout=10000)
+            self._require_allowed_url(request.url)
+        except ValueError as exc:
+            logger.warning("Browser request blocked by network policy: %s", exc)
+            route.abort("blockedbyclient")
+            return
+        route.continue_()
+
+    def _require_allowed_url(self, url: str) -> None:
+        violations = self._network_policy.validate_network_url(
+            url,
+            tool_name="browser_request",
+            arg_key="url",
+        )
+        if not violations:
+            return
+        first = violations[0]
+        code = getattr(first, "code", "NETWORK_POLICY_DENIED")
+        message = getattr(first, "message", str(first))
+        raise ValueError(f"{code}: {message}")
+
+    def click(self, *, selector: str) -> str:
+        page = self._ensure_page()
+        try:
+            page.click(selector, timeout=10000)
             return f"Clicked: {selector}"
         except Exception as exc:
             return f"[error] Click failed on '{selector}': {exc}"
 
     def type(self, *, selector: str, text: str) -> str:
-        self._ensure_page()
+        page = self._ensure_page()
         try:
-            self._page.fill(selector, text, timeout=10000)
+            page.fill(selector, text, timeout=10000)
             suffix = "..." if len(text) > 50 else ""
             return f"Typed into '{selector}': {text[:50]}{suffix}"
         except Exception as exc:
             return f"[error] Type failed on '{selector}': {exc}"
 
     def screenshot(self, *, full_page: bool = False) -> str:
-        self._ensure_page()
+        page = self._ensure_page()
         try:
-            screenshot_bytes = self._page.screenshot(full_page=full_page)
+            screenshot_bytes = page.screenshot(full_page=full_page)
             encoded = base64.b64encode(screenshot_bytes).decode("ascii")
             return f"data:image/png;base64,{encoded}"
         except Exception as exc:
             return f"[error] Screenshot failed: {exc}"
 
     def snapshot(self) -> str:
-        self._ensure_page()
+        page = self._ensure_page()
         try:
-            return self._page.evaluate(
+            return page.evaluate(
                 """() => {
                 const result = [];
                 result.push('URL: ' + location.href);
@@ -168,7 +211,9 @@ class LocalPlaywrightBrowserBackend:
                     result.push('');
                 }
 
-                const buttons = document.querySelectorAll('button, [role="button"], input[type="submit"]');
+                const buttons = document.querySelectorAll(
+                    'button, [role="button"], input[type="submit"]'
+                );
                 if (buttons.length > 0) {
                     result.push('## Buttons');
                     buttons.forEach(b => {
@@ -178,7 +223,9 @@ class LocalPlaywrightBrowserBackend:
                     result.push('');
                 }
 
-                const main = document.querySelector('main, article, [role="main"]') || document.body;
+                const main = document.querySelector(
+                    'main, article, [role="main"]'
+                ) || document.body;
                 const text = main.innerText.substring(0, 3000);
                 result.push('## Page Text (truncated)');
                 result.push(text);
@@ -190,17 +237,17 @@ class LocalPlaywrightBrowserBackend:
             return f"[error] Snapshot failed: {exc}"
 
     def scroll(self, *, direction: str = "down", amount: int = 500) -> str:
-        self._ensure_page()
+        page = self._ensure_page()
         try:
             delta = amount if direction == "down" else -amount
-            self._page.mouse.wheel(0, delta)
-            scroll_y = self._page.evaluate("() => window.scrollY")
+            page.mouse.wheel(0, delta)
+            scroll_y = page.evaluate("() => window.scrollY")
             return f"Scrolled {direction} by {amount}px. Current position: {scroll_y}px"
         except Exception as exc:
             return f"[error] Scroll failed: {exc}"
 
     def fill_form(self, *, fields: str) -> str:
-        self._ensure_page()
+        page = self._ensure_page()
         try:
             field_map = json.loads(fields) if isinstance(fields, str) else fields
         except (json.JSONDecodeError, TypeError):
@@ -209,7 +256,7 @@ class LocalPlaywrightBrowserBackend:
         results = []
         for selector, value in field_map.items():
             try:
-                self._page.fill(selector, str(value), timeout=5000)
+                page.fill(selector, str(value), timeout=5000)
                 results.append(f"  {selector}: OK")
             except Exception as exc:
                 results.append(f"  {selector}: FAILED ({exc})")
