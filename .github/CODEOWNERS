@@ -1,0 +1,4 @@
+# Release and CI policy changes require an explicit owner review.
+/.github/workflows/ @yogin16
+/.github/CODEOWNERS @yogin16
+/.github/dependabot.yml @yogin16
