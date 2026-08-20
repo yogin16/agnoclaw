@@ -13,6 +13,7 @@ Example MCP servers:
 """
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 
 
@@ -24,6 +25,7 @@ def main():
     # Check if MCP is available
     try:
         from agnoclaw.tools.mcp import MCPToolkit, _check_mcp
+
         if not _check_mcp():
             print("\nMCP package not installed. Install with:")
             print("  pip install agnoclaw[mcp]")

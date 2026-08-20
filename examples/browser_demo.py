@@ -10,6 +10,7 @@ Also requires: playwright installed (npx playwright install chromium)
 """
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 from agnoclaw.config import HarnessConfig
 
@@ -24,6 +25,7 @@ def main():
     # Check if playwright is available
     try:
         from agnoclaw.tools.browser import BrowserToolkit, _check_playwright
+
         if not _check_playwright():
             print("\nPlaywright not installed. Install with:")
             print("  pip install agnoclaw[browser]")

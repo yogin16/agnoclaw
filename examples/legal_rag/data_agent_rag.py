@@ -19,11 +19,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from _utils import detect_model
-
 from agno.tools.toolkit import Toolkit
 
 from agnoclaw import AgentHarness
-
 
 # ── Setup: create and populate sample database ──────────────────────────
 
@@ -82,13 +80,45 @@ def setup_database():
 
     # Insert sample data
     contracts = [
-        (1, "Acme-Beta NDA", "NDA", "active", "2026-01-15", "2029-01-15",
-         "California", 0, "USD", None, "sample_contracts/nda.txt"),
-        (2, "TechServ-GlobalCorp MSA", "MSA", "active", "2026-02-01", "2028-02-01",
-         "New York", 500000, "USD", None, "sample_contracts/msa.txt"),
-        (3, "CloudPlatform SaaS", "SaaS Agreement", "active", "2026-03-01", "2027-03-01",
-         "Delaware", 120000, "USD", "https://contracts.example.com/sa-001.pdf",
-         "sample_contracts/service_agreement.txt"),
+        (
+            1,
+            "Acme-Beta NDA",
+            "NDA",
+            "active",
+            "2026-01-15",
+            "2029-01-15",
+            "California",
+            0,
+            "USD",
+            None,
+            "sample_contracts/nda.txt",
+        ),
+        (
+            2,
+            "TechServ-GlobalCorp MSA",
+            "MSA",
+            "active",
+            "2026-02-01",
+            "2028-02-01",
+            "New York",
+            500000,
+            "USD",
+            None,
+            "sample_contracts/msa.txt",
+        ),
+        (
+            3,
+            "CloudPlatform SaaS",
+            "SaaS Agreement",
+            "active",
+            "2026-03-01",
+            "2027-03-01",
+            "Delaware",
+            120000,
+            "USD",
+            "https://contracts.example.com/sa-001.pdf",
+            "sample_contracts/service_agreement.txt",
+        ),
     ]
     cursor.executemany(
         "INSERT INTO contracts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
@@ -106,19 +136,109 @@ def setup_database():
     cursor.executemany("INSERT INTO parties VALUES (?, ?, ?, ?, ?, ?)", parties)
 
     clauses = [
-        (1, 1, "confidentiality", "2", "Strict confidence, no third-party disclosure", "medium", None, None),
+        (
+            1,
+            1,
+            "confidentiality",
+            "2",
+            "Strict confidence, no third-party disclosure",
+            "medium",
+            None,
+            None,
+        ),
         (2, 1, "term", "4", "3-year term, 2-year survival", "low", None, None),
-        (3, 1, "liability_cap", "10", "Aggregate cap of $500,000", "high", 500000, "Except willful misconduct"),
+        (
+            3,
+            1,
+            "liability_cap",
+            "10",
+            "Aggregate cap of $500,000",
+            "high",
+            500000,
+            "Except willful misconduct",
+        ),
         (4, 1, "dispute_resolution", "8", "Mediation then arbitration in SF", "medium", None, None),
-        (5, 2, "payment_terms", "3", "Monthly invoicing, net 30, 1.5% late fee", "medium", None, None),
-        (6, 2, "ip_ownership", "4", "Work product owned by client after payment", "high", None, "Provider retains tools"),
-        (7, 2, "liability_cap", "7", "12-month fees cap, excludes IP/confidentiality", "high", None, "Exclusions for breach"),
-        (8, 2, "termination", "9", "30-day cure for cause, 60-day convenience", "medium", None, None),
+        (
+            5,
+            2,
+            "payment_terms",
+            "3",
+            "Monthly invoicing, net 30, 1.5% late fee",
+            "medium",
+            None,
+            None,
+        ),
+        (
+            6,
+            2,
+            "ip_ownership",
+            "4",
+            "Work product owned by client after payment",
+            "high",
+            None,
+            "Provider retains tools",
+        ),
+        (
+            7,
+            2,
+            "liability_cap",
+            "7",
+            "12-month fees cap, excludes IP/confidentiality",
+            "high",
+            None,
+            "Exclusions for breach",
+        ),
+        (
+            8,
+            2,
+            "termination",
+            "9",
+            "30-day cure for cause, 60-day convenience",
+            "medium",
+            None,
+            None,
+        ),
         (9, 2, "force_majeure", "10", "Broad coverage including pandemics", "low", None, None),
-        (10, 3, "sla", "3", "99.9% uptime, service credits for breach", "high", None, "Credits are sole remedy"),
-        (11, 3, "data_security", "4", "AES-256, TLS 1.3, SOC 2, 72h breach notify", "critical", None, None),
-        (12, 3, "liability_cap", "7", "12-month fees cap", "high", 120000, "Excludes gross negligence"),
-        (13, 3, "termination", "8", "30-day cure, 90-day convenience, 30-day data export", "medium", None, None),
+        (
+            10,
+            3,
+            "sla",
+            "3",
+            "99.9% uptime, service credits for breach",
+            "high",
+            None,
+            "Credits are sole remedy",
+        ),
+        (
+            11,
+            3,
+            "data_security",
+            "4",
+            "AES-256, TLS 1.3, SOC 2, 72h breach notify",
+            "critical",
+            None,
+            None,
+        ),
+        (
+            12,
+            3,
+            "liability_cap",
+            "7",
+            "12-month fees cap",
+            "high",
+            120000,
+            "Excludes gross negligence",
+        ),
+        (
+            13,
+            3,
+            "termination",
+            "8",
+            "30-day cure, 90-day convenience, 30-day data export",
+            "medium",
+            None,
+            None,
+        ),
     ]
     cursor.executemany("INSERT INTO clauses VALUES (?, ?, ?, ?, ?, ?, ?, ?)", clauses)
 
@@ -240,9 +360,7 @@ TABLE clauses:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
 
-        contract = conn.execute(
-            "SELECT * FROM contracts WHERE id = ?", (contract_id,)
-        ).fetchone()
+        contract = conn.execute("SELECT * FROM contracts WHERE id = ?", (contract_id,)).fetchone()
         if not contract:
             conn.close()
             return f"[error] Contract {contract_id} not found."
@@ -268,12 +386,15 @@ TABLE clauses:
             "Parties:",
         ]
         for p in parties:
-            parts.append(f"  - {p['party_name']} ({p['party_role']}, {p['entity_type']}, {p['jurisdiction']})")
+            parts.append(
+                f"  - {p['party_name']} "
+                f"({p['party_role']}, {p['entity_type']}, {p['jurisdiction']})"
+            )
 
         parts.append("\nKey Clauses:")
         for c in clauses:
-            risk = f"[{c['risk_level'].upper()}]" if c['risk_level'] else ""
-            cap = f" (cap: ${c['liability_cap']:,.0f})" if c['liability_cap'] else ""
+            risk = f"[{c['risk_level'].upper()}]" if c["risk_level"] else ""
+            cap = f" (cap: ${c['liability_cap']:,.0f})" if c["liability_cap"] else ""
             parts.append(f"  {risk} §{c['section_number']} {c['clause_type']}: {c['summary']}{cap}")
 
         return "\n".join(parts)
@@ -304,9 +425,9 @@ TABLE clauses:
 
         parts = ["Risk Overview — High/Critical Clauses:\n"]
         for r in rows:
-            risk = r['risk_level'].upper()
-            cap = f" | Cap: ${r['liability_cap']:,.0f}" if r['liability_cap'] else ""
-            notes = f" | {r['notes']}" if r['notes'] else ""
+            risk = r["risk_level"].upper()
+            cap = f" | Cap: ${r['liability_cap']:,.0f}" if r["liability_cap"] else ""
+            notes = f" | {r['notes']}" if r["notes"] else ""
             parts.append(
                 f"  [{risk}] {r['contract_name']} §{r['section_number']} "
                 f"{r['clause_type']}: {r['summary']}{cap}{notes}"

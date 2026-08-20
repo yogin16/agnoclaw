@@ -17,11 +17,12 @@ import tempfile
 from pathlib import Path
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 from agnoclaw.skills import SkillRegistry
 
-
 # ── 1. Create a local skill hub directory ────────────────────────────────────
+
 
 def create_skill_hub(hub_dir: Path) -> None:
     """
@@ -35,7 +36,8 @@ def create_skill_hub(hub_dir: Path) -> None:
     # Basic skill with tool restriction and description
     skill1 = hub_dir / "python-expert"
     skill1.mkdir(parents=True, exist_ok=True)
-    (skill1 / "SKILL.md").write_text("""\
+    (skill1 / "SKILL.md").write_text(
+        """\
 ---
 name: python-expert
 description: Expert Python code review, optimization, and idiomatic refactoring
@@ -71,13 +73,16 @@ Give a structured review:
 1. **Summary** (one sentence verdict)
 2. **Issues** (Critical / Major / Minor — numbered)
 3. **Suggested fix** (inline code diff if applicable)
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
     # ── Skill 2: git-commit ────────────────────────────────────────────────
     # Skill with $ARGUMENTS substitution and !`cmd` dynamic context
     skill2 = hub_dir / "git-commit"
     skill2.mkdir(parents=True, exist_ok=True)
-    (skill2 / "SKILL.md").write_text("""\
+    (skill2 / "SKILL.md").write_text(
+        """\
 ---
 name: git-commit
 description: Write a clean, conventional commit message from staged diff
@@ -111,13 +116,16 @@ Write a conventional commit message for the staged changes below.
 If $ARGUMENTS is provided, use it as the scope: `feat($ARGUMENTS): ...`
 
 Output ONLY the commit message — no explanation, no backticks.
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
     # ── Skill 3: sql-review ────────────────────────────────────────────────
     # Skill with requires_env gating and OS independence
     skill3 = hub_dir / "sql-review"
     skill3.mkdir(parents=True, exist_ok=True)
-    (skill3 / "SKILL.md").write_text("""\
+    (skill3 / "SKILL.md").write_text(
+        """\
 ---
 name: sql-review
 description: Review SQL queries for correctness, performance, and security
@@ -151,13 +159,16 @@ Review the SQL query for the following (in priority order):
 1. **Verdict**: SAFE / NEEDS_REVIEW / BLOCKED
 2. **Issues** (numbered, Critical/Major/Minor)
 3. **Optimized version** (if applicable)
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
     print(f"Skill hub created at: {hub_dir}")
     print(f"Skills: {[d.name for d in hub_dir.iterdir() if d.is_dir()]}")
 
 
 # ── 2. Discover skills via SkillRegistry ─────────────────────────────────────
+
 
 def demonstrate_discovery(hub_dir: Path) -> None:
     """Show how SkillRegistry discovers skills across multiple directories."""
@@ -182,6 +193,7 @@ def demonstrate_discovery(hub_dir: Path) -> None:
 
 # ── 3. Load and render a skill ────────────────────────────────────────────────
 
+
 def demonstrate_render(hub_dir: Path) -> None:
     """Show skill rendering: $ARGUMENTS substitution and !`cmd` execution."""
     print("\n=== Skill Rendering ===")
@@ -199,17 +211,22 @@ def demonstrate_render(hub_dir: Path) -> None:
     content = registry.load_skill("git-commit", arguments="auth")
     # Show lines that contain git command output (where !`...` was)
     for line in content.splitlines():
-        if line.startswith("!") or "(no staged" in line.lower() or "nothing to commit" in line.lower():
+        if (
+            line.startswith("!")
+            or "(no staged" in line.lower()
+            or "nothing to commit" in line.lower()
+        ):
             pass  # would have been executed
     print(f"  Loaded {len(content)} chars (git commands executed inline)")
 
     # Render git-commit with $ARGUMENTS substitution
     content_with_args = registry.load_skill("git-commit", arguments="api")
     assert "$ARGUMENTS" not in content_with_args, "Arguments not substituted"
-    print(f"  $ARGUMENTS substituted: 'api' argument injected")
+    print("  $ARGUMENTS substituted: 'api' argument injected")
 
 
 # ── 4. Use skills with AgentHarness ──────────────────────────────────────────
+
 
 def demonstrate_agent_with_skills(hub_dir: Path, workspace_dir: Path) -> None:
     """Run the agent with skills from a custom hub directory."""
@@ -217,6 +234,7 @@ def demonstrate_agent_with_skills(hub_dir: Path, workspace_dir: Path) -> None:
 
     # Install skills to workspace-level (highest priority)
     import shutil
+
     workspace_skills = workspace_dir / "skills"
     workspace_skills.mkdir(parents=True, exist_ok=True)
 
@@ -261,6 +279,7 @@ def demonstrate_agent_with_skills(hub_dir: Path, workspace_dir: Path) -> None:
 
 # ── 5. Workspace-level skill OVERRIDES bundled ────────────────────────────────
 
+
 def demonstrate_priority(workspace_dir: Path) -> None:
     """
     Workspace-level skills override bundled skills of the same name.
@@ -275,7 +294,8 @@ def demonstrate_priority(workspace_dir: Path) -> None:
     # Create a workspace-level override of the (hypothetical) bundled code-review
     override_dir = workspace_skills / "code-review"
     override_dir.mkdir(exist_ok=True)
-    (override_dir / "SKILL.md").write_text("""\
+    (override_dir / "SKILL.md").write_text(
+        """\
 ---
 name: code-review
 description: Team Python style review — our 6 rules
@@ -294,7 +314,9 @@ Review against our 6 non-negotiable rules:
 6. Docstrings in Google format on public classes and functions
 
 Flag violations as BLOCKER. Everything else is a suggestion.
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
     agent = AgentHarness(name="priority-demo", model=detect_model(), workspace_dir=workspace_dir)
 
@@ -317,6 +339,7 @@ if __name__ == "__main__":
 
         # Initialize workspace
         from agnoclaw.workspace import Workspace
+
         ws = Workspace(workspace_dir)
         ws.initialize()
 

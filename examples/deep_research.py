@@ -6,10 +6,9 @@ Demonstrates skill activation and structured output.
 Run: uv run python examples/deep_research.py
 """
 
-from pydantic import BaseModel, Field
-from typing import List
-
 from _utils import detect_model
+from pydantic import BaseModel, Field
+
 from agnoclaw import AgentHarness
 
 
@@ -17,8 +16,8 @@ from agnoclaw import AgentHarness
 class ResearchReport(BaseModel):
     title: str
     summary: str = Field(..., description="2-3 sentence executive summary")
-    key_findings: List[str] = Field(..., min_length=3)
-    sources: List[str] = Field(..., description="URLs of key sources")
+    key_findings: list[str] = Field(..., min_length=3)
+    sources: list[str] = Field(..., description="URLs of key sources")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in findings 0-1")
 
 

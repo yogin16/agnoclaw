@@ -12,9 +12,9 @@ import tempfile
 from pathlib import Path
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 from agnoclaw.workspace import Workspace
-
 
 # ── Create a project-specific workspace ──────────────────────────────────
 
@@ -28,7 +28,9 @@ with tempfile.TemporaryDirectory(prefix="agnoclaw-workspace-") as tmpdir:
     print(f"Files: {[f.name for f in ws.path.iterdir()]}\n")
 
     # ── Write custom AGENTS.md ────────────────────────────────────────────
-    ws.write_file("agents", """# Agent Guidelines — My Project
+    ws.write_file(
+        "agents",
+        """# Agent Guidelines — My Project
 
 You are a specialized agent for the MyProject Python library.
 
@@ -37,20 +39,26 @@ You are a specialized agent for the MyProject Python library.
 - We use pytest with pytest-asyncio for async tests
 - All new functions need type hints and docstrings
 - Check MEMORY.md for ongoing work context
-""")
+""",
+    )
 
     # ── Write custom SOUL.md ──────────────────────────────────────────────
-    ws.write_file("soul", """# Soul — My Project Agent
+    ws.write_file(
+        "soul",
+        """# Soul — My Project Agent
 
 You are a pragmatic, no-nonsense engineering assistant.
 - Prefer working code over theoretical explanations
 - Show examples, not just prose
 - Flag security issues immediately — don't wait to be asked
 - Be terse. A 5-line answer beats a 20-line essay.
-""")
+""",
+    )
 
     # ── Write IDENTITY.md (OpenClaw-style) ───────────────────────────────
-    ws.write_file("identity", """# Identity
+    ws.write_file(
+        "identity",
+        """# Identity
 
 I am the MyProject engineering assistant. My capabilities:
 
@@ -68,10 +76,13 @@ I am the MyProject engineering assistant. My capabilities:
 **My limitations:**
 - I can't access internal Confluence docs (use the wiki tool)
 - My knowledge cutoff is 2025-08 — check for newer library versions
-""")
+""",
+    )
 
     # ── Write TOOLS.md (OpenClaw-style tool config) ───────────────────────
-    ws.write_file("tools", """# Tool Configuration
+    ws.write_file(
+        "tools",
+        """# Tool Configuration
 
 ## Bash
 - Allowed: pytest, git, pip, uv, ruff, black, mypy
@@ -85,10 +96,13 @@ I am the MyProject engineering assistant. My capabilities:
 ## Web Search
 - Prefer: docs.python.org, pypi.org, github.com/[repo]
 - Avoid: w3schools, tutorialspoint (low quality)
-""")
+""",
+    )
 
     # ── Write BOOT.md (startup protocol) ─────────────────────────────────
-    ws.write_file("boot", """# Boot Protocol
+    ws.write_file(
+        "boot",
+        """# Boot Protocol
 
 At session start, always:
 
@@ -98,7 +112,8 @@ At session start, always:
 4. Greet the user with a one-line status: "Ready. [N] pending TODOs."
 
 Do NOT run tests or make changes during boot — only gather context.
-""")
+""",
+    )
 
     # ── Read back context files ───────────────────────────────────────────
     context = ws.context_files()

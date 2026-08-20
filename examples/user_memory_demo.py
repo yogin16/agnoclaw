@@ -9,6 +9,7 @@ Demonstrates:
 """
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 
 MODEL = detect_model()
@@ -92,8 +93,8 @@ combined_agent = AgentHarness(
     name="combined",
     model=MODEL,
     user_id="charlie",
-    enable_user_memory=True,    # per-user preferences (private)
-    enable_learning=True,       # institutional patterns (shared)
+    enable_user_memory=True,  # per-user preferences (private)
+    enable_learning=True,  # institutional patterns (shared)
     learning_namespace="shared-insights",
 )
 

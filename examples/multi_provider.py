@@ -10,6 +10,7 @@ Demonstrates:
 """
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 
 TASK = "Explain the CAP theorem in 3 bullet points for a senior engineer."

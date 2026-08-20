@@ -20,7 +20,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from _utils import detect_model
-
 from agno.agent import Agent
 from agno.team.team import Team
 

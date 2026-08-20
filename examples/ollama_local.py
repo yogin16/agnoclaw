@@ -19,13 +19,15 @@ Available models (check `ollama ls`):
     gemma3:4b    — 3.3 GB, Google's model
 """
 
+import json
+import tempfile
+
 from agnoclaw import AgentHarness
 from agnoclaw.tools.tasks import ProgressToolkit
 
-
 # ── Model selection ───────────────────────────────────────────────────────────
 # Change this to any model from `ollama ls`
-MODEL = "qwen3:0.6b"   # smallest / fastest for testing
+MODEL = "qwen3:0.6b"  # smallest / fastest for testing
 # MODEL = "qwen3:8b"   # better quality
 # MODEL = "llama3.2"   # good general purpose
 
@@ -55,7 +57,7 @@ agent.print_response(
     "Review this Python function:\n"
     "```python\n"
     "def find_user(db, user_id):\n"
-    "    query = f\"SELECT * FROM users WHERE id = {user_id}\"\n"
+    '    query = f"SELECT * FROM users WHERE id = {user_id}"\n'
     "    return db.execute(query).fetchone()\n"
     "```",
     stream=True,
@@ -75,17 +77,18 @@ agent.print_response(
 # ── ProgressToolkit (no API calls needed for the toolkit itself) ──────────────
 
 print("\n\n=== ProgressToolkit demo ===")
-import tempfile, json
-from pathlib import Path
-
 with tempfile.TemporaryDirectory() as tmpdir:
     toolkit = ProgressToolkit(project_dir=tmpdir)
 
-    toolkit.write_features(json.dumps([
-        {"id": "model-01", "description": "Ollama integration working"},
-        {"id": "model-02", "description": "Tool calls work with local model"},
-        {"id": "model-03", "description": "Skills work with local model"},
-    ]))
+    toolkit.write_features(
+        json.dumps(
+            [
+                {"id": "model-01", "description": "Ollama integration working"},
+                {"id": "model-02", "description": "Tool calls work with local model"},
+                {"id": "model-03", "description": "Skills work with local model"},
+            ]
+        )
+    )
 
     toolkit.update_feature_status("model-01", "passing")
     print(toolkit.read_features())

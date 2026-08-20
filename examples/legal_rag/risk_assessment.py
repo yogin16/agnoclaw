@@ -10,16 +10,14 @@ Run: uv run python examples/legal_rag/risk_assessment.py
 from __future__ import annotations
 
 import sys
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from _utils import detect_model
-
 from agno.agent import Agent
 
 MODEL = detect_model()
@@ -28,7 +26,7 @@ MODEL = detect_model()
 # ── Pydantic models for structured output ───────────────────────────────
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -54,7 +52,7 @@ class ContractOverview(BaseModel):
     effective_date: str
     expiration_date: str
     governing_law: str
-    total_value: Optional[str] = None
+    total_value: str | None = None
 
 
 class RiskAssessment(BaseModel):
@@ -64,20 +62,17 @@ class RiskAssessment(BaseModel):
     overall_risk_score: RiskLevel = Field(
         description="Overall risk level based on the worst individual risk"
     )
-    risk_factors: list[RiskFactor] = Field(
-        description="All identified risks, ordered by severity"
-    )
+    risk_factors: list[RiskFactor] = Field(description="All identified risks, ordered by severity")
     missing_clauses: list[str] = Field(
         default_factory=list,
         description="Standard clauses that are missing from the contract",
     )
-    recommendations: list[str] = Field(
-        description="Prioritized action items for legal review"
-    )
+    recommendations: list[str] = Field(description="Prioritized action items for legal review")
     summary: str = Field(description="Executive summary of the assessment")
 
 
 # ── Agent with structured output ────────────────────────────────────────
+
 
 def assess_contract(contract_text: str) -> RiskAssessment:
     """
@@ -96,9 +91,7 @@ def assess_contract(contract_text: str) -> RiskAssessment:
         ),
     )
 
-    response = agent.run(
-        f"Analyze this contract for risks:\n\n{contract_text}"
-    )
+    response = agent.run(f"Analyze this contract for risks:\n\n{contract_text}")
 
     # Agno returns the structured output in response.content
     return response.content
@@ -131,11 +124,11 @@ if __name__ == "__main__":
             print(f"            Recommendation: {rf.recommendation}")
 
         if assessment.missing_clauses:
-            print(f"\nMissing Clauses:")
+            print("\nMissing Clauses:")
             for mc in assessment.missing_clauses:
                 print(f"  - {mc}")
 
-        print(f"\nRecommendations:")
+        print("\nRecommendations:")
         for i, rec in enumerate(assessment.recommendations, 1):
             print(f"  {i}. {rec}")
 

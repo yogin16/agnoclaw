@@ -17,7 +17,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from _utils import detect_embedder, detect_model
-
 from agno.agent import Agent
 from agno.knowledge import Knowledge
 from agno.vectordb.lancedb import LanceDb, SearchType
@@ -103,8 +102,7 @@ embedded_agent = Agent(
     knowledge=knowledge_base,
     search_knowledge=True,
     instructions=(
-        "Answer questions about contracts in the knowledge base. "
-        "Be precise. Cite specific clauses."
+        "Answer questions about contracts in the knowledge base. Be precise. Cite specific clauses."
     ),
 )
 

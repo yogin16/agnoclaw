@@ -11,6 +11,7 @@ Demonstrates:
 from pathlib import Path
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 
 MODEL = detect_model()
@@ -65,6 +66,7 @@ else:
 # ── Programmatic plan mode check ──────────────────────────────────────────
 # You can use plan mode without the interactive prompt by just calling
 # enter_plan_mode() and exit_plan_mode() directly in your automation.
+
 
 def automated_plan_and_implement(task: str, auto_approve: bool = False):
     """Run a task through plan-then-implement workflow."""

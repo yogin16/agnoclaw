@@ -8,9 +8,12 @@
 #
 # Priority (highest → lowest):
 #   1. Environment variables (AGNOCLAW_*)
-#   2. ~/.agnoclaw/config.toml
-#   3. .agnoclaw.toml in current directory
+#   2. .agnoclaw.toml in current directory
+#   3. ~/.agnoclaw/config.toml
 #   4. Code defaults
+#
+# Explicit HarnessConfig(...) values supplied by an embedding take precedence over
+# ambient environment variables. The order above describes get_config()/CLI loading.
 #
 # All fields are optional — defaults are shown below.
 # ============================================================================
@@ -55,6 +58,11 @@
 
 default_model = "claude-sonnet-4-6"
 default_provider = "anthropic"
+
+# Runtime semantics. "legacy" remains the 0.12-preview compatibility default.
+# New embeddings should select "quick", "durable", or "service" intentionally;
+# durable/service additionally require explicit runtime/artifact stores in Python.
+profile = "legacy"
 
 # Other examples:
 #   default_model = "gpt-4o"
@@ -134,9 +142,39 @@ enable_compression = false
 # Token threshold that triggers compression. When accumulated tool results
 # exceed this, compression runs. Uncomment to override Agno's default.
 
+# max_context_tokens = 120000
+# Explicit provider context budget for 80/90/97% harness accounting.
+
+auto_compact_context = false
+# Preview, artifact-first automatic replacement at 90%, with a deterministic
+# no-extra-model-call emergency path at 97% and release below 70%. Also requires
+# max_context_tokens and an ArtifactStore injected through the Python constructor.
+
+# max_inline_output_chars = 8192
+# Opt in to lossless spill for governed CapabilitySpec and lifecycle first-party-tool
+# results larger than this character bound. Requires ArtifactStore and lifecycle
+# start(); the model receives a bounded preview plus read_spilled_output paging. Raw
+# custom/plugin/context/raw-MCP and outer-model results are not yet routed through
+# this contract. Minimum 1024, maximum 1000000.
+
 enable_session_summary = false
 # Generate a summary at the end of each run. On the next run, the summary
 # is injected into context so the agent picks up where it left off.
+
+
+# ── MCP (optional: install agnoclaw[mcp]) ──────────────────────────────────
+
+# Remote MCP uses the stable two-tool deferred surface. Prefer Streamable HTTP;
+# enable an explicit host allowlist and never commit bearer tokens in this file.
+# [[mcp_servers]]
+# name = "catalog"
+# url = "https://mcp.example.com/mcp"
+# transport = "streamable_http"
+
+# Local stdio alternative:
+# [[mcp_servers]]
+# name = "repository"
+# command = ["uvx", "example-mcp-server"]
 
 
 # ── Runtime Governance ─────────────────────────────────────────────────────
@@ -152,6 +190,18 @@ permission_mode = "bypass"
 permission_require_approver = false
 # If true, permission-gated tool calls are denied when no approver callback
 # is configured. Useful for SaaS: ensures the platform always handles approval.
+
+permission_durable_approvals = true
+# Persist registered-capability approval waits, decisions, and exact grants in the
+# RuntimeStore. Requires AgentHarness.start() and a schema-v7-capable store.
+
+permission_approval_ttl_seconds = 900
+# Maximum lifetime of one exact approval request and any resulting grant.
+# Allowed range: 1 second through 604800 seconds (7 days).
+
+permission_approval_poll_interval_seconds = 0.25
+# How often a live worker polls the authoritative store while waiting for an external
+# host decision. Must be greater than 0 and no more than 5 seconds.
 
 # permission_preapproved_tools = ["read_file", "glob_files", "grep_files"]
 # Tool names that skip permission checks entirely.

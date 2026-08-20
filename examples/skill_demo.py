@@ -14,6 +14,7 @@ Run: uv run python examples/skill_demo.py
 import shutil
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 
 MODEL = detect_model()
@@ -36,7 +37,14 @@ print()
 
 print("=== Code Review Skill ===")
 agent.print_response(
-    "Review this function for issues:\n```python\ndef process(data):\n    result = []\n    for i in range(len(data)):\n        result.append(data[i] * 2)\n    return result\n```",
+    "Review this function for issues:\n"
+    "```python\n"
+    "def process(data):\n"
+    "    result = []\n"
+    "    for i in range(len(data)):\n"
+    "        result.append(data[i] * 2)\n"
+    "    return result\n"
+    "```",
     stream=True,
     skill="code-review",
 )

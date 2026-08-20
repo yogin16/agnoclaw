@@ -2,6 +2,21 @@
 
 Skills extend agnoclaw with domain-specific instructions. Compatible with the AgentSkills standard, Claude Code skills, and OpenClaw/ClawHub format.
 
+## Current activation semantics
+
+Full skill content is loaded when the caller passes `skill=...`, the CLI/TUI user selects
+a skill, or another explicit harness path requests it. When no skill is active, agnoclaw
+can place names and descriptions in the system prompt so the model knows what exists,
+but the current runtime does **not** expose an `activate_skill`/Skill tool that lets the
+model load a selected `SKILL.md` during that run.
+
+Therefore, the current behavior is **skill discovery plus explicit activation**, not
+complete automatic model-driven activation. The target implementation follows the
+[Agent Skills client lifecycle](https://agentskills.io/client-implementation/adding-skills-support):
+discover metadata, disclose a compact catalog, activate full instructions on demand,
+load referenced resources as needed, deduplicate activation, and preserve active
+instructions through context compaction.
+
 ---
 
 ## Directory Structure
@@ -15,6 +30,11 @@ Place skills in:
 1. `~/.agnoclaw/workspace/skills/` — workspace overrides (highest priority)
 2. `~/.agnoclaw/skills/` — user-level skills
 3. Bundled skills (shipped with agnoclaw)
+
+ClawHub downloads are quarantined separately under the first configured local
+root's `.community/` directory. Existing workspace, user, and global community
+directories are rediscovered on every process start; downloaded content is not
+reclassified as local merely because it is stored below a local root.
 
 ---
 
@@ -63,7 +83,7 @@ metadata:
 | `allowed-tools` | string or list | `[]` | Comma-separated or YAML list of allowed tool names. When set, a run with this skill sees **only** these tools (restored after the run). See [Per-run tool scoping](#per-run-tool-scoping). |
 | `tool-schemas` | map | `{}` | Per-tool input-schema specialization: tool name → JSON Schema. During the run, the named tool advertises this schema (restored after). See [Per-run tool scoping](#per-run-tool-scoping). |
 | `model` | string | agent default | Model override for this skill (e.g. `"claude-opus-4-6"`) |
-| `context` | string | `null` | Set to `"fork"` to run as isolated subagent (parsed, not yet enforced) |
+| `context` | string | `null` | Set to `"fork"` to run the explicitly selected skill in an isolated subagent. |
 | `argument-hint` | string | `null` | Hint shown in CLI tab completion |
 | `homepage` | string | `null` | Documentation URL |
 
@@ -124,9 +144,9 @@ When a run is invoked with a skill that declares `allowed-tools`, the model sees
 only those tools for that run; the full toolset is restored afterward. This now
 applies to **inline** skill runs (`harness.run(msg, skill="...")`), not just
 `context: fork` skills. It also suppresses the harness's own default toolkits
-(bash/files/web/subagent), which a consumer otherwise can't strip — useful when a
+(bash/files/web and, on named legacy, subagent), which a consumer otherwise cannot strip — useful when a
 skill's entire job is to call one tool and you don't want the model wandering to
-`write_file` or `spawn_subagent`.
+`write_file` or the named-legacy-only `spawn_subagent`.
 
 ```yaml
 allowed-tools: save_artifact
@@ -179,9 +199,14 @@ Notes:
 - The harness still recomputes the *top-level* `required` from the tool's
   signature and forces `additionalProperties: false` (an Agno behavior). Overrides
   reliably control nested shapes, types, and descriptions.
-- Scoping mutates the live agent for one run, so a single harness instance should
-  not have two scoped runs in flight at once (same constraint as the per-run
-  system-prompt swap).
+- Scoping mutates the live agent for one run. The harness therefore rejects a second
+  overlapping run with `HARNESS_RUN_IN_PROGRESS`; a stream holds that gate until it is
+  exhausted or explicitly closed.
+
+This single-flight constraint is a containment guarantee, not the desired API property.
+The target per-run runtime removes shared Agent mutation and permits bounded isolated
+concurrency; see
+[Harness architecture](architecture.md).
 
 ---
 
@@ -195,7 +220,42 @@ Skills can contain executable content (`!`cmd``) and declare package installs. a
 |---|---|---|---|
 | **builtin** | Shipped with agnoclaw | Allowed | Auto-approved |
 | **local** | `~/.agnoclaw/workspace/skills/` or `~/.agnoclaw/skills/` | Allowed | User approval required |
-| **community** | External (ClawHub, git clone, etc.) | **Blocked** | User approval + validation |
+| **community** | Registered external roots and ClawHub quarantine directories | **Blocked** | User approval + validation |
+
+Trust belongs to the registered source root, not to a path-shaped guess made
+after discovery. Community skills are excluded from the automatic system-prompt
+catalog and are treated as `disable-model-invocation: true` regardless of their
+frontmatter. A user may still inspect and explicitly select them.
+
+### ClawHub quarantine and archive validation
+
+Hub installation is a download-and-parse operation, not activation:
+
+- every metadata, redirect, and archive URL must pass the configured HTTPS,
+  hostname, DNS, and private-address policy;
+- the HTTP connection is pinned to the admitted IP address, and every redirect
+  is revalidated with a bounded redirect count;
+- ZIP files have compressed-size, member-count, per-member, and expanded-size
+  limits; absolute paths, traversal, duplicate targets, links, encrypted
+  members, devices, and malformed entries are rejected;
+- extraction happens in a staging directory, requires a root `SKILL.md`, writes
+  immutable provenance metadata, and is atomically renamed into place; and
+- install verification and `agnoclaw skill inspect` are parse-only. They do not
+  execute inline commands, run dependency installers, or render dynamic content.
+
+Explicit activation of a community skill preserves blocked inline syntax as
+literal text. Promotion to local trust requires a separate, deliberate review
+and copy into a local source root.
+
+### Pack trust is content-bound
+
+Skill packs do not grant themselves authority. Untrusted pack skills register as
+community content, any Python registration entry requires host-established
+trust, and a packaged trust marker is ignored. Host trust is stored outside the
+pack payload and binds the canonical installed identity to the exact pack digest.
+Any content mutation invalidates that trust. Automatic local upgrades are only
+permitted when the installed pack is already trusted and its manifest identity
+matches the requested pack.
 
 ### Package name validation
 
@@ -226,7 +286,7 @@ registry = SkillRegistry(skills_dir, auto_approve_installs=True)
 
 ### Best practices
 
-- **Review community skills** before installing — check SKILL.md for `!`cmd`` and `install:` specs
+- **Inspect provenance and content** before activation — use `agnoclaw skill inspect <name>` and review `SKILL.md`, inline commands, install specs, and the recorded Hub source/digest
 - **Prefer builtin/local skills** for sensitive environments
 - **Use `agnoclaw skill inspect <name>`** to view a skill's full content before activation
 - **Keep skills in version control** for auditability
@@ -267,7 +327,7 @@ Recent commits:
 | `git-workflow` | Safe git operations with guardrails |
 | `daily-standup` | Generate standup from git history and todos |
 | `memory-manage` | Read/update/summarize long-term memory |
-| `self-improving-agent` | Capture corrections/errors/feature-requests in `.learnings/`; promote stable patterns to workspace files |
+| `self-improving-agent` | Explicitly record/review corrections, errors, and feature requests in `.learnings/`; propose promotion to workspace files |
 
 ---
 
@@ -311,6 +371,7 @@ When the same skill name exists in multiple locations, the highest-priority loca
 1. `~/.agnoclaw/workspace/skills/` (workspace overrides)
 2. `~/.agnoclaw/skills/` (user-level)
 3. Bundled skills (shipped with agnoclaw)
+4. Registered community roots and `.community/` quarantine directories
 
 ---
 
@@ -329,4 +390,5 @@ agnoclaw skill install path/to/my-skill/
 
 ---
 
-*See [harness-gap-analysis.md](harness-gap-analysis.md) for the unified Claude Code + OpenClaw gap status.*
+See [Harness gap analysis](harness-gap-analysis.md) for current maturity and
+[Learning and self-improvement](learning.md) for the governed promotion target.

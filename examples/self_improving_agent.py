@@ -45,6 +45,7 @@ def _check_ollama() -> bool:
         return True
     try:
         import httpx
+
         r = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
         return r.status_code == 200
     except Exception:
@@ -52,6 +53,7 @@ def _check_ollama() -> bool:
 
 
 # ── Part 1: Show skill metadata (no API) ──────────────────────────────────────
+
 
 def demo_skill_discovery():
     """Discover the self-improving-agent skill without running it."""
@@ -75,6 +77,7 @@ def demo_skill_discovery():
 
 # ── Part 2: .learnings/ file format ───────────────────────────────────────────
 
+
 def demo_learnings_format(tmp: Path):
     """Create example .learnings/ files showing the entry format."""
     print("=== .learnings/ File Format ===")
@@ -83,7 +86,8 @@ def demo_learnings_format(tmp: Path):
     learnings_dir.mkdir()
 
     # Example LEARNINGS.md entry
-    (learnings_dir / "LEARNINGS.md").write_text("""# Learnings
+    (learnings_dir / "LEARNINGS.md").write_text(
+        """# Learnings
 
 Corrections, patterns, and best practices discovered through experience.
 See ERRORS.md for command failures, FEATURE_REQUESTS.md for capability gaps.
@@ -106,10 +110,13 @@ not the workspace, causing "file not found" errors that look like the file
 doesn't exist.
 
 **Suggested action**: Add to TOOLS.md: "Always use absolute paths in file tools."
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
     # Example ERRORS.md entry
-    (learnings_dir / "ERRORS.md").write_text("""# Errors
+    (learnings_dir / "ERRORS.md").write_text(
+        """# Errors
 
 Command failures, unexpected tool behavior, and their workarounds.
 
@@ -129,10 +136,13 @@ Command failures, unexpected tool behavior, and their workarounds.
 (adds to pyproject.toml) or `uv pip install X` for one-off installs.
 
 **Suggested action**: Add to TOOLS.md: "Use 'uv add X' not 'pip install X'."
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
     # Example FEATURE_REQUESTS.md entry
-    (learnings_dir / "FEATURE_REQUESTS.md").write_text("""# Feature Requests
+    (learnings_dir / "FEATURE_REQUESTS.md").write_text(
+        """# Feature Requests
 
 Capabilities requested by users but not yet available.
 
@@ -147,7 +157,9 @@ Capabilities requested by users but not yet available.
 **Summary**: User asked to read a PDF — read_file() doesn't handle binary.
 
 **Suggested action**: Add PDF reading support to FilesToolkit (use pypdf).
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
     print(f"  Created: {learnings_dir}/")
     for f in sorted(learnings_dir.iterdir()):
@@ -158,6 +170,7 @@ Capabilities requested by users but not yet available.
 
 
 # ── Part 3: Trigger with agent (live) ────────────────────────────────────────
+
 
 def demo_with_agent(tmp: Path, learnings_dir: Path):
     """
@@ -194,6 +207,7 @@ Keep your response concise."""
 
 # ── Part 4: Promotion pattern ─────────────────────────────────────────────────
 
+
 def demo_promotion_pattern():
     """Show how learnings get promoted to workspace files."""
     print("=== Promotion Pattern ===")
@@ -217,6 +231,7 @@ def demo_promotion_pattern():
 
 
 # ── Part 5: Comparison with LearningMachine ──────────────────────────────────
+
 
 def demo_comparison():
     """Clarify when to use self-improving-agent vs LearningMachine."""
@@ -243,6 +258,7 @@ def demo_comparison():
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
+
 
 def main():
     print("agnoclaw Self-Improving Agent Demo")
