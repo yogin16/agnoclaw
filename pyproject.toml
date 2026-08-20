@@ -204,6 +204,11 @@ source = ["src/agnoclaw"]
 omit = [
     "*/cli/*",     # CLI tested via Click test runner, not coverage
     "*/tui/*",     # TUI requires Textual display, tested separately
+    # Optional service adapters run in dedicated dependency/PostgreSQL CI lanes. The
+    # core unit threshold must not count modules that its environment cannot exercise.
+    "*/runtime/http_lifecycle.py",
+    "*/runtime/postgres_store.py",
+    "*/learning_postgres.py",
     "*/__init__.py",
 ]
 
