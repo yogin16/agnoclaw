@@ -5,17 +5,18 @@ Skills extend agnoclaw with domain-specific instructions. Compatible with the Ag
 ## Current activation semantics
 
 Full skill content is loaded when the caller passes `skill=...`, the CLI/TUI user selects
-a skill, or another explicit harness path requests it. When no skill is active, agnoclaw
-can place names and descriptions in the system prompt so the model knows what exists,
-but the current runtime does **not** expose an `activate_skill`/Skill tool that lets the
-model load a selected `SKILL.md` during that run.
+a skill, or the model calls the governed `get_skill_instructions` progressive-disclosure
+tool. When no skill is active, agnoclaw exposes a compact, trust-filtered names-and-
+descriptions catalog. The model can select one eligible local skill, load its bounded
+`SKILL.md` content, and continue the same governed turn under that skill's tool allowlist.
 
-Therefore, the current behavior is **skill discovery plus explicit activation**, not
-complete automatic model-driven activation. The target implementation follows the
+This implements the core
 [Agent Skills client lifecycle](https://agentskills.io/client-implementation/adding-skills-support):
 discover metadata, disclose a compact catalog, activate full instructions on demand,
-load referenced resources as needed, deduplicate activation, and preserve active
-instructions through context compaction.
+deduplicate activation, and enforce final-boundary tool restrictions. Community skills,
+skills that change the model/context/schema, and inline command execution still require
+an explicit caller-owned activation path. Referenced resources remain available through
+ordinary allowed governed tools rather than being executed during activation.
 
 ---
 

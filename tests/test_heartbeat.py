@@ -81,6 +81,50 @@ async def test_scheduler_only_mode_does_not_start_heartbeat_loop():
     assert daemon._running is False
 
 
+@pytest.mark.asyncio
+async def test_durable_scheduler_worker_poll_loop_processes_due_job(tmp_path):
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend, SchedulerJob
+    from agnoclaw.runtime.store import SQLiteRuntimeStore
+
+    backend = RuntimeSchedulerBackend(SQLiteRuntimeStore(tmp_path / "runtime.db"))
+    backend.upsert_job(
+        SchedulerJob(
+            name="worker-e2e",
+            schedule="1h",
+            prompt="process through worker loop",
+            next_run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        )
+    )
+    runtime_run = MagicMock(run_id="runtime-worker-e2e")
+    runtime_run.wait = AsyncMock(return_value=MagicMock(content="worker complete"))
+    agent = MagicMock()
+    agent.workspace = MagicMock()
+    agent.start = AsyncMock(return_value=runtime_run)
+    daemon = HeartbeatDaemon(
+        agent,
+        scheduler_backend=backend,
+        scheduler_poll_interval_seconds=0.01,
+        heartbeat_enabled=False,
+    )
+
+    daemon.start()
+    try:
+        for _ in range(200):
+            records = backend.list_runs(job_name="worker-e2e")
+            if records and records[0].status == "completed":
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("durable scheduler worker did not process the due job")
+    finally:
+        await daemon.astop()
+
+    agent.start.assert_awaited_once()
+    assert records[0].runtime_run_id == "runtime-worker-e2e"
+    assert records[0].output == "worker complete"
+
+
 def test_heartbeat_is_active_hours_within_range():
     from agnoclaw.config import HarnessConfig, HeartbeatConfig
     from agnoclaw.heartbeat.daemon import HeartbeatDaemon

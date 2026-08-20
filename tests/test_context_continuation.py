@@ -5,6 +5,11 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+from agno.models.openai.responses import OpenAIResponses
+from agno.models.response import ModelResponse
+
+from agnoclaw import AgentHarness, ContextScope
 from agnoclaw.context_management import ContextContinuationRecord
 from agnoclaw.context_runtime import _ContextManagementMixin
 
@@ -84,6 +89,68 @@ def test_verified_continuation_accepts_only_exact_source_spans() -> None:
     assert provenance[("goal", 0)]["extraction"] == "deterministic_initial_goal_v1"
     assert provenance[("plan", 0)]["extraction"] == "model_proposed_exact_span_v1"
     assert provenance[("plan", 0)]["source_ordinal"] == 1
+
+
+@pytest.mark.asyncio
+async def test_model_pipeline_generates_and_verifies_typed_continuation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    messages = [
+        _message("user", "Build a durable agent harness."),
+        _message(
+            "assistant",
+            "Plan: verify the model-generated continuation pipeline.",
+        ),
+    ]
+
+    async def provider_call(_model, *args, **kwargs):
+        del args, kwargs
+        return ModelResponse(
+            content=json.dumps(
+                {
+                    "summary": "The continuation pipeline is under verification.",
+                    "entries": [
+                        {
+                            "field": "plan",
+                            "source_ordinal": 1,
+                            "exact_text": (
+                                "Plan: verify the model-generated continuation pipeline."
+                            ),
+                        }
+                    ],
+                }
+            ),
+            provider_data={"request_id": "provider-continuation-1"},
+        )
+
+    monkeypatch.setattr(OpenAIResponses, "ainvoke", provider_call)
+    harness = AgentHarness(
+        model="openai:continuation-probe",
+        workspace_dir=tmp_path / "workspace",
+        include_default_tools=False,
+    )
+    try:
+        generated = await harness._generate_verified_continuation(
+            scope=ContextScope(session_id="session-1", user_id="user-1"),
+            preflush_messages=messages,
+            carried=None,
+            carried_sources={},
+            capture_initial_goal=True,
+            manifest_revision=0,
+        )
+    finally:
+        await harness.aclose()
+
+    assert generated is not None
+    summary, record, provenance = generated
+    assert summary == "The continuation pipeline is under verification."
+    assert record is not None
+    assert record.goal == "Build a durable agent harness."
+    assert record.plan == (
+        "Plan: verify the model-generated continuation pipeline.",
+    )
+    assert provenance[("plan", 0)]["extraction"] == "model_proposed_exact_span_v1"
 
 
 def test_verified_continuation_replaces_live_state_and_unions_durable_history() -> None:

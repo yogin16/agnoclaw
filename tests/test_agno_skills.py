@@ -7,10 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from agno.db.sqlite import SqliteDb
 from agno.exceptions import AgentRunException
+from agno.models.openai.responses import OpenAIResponses
+from agno.models.response import ModelResponse
 from agno.tools.function import FunctionCall
 
-from agnoclaw import AgentHarness
+from agnoclaw import AgentHarness, HarnessConfig, LocalArtifactStore, SQLiteRuntimeStore
 from agnoclaw.runtime.tool_ingress import builtin_effect, toolkit_functions
 from agnoclaw.skills.registry import ModelSkillActivationError, SkillRegistry
 
@@ -143,6 +146,66 @@ def test_agno_native_skill_tool_is_governed_and_enforces_allowed_tools(
     finally:
         harness._cleanup_tool_step_state("run-skill-1")
         harness.close()
+
+
+@pytest.mark.asyncio
+async def test_model_selects_activates_and_follows_skill_in_one_governed_turn(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    _write_skill(workspace / "skills")
+    provider_calls: list[int] = []
+    provider_inputs: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def provider_call(_model, *args, **kwargs):
+        provider_inputs.append((args, kwargs))
+        provider_calls.append(len(provider_calls) + 1)
+        if len(provider_calls) == 1:
+            return ModelResponse(
+                tool_calls=[
+                    {
+                        "id": "call-skill-e2e",
+                        "type": "function",
+                        "function": {
+                            "name": "get_skill_instructions",
+                            "arguments": (
+                                '{"skill_name":"reviewer",'
+                                '"arguments":"src/widget.py"}'
+                            ),
+                        },
+                    }
+                ],
+                provider_data={"request_id": "provider-skill-1"},
+            )
+        return ModelResponse(
+            content="Reviewed src/widget.py with the activated protocol.",
+            provider_data={"request_id": "provider-skill-2"},
+        )
+
+    monkeypatch.setattr(OpenAIResponses, "ainvoke", provider_call)
+    store = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    harness = AgentHarness(
+        model="openai:skill-activation-probe",
+        workspace_dir=workspace,
+        db=SqliteDb(db_file=str(tmp_path / "agno.db")),
+        runtime_store=store,
+        artifact_store=LocalArtifactStore(tmp_path / "artifacts"),
+        config=HarnessConfig(enable_plugins=False, workspace_dir=str(workspace)),
+        user_id="user-1",
+    )
+    try:
+        run = await harness.start("Review src/widget.py", session_id="session-1")
+        result = await run.wait(timeout=10)
+    finally:
+        await harness.aclose()
+
+    assert result.content == "Reviewed src/widget.py with the activated protocol."
+    assert provider_calls == [1, 2]
+    continued_input = repr(provider_inputs[1])
+    assert '"status":"activated"' in continued_input
+    assert '"skill_name":"reviewer"' in continued_input
+    assert "Follow the review protocol for src/widget.py." in continued_input
 
 
 def test_no_default_tools_means_no_model_skill_activation_surface(tmp_path: Path) -> None:

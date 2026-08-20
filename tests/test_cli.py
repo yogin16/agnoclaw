@@ -949,6 +949,19 @@ def test_async_chat_closes_agent_on_owning_async_loop(runner):
     agent.close.assert_not_called()
 
 
+def test_sync_chat_runs_blocking_repl_and_closes_agent(runner):
+    agent = MagicMock()
+    with (
+        patch("agnoclaw.cli.main._build_agent", return_value=agent),
+        patch("agnoclaw.cli.main.click.prompt", side_effect=["hello", "/quit"]),
+    ):
+        result = runner.invoke(cli, ["chat", "--sync"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    agent.print_response.assert_called_once_with("hello", stream=True, skill=None)
+    agent.close.assert_called_once_with()
+
+
 @pytest.mark.asyncio
 async def test_async_repl_stream_uses_durable_lifecycle_and_waits_for_terminal():
     from types import SimpleNamespace
