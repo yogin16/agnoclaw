@@ -261,6 +261,15 @@ ceiling was not increased, although the
 remaining headroom is intentionally treated as an extraction trigger rather than a
 growth allowance.
 
+The final 0.12 candidate is larger than those retained incremental checkpoints:
+3,272,866 Python-source bytes, a 725,135-byte wheel, a 1,920,793-byte pre-final sdist,
+and a 461,620-byte/11,392-line `agent.py`; cold import loads 1,011 modules in 0.343
+seconds. Release ceilings are therefore rebaselined with roughly two percent headroom
+to 3.34 MB/740 KB/1.96 MB, 470 KB/11,600 lines, and 1,030 modules. The six-dependency and
+two-second import caps do not move. This is an explicit late-release tradeoff: facade
+and import-graph extraction are tracked for post-0.12 instead of risking the already
+verified lifecycle contract during packaging freeze.
+
 ## Runtime inspection API
 
 ```python

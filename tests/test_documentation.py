@@ -376,6 +376,11 @@ def test_release_workflow_publishes_the_checked_artifacts() -> None:
     test_actions = {step.get("uses", "") for step in test_steps}
     publish_actions = {step.get("uses", "") for step in publish_steps}
 
+    assert workflow["concurrency"] == {
+        "group": "agnoclaw-publish",
+        "cancel-in-progress": "false",
+    }
+    assert workflow["jobs"]["check"]["if"] == "github.ref == 'refs/heads/main'"
     assert "--cov-fail-under=80" in test_commands
     assert "ruff check src/ tests/ scripts/" in test_commands
     assert "mypy src/agnoclaw/" in test_commands
@@ -398,6 +403,9 @@ def test_release_workflow_publishes_the_checked_artifacts() -> None:
     assert ".venv-release-postgres/bin/agnoclaw inspect run --help" in test_commands
     assert "PostgresWriterAuthorityGrant" in test_commands
     assert "EtcdPostgresWriterAuthority" in test_commands
+    assert "--format cyclonedx1.5" in test_commands
+    assert ".sha256" in test_commands
+    assert ".provenance" in test_commands
     assert (
         "actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4"
         in test_actions

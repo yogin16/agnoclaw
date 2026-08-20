@@ -7,7 +7,7 @@ Skills, policy and permission hooks, a transactional run lifecycle, scoped artif
 and governed learning. It is a Python library first: no required gateway, editor, or
 hosted control plane.
 
-> **0.12 development status:** security, lifecycle, effects, artifacts, approvals,
+> **0.12 release-candidate status:** security, lifecycle, effects, artifacts, approvals,
 > governed-learning, and durable-scheduler foundations are implemented and tested.
 > Schema-v12 SQLite/PostgreSQL scheduling has deterministic occurrences, leased/fenced
 > attempts, lifecycle reattachment, retries, misfires, overlap policy, and learning
