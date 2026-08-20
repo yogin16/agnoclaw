@@ -10,6 +10,7 @@ import json
 import re
 import sys
 from collections import defaultdict
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,42 @@ _ADDRESS_RE = re.compile(r" at 0x[0-9a-fA-F]+")
 def _normalize_runtime_repr(value: str) -> str:
     """Remove process-specific addresses without hiding the referenced object."""
     return _ADDRESS_RE.sub("", value)
+
+
+def _normalize_signature_syntax(value: str) -> str:
+    """Render equivalent typing syntax identically on every supported Python."""
+    value = value.replace("typing.", "")
+    marker = "Optional["
+    search_from = 0
+    while (start := value.find(marker, search_from)) >= 0:
+        depth = 1
+        quote: str | None = None
+        escaped = False
+        end = start + len(marker)
+        while end < len(value) and depth:
+            character = value[end]
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == quote:
+                    quote = None
+            elif character in {"'", '"'}:
+                quote = character
+            elif character == "[":
+                depth += 1
+            elif character == "]":
+                depth -= 1
+            end += 1
+        if depth:
+            search_from = start + len(marker)
+            continue
+        inner = value[start + len(marker) : end - 1]
+        replacement = f"{inner} | None"
+        value = value[:start] + replacement + value[end:]
+        search_from = start + len(replacement)
+    return value
 
 
 def _split_signature(value: str) -> tuple[list[str], str] | None:
@@ -68,7 +105,7 @@ def _split_signature(value: str) -> tuple[list[str], str] | None:
 
 
 def _format_signature(value: str, *, width: int = 96) -> str:
-    value = _normalize_runtime_repr(value)
+    value = _normalize_signature_syntax(_normalize_runtime_repr(value))
     if len(value) <= width:
         return value
     split = _split_signature(value)
@@ -101,7 +138,11 @@ def _summary(value: Any) -> str:
 def _definition(name: str, value: Any, kind: str) -> str:
     if kind in {"class", "function"}:
         try:
-            signature = _format_signature(str(inspect.signature(value)))
+            signature = (
+                "(*values)"
+                if kind == "class" and issubclass(value, Enum)
+                else _format_signature(str(inspect.signature(value)))
+            )
         except (TypeError, ValueError):
             signature = "(...)"
         return f"{name}{signature}"
@@ -122,8 +163,15 @@ def _records() -> list[dict[str, str]]:
         summary = _summary(value) if kind in {"class", "function"} else ""
         if kind in {"class", "function"} and not summary:
             missing_docstrings.append(name)
-        module = str(getattr(value, "__module__", "agnoclaw"))
-        qualname = str(getattr(value, "__qualname__", name))
+        if kind == "type alias":
+            # Runtime union/callable objects report interpreter-owned modules,
+            # and Python 3.14 changed those details.  The stable public owner of
+            # these aliases is the top-level contract that exports them.
+            module = "agnoclaw"
+            qualname = name
+        else:
+            module = str(getattr(value, "__module__", "agnoclaw"))
+            qualname = str(getattr(value, "__qualname__", name))
         records.append(
             {
                 "name": name,

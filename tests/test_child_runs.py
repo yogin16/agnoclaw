@@ -1058,6 +1058,14 @@ async def test_governed_synthesis_reattaches_while_same_delegation_is_pending(tm
         context=context,
         delegation_id="synthesis-pending",
     )
+    for _ in range(100):
+        operations = store.list_run_operations(first.run_id)
+        if operations and operations[0].state is OperationState.DISPATCHING:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("synthesis model operation was not dispatched")
+
     repeated = await parent.synthesize_children(
         synthesis_harness,
         "Combine the findings.",
@@ -1067,9 +1075,10 @@ async def test_governed_synthesis_reattaches_while_same_delegation_is_pending(tm
 
     assert repeated.run_id == first.run_id
     await first.cancel()
-    with pytest.raises(RunWaitError) as cancelled:
+    with pytest.raises(RunReconciliationRequiredError):
         await first.wait()
-    assert cancelled.value.code == "RUN_CANCELLED"
+    assert (await first.status()).state is RunState.WAITING_FOR_RECONCILIATION
+    assert store.get_operation(f"{first.run_id}:model:1").state is OperationState.UNKNOWN
     await synthesis_harness.aclose()
 
 

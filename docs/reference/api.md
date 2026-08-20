@@ -7,13 +7,25 @@ Status: generated from the complete top-level `agnoclaw.__all__` contract
 
 Reference schema: `1.0`
 Public symbols: `398`
-Public-surface digest: `sha256:af3d959ddbdc38d0dceb52e0045d46461d2326282052e5a57efafe204b60c311`
+Public-surface digest: `sha256:188545eef664c00bbaaf02bdfe8f33128c030fa1080416b9f96ca5fc13dde3b8`
 
 Every name below is importable directly from `agnoclaw`. Signatures are
 generated from the installed runtime objects; source modules identify the
 implementation owner, not an additional supported import path.
 
 ## `agnoclaw`
+
+### `CapabilityInvoker`
+
+Type Alias · `agnoclaw.CapabilityInvoker`
+
+Versioned public value.
+
+```python
+from agnoclaw import CapabilityInvoker
+
+CapabilityInvoker = collections.abc.Callable[[typing.Any, collections.abc.Mapping[str, typing.Any]], typing.Any | collections.abc.Awaitable[typing.Any]]
+```
 
 ### `CONTEXT_SCHEMA_VERSION`
 
@@ -97,6 +109,30 @@ Versioned public value.
 from agnoclaw import EVALUATION_RUNNER_SCHEMA_VERSION
 
 EVALUATION_RUNNER_SCHEMA_VERSION = '1.2'
+```
+
+### `EvaluationInputBuilder`
+
+Type Alias · `agnoclaw.EvaluationInputBuilder`
+
+Versioned public value.
+
+```python
+from agnoclaw import EvaluationInputBuilder
+
+EvaluationInputBuilder = collections.abc.Callable[[agnoclaw.improvement_corpus.EvaluationCase], typing.Any]
+```
+
+### `EvaluationOutputBuilder`
+
+Type Alias · `agnoclaw.EvaluationOutputBuilder`
+
+Versioned public value.
+
+```python
+from agnoclaw import EvaluationOutputBuilder
+
+EvaluationOutputBuilder = collections.abc.Callable[[typing.Any], typing.Any]
 ```
 
 ### `IMPROVEMENT_RUNNER_IMPLEMENTATION_DIGEST`
@@ -267,6 +303,18 @@ from agnoclaw import PROCESS_EVALUATION_PROTOCOL_VERSION
 PROCESS_EVALUATION_PROTOCOL_VERSION = 'agnoclaw.improvement.process.v1'
 ```
 
+### `ProcessEvaluationHandler`
+
+Type Alias · `agnoclaw.ProcessEvaluationHandler`
+
+Versioned public value.
+
+```python
+from agnoclaw import ProcessEvaluationHandler
+
+ProcessEvaluationHandler = collections.abc.Callable[[agnoclaw.improvement_corpus.EvaluationCase], agnoclaw.improvement_runner.EvaluationRollout | collections.abc.Awaitable[agnoclaw.improvement_runner.EvaluationRollout]]
+```
+
 ### `RECONCILIATION_EVIDENCE_PURPOSE`
 
 Constant · `agnoclaw.RECONCILIATION_EVIDENCE_PURPOSE`
@@ -289,6 +337,18 @@ Versioned public value.
 from agnoclaw import RUN_INSPECT_SCOPE
 
 RUN_INSPECT_SCOPE = 'runtime:run:inspect'
+```
+
+### `RunCommand`
+
+Type Alias · `agnoclaw.RunCommand`
+
+Versioned public value.
+
+```python
+from agnoclaw import RunCommand
+
+RunCommand = agnoclaw.commands.Pause | agnoclaw.commands.Resume | agnoclaw.commands.Respond | agnoclaw.commands.Steer | agnoclaw.commands.Fork
 ```
 
 ## `agnoclaw.agent`
@@ -904,7 +964,7 @@ HarnessConfig(
     _build_sources: 'tuple[tuple[PydanticBaseSettingsSource, ...], dict[str, Any]] | None' = None,
     *,
     profile: agnoclaw.config.RuntimeProfile = <RuntimeProfile.LEGACY: 'legacy'>,
-    sandbox_mode: Optional[Literal['workspace_write', 'read_only', 'full']] = None,
+    sandbox_mode: Literal['workspace_write', 'read_only', 'full'] | None = None,
     default_model: str = 'claude-sonnet-4-6',
     default_provider: str = 'anthropic',
     cache_prompts: bool = False,
@@ -4660,11 +4720,11 @@ Create a FastAPI app backed by Agno AgentOS and agnoclaw harness adapters.
 from agnoclaw import create_agentos_app
 
 create_agentos_app(
-    harnesses: collections.abc.Sequence[typing.Any],
+    harnesses: collections.abc.Sequence[Any],
     *,
     include_agnoclaw_admin: bool = False,
     include_agnoclaw_lifecycle: bool = True,
-    child_templates: collections.abc.Mapping[str, collections.abc.Mapping[str, typing.Any]] | None = None,
+    child_templates: collections.abc.Mapping[str, collections.abc.Mapping[str, Any]] | None = None,
     enable_mcp_server: bool = False,
     scheduler: bool = False,
     approvals: bool = False,
@@ -6647,68 +6707,4 @@ Workspace(
     global_dir: 'str | Path | None' = None,
     project_dir: 'str | Path | None' = None,
 )
-```
-
-## `collections.abc`
-
-### `CapabilityInvoker`
-
-Type Alias · `collections.abc.Callable`
-
-Versioned public value.
-
-```python
-from agnoclaw import CapabilityInvoker
-
-CapabilityInvoker = collections.abc.Callable[[typing.Any, collections.abc.Mapping[str, typing.Any]], typing.Any | collections.abc.Awaitable[typing.Any]]
-```
-
-### `EvaluationInputBuilder`
-
-Type Alias · `collections.abc.Callable`
-
-Versioned public value.
-
-```python
-from agnoclaw import EvaluationInputBuilder
-
-EvaluationInputBuilder = collections.abc.Callable[[agnoclaw.improvement_corpus.EvaluationCase], typing.Any]
-```
-
-### `EvaluationOutputBuilder`
-
-Type Alias · `collections.abc.Callable`
-
-Versioned public value.
-
-```python
-from agnoclaw import EvaluationOutputBuilder
-
-EvaluationOutputBuilder = collections.abc.Callable[[typing.Any], typing.Any]
-```
-
-### `ProcessEvaluationHandler`
-
-Type Alias · `collections.abc.Callable`
-
-Versioned public value.
-
-```python
-from agnoclaw import ProcessEvaluationHandler
-
-ProcessEvaluationHandler = collections.abc.Callable[[agnoclaw.improvement_corpus.EvaluationCase], agnoclaw.improvement_runner.EvaluationRollout | collections.abc.Awaitable[agnoclaw.improvement_runner.EvaluationRollout]]
-```
-
-## `types`
-
-### `RunCommand`
-
-Type Alias · `types.RunCommand`
-
-Versioned public value.
-
-```python
-from agnoclaw import RunCommand
-
-RunCommand = agnoclaw.commands.Pause | agnoclaw.commands.Resume | agnoclaw.commands.Respond | agnoclaw.commands.Steer | agnoclaw.commands.Fork
 ```
