@@ -223,9 +223,19 @@ def build_learning_machine(
         raise HarnessError(
             code="LEARNING_KNOWLEDGE_REQUIRED",
             category="learning",
-            message=("Institutional learning requires Agno Knowledge with a configured vector_db."),
+            message=(
+                "Institutional learning requires Agno Knowledge with a configured "
+                "vector_db. Pass AgentHarness(..., learning_knowledge=Knowledge("
+                "vector_db=...)) — for example LanceDb via agnoclaw[rag] — or set "
+                "enable_learning=False. Before 0.12 this configuration constructed "
+                "but learned knowledge silently did nothing."
+            ),
             retryable=False,
-            details={"parameter": "knowledge"},
+            details={
+                "parameter": "knowledge",
+                "harness_parameter": "learning_knowledge",
+                "changed_in": "0.12.0",
+            },
         )
 
     from agno.learn import LearningMachine, LearningMode

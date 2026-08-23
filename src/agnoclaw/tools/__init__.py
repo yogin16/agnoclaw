@@ -106,6 +106,7 @@ def get_default_tools(
         if workspace_dir is not None
         else Path(cfg.workspace_dir).expanduser().resolve()
     )
+    network_policy_was_materialized = network_policy is None
     if network_policy is None:
         from agnoclaw.runtime.guardrails import RuntimeGuardrails
 
@@ -223,10 +224,26 @@ def get_default_tools(
             if resolved_browser_backend is None:
                 tools.append(BrowserToolkit(network_policy=network_policy))
             else:
+                browser_policy: RuntimeGuardrails | None = network_policy
+                if network_policy_was_materialized and not callable(
+                    getattr(resolved_browser_backend, "set_network_policy", None)
+                ):
+                    # Backends written against the pre-0.12 protocol have no
+                    # policy hook. Keep them constructible with the default
+                    # materialized policy, but say loudly that their requests
+                    # bypass the harness network posture. An explicitly passed
+                    # policy still fails fast inside BrowserToolkit.
+                    logger.warning(
+                        "Custom browser backend %s does not implement "
+                        "set_network_policy(); browser requests bypass the "
+                        "harness network posture until it does.",
+                        type(resolved_browser_backend).__name__,
+                    )
+                    browser_policy = None
                 tools.append(
                     BrowserToolkit(
                         backend=resolved_browser_backend,
-                        network_policy=network_policy,
+                        network_policy=browser_policy,
                     )
                 )
             logger.debug("Browser toolkit enabled")

@@ -7,10 +7,12 @@ import hashlib
 import json
 import re
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
+from ipaddress import ip_address
 from typing import Any
+from urllib.parse import urlsplit
 
 from agno.tools.toolkit import Toolkit
 
@@ -150,7 +152,15 @@ class MCPServerDefinition:
                 retryable=False,
                 details={"server": name},
             )
-        transport = str(value.get("transport", "streamable_http")).strip().lower()
+        raw_transport = value.get("transport")
+        if raw_transport is None and url is not None:
+            # Compatibility default: URL servers historically spoke SSE, and SSE
+            # endpoints conventionally publish a /sse path. Explicit transport
+            # keys always win; only the unset case is inferred.
+            path = urlsplit(url).path.rstrip("/")
+            transport = "sse" if path.endswith("/sse") else "streamable_http"
+        else:
+            transport = str(raw_transport or "streamable_http").strip().lower()
         if command:
             transport = "stdio"
         if transport not in {"stdio", "streamable_http", "sse"}:
@@ -182,24 +192,49 @@ class MCPServerDefinition:
         return dict(value)
 
 
+def _is_loopback_endpoint(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def validate_mcp_server_urls(config: Any, *, workspace_dir: str) -> None:
     """Apply the harness network posture to configured remote MCP endpoints."""
-    guardrails = RuntimeGuardrails(
-        workspace_dir=workspace_dir,
-        enabled=config.guardrails_enabled,
-        path_enabled=False,
-        network_enabled=config.network_enabled,
-        network_enforce_https=config.network_enforce_https,
-        network_allowed_hosts=config.network_allowed_hosts,
-        network_blocked_hosts=config.network_blocked_hosts,
-        network_block_private_hosts=config.network_block_private_hosts,
-        network_block_in_bash=False,
-    )
+
+    def _posture(*, loopback: bool) -> RuntimeGuardrails:
+        return RuntimeGuardrails(
+            workspace_dir=workspace_dir,
+            enabled=config.guardrails_enabled,
+            path_enabled=False,
+            network_enabled=config.network_enabled,
+            network_enforce_https=config.network_enforce_https and not loopback,
+            network_allowed_hosts=config.network_allowed_hosts,
+            network_blocked_hosts=config.network_blocked_hosts,
+            network_block_private_hosts=config.network_block_private_hosts and not loopback,
+            network_block_in_bash=False,
+        )
+
+    guardrails = _posture(loopback=False)
+    loopback_guardrails: RuntimeGuardrails | None = None
     for raw in config.mcp_servers:
         server = MCPServerDefinition.parse(raw)
         if server.url is None:
             continue
-        violations = guardrails.check(
+        active = guardrails
+        if _is_loopback_endpoint(server.url):
+            # Operator-configured loopback endpoints (local MCP bridges such as
+            # http://localhost:3001/sse) are explicit infrastructure choices,
+            # not model-supplied URLs: exempt them from the HTTPS and
+            # private-host posture while explicit blocked-host entries still
+            # apply.
+            if loopback_guardrails is None:
+                loopback_guardrails = _posture(loopback=True)
+            active = loopback_guardrails
+        violations = active.check(
             ToolCallRequest(
                 run_id="mcp-configuration",
                 tool_name="mcp_connect",
@@ -750,7 +785,23 @@ class MCPToolkit(Toolkit):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(self.aconnect())
+            # A synchronous caller has no long-lived loop to own persistent
+            # clients: clients created inside asyncio.run would outlive their
+            # closed loop, bricking every later lifecycle call and leaking
+            # stdio subprocesses. Validate connectivity and discovery, then
+            # close; persistent clients re-establish lazily on the loop that
+            # runs the first governed call.
+            async def probe() -> list[str]:
+                try:
+                    names = await self.aconnect()
+                except BaseException:
+                    with suppress(Exception):
+                        await self.aclose()
+                    raise
+                await self.aclose()
+                return names
+
+            return asyncio.run(probe())
         raise HarnessError(
             code="MCP_ASYNC_CONNECT_REQUIRED",
             category="lifecycle",

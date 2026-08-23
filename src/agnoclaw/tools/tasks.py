@@ -495,6 +495,7 @@ def _build_subagent_tools(
     sandbox_dir: str | Path | None = None,
     sandbox_mode: str | None = None,
     backend: RuntimeBackend | None = None,
+    config=None,
 ) -> list:
     """Build tool instances for a subagent from tool name list."""
     agent_tools: list[Any] = []
@@ -538,7 +539,30 @@ def _build_subagent_tools(
     if "all" in names or "web" in names:
         from agnoclaw.tools.web import WebToolkit
 
-        agent_tools.append(WebToolkit())
+        if config is None:
+            agent_tools.append(WebToolkit())
+        else:
+            # Subagents inherit the parent's configured network posture; a
+            # bare WebToolkit would silently fall back to hard-coded defaults.
+            from agnoclaw.runtime.guardrails import RuntimeGuardrails
+
+            agent_tools.append(
+                WebToolkit(
+                    search_enabled=config.enable_web_search,
+                    fetch_enabled=config.enable_web_fetch,
+                    network_policy=RuntimeGuardrails(
+                        workspace_dir=tool_surface_dir or Path.cwd(),
+                        enabled=config.guardrails_enabled,
+                        path_enabled=False,
+                        network_enabled=config.network_enabled,
+                        network_enforce_https=config.network_enforce_https,
+                        network_allowed_hosts=config.network_allowed_hosts,
+                        network_blocked_hosts=config.network_blocked_hosts,
+                        network_block_private_hosts=config.network_block_private_hosts,
+                        network_block_in_bash=config.network_block_in_bash,
+                    ),
+                )
+            )
     if "all" in names or "files" in names:
         from agnoclaw.tools.files import FilesToolkit
 
@@ -606,6 +630,7 @@ def _run_subagent(
             sandbox_dir=sandbox_dir,
             sandbox_mode=sandbox_mode,
             backend=backend,
+            config=cfg,
         ),
         instructions=instructions,
         event_sink=(parent_runtime.get("event_sink") if isinstance(parent_runtime, dict) else None),
@@ -664,6 +689,7 @@ async def _arun_subagent(
             sandbox_dir=sandbox_dir,
             sandbox_mode=sandbox_mode,
             backend=backend,
+            config=cfg,
         ),
         instructions=instructions,
         event_sink=(parent_runtime.get("event_sink") if isinstance(parent_runtime, dict) else None),
