@@ -8597,8 +8597,15 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
         # revision race re-reads and revalidates against the fresh snapshot: a
         # command that is still legal retries, and one the run has outgrown
         # fails with its honest state-specific error instead of a raw conflict.
+        # The first attempt is deliberately synchronous: an awaiting caller
+        # then commits its control transition before yielding to the worker
+        # task at all, preserving the deterministic pre-dispatch pause/steer
+        # window that existed when every store call blocked the loop.
         for attempt in range(5):
-            snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
+            if attempt == 0:
+                snapshot = store.get_run(run_id)
+            else:
+                snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
             if isinstance(command, Pause) and snapshot.state != RunState.QUEUED:
                 raise HarnessError(
                     code="RUN_PAUSE_SAFE_POINT_UNAVAILABLE",
@@ -8624,13 +8631,19 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 return intent
             expected_revision = snapshot.revision
             try:
-                applied = await self._store_off_loop(
-                    functools.partial(
-                        store.apply_transition,
+                if attempt == 0:
+                    applied = store.apply_transition(
                         transition,
                         expected_revision=expected_revision,
                     )
-                )
+                else:
+                    applied = await self._store_off_loop(
+                        functools.partial(
+                            store.apply_transition,
+                            transition,
+                            expected_revision=expected_revision,
+                        )
+                    )
                 break
             except (RunRevisionConflictError, InvalidRunTransitionError):
                 if attempt == 4:
