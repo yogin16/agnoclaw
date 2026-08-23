@@ -345,7 +345,7 @@ def test_postgres_ci_runs_the_bounded_load_gate() -> None:
     assert "tests/test_postgres_split_brain_authority_probe.py" in failover_commands
     assert "scripts/postgres_split_brain_authority_probe.py" in failover_commands
     assert "--allow-topology-create" in failover_commands
-    assert "--image postgres:17-alpine" in failover_commands
+    assert "--image postgres@sha256:" in failover_commands
     assert "quay.io/coreos/etcd@sha256:" in failover_commands
 
     failover_probe = (ROOT / "scripts" / "postgres_failover_probe.py").read_text(

@@ -78,11 +78,6 @@ jobs:
       - name: Run mypy
         run: uv run mypy src/agnoclaw/ --ignore-missing-imports
 
-      - name: Run stable MCP v2 contracts
-        run: >-
-          uv run --isolated --with-editable '.[dev,mcp]'
-          pytest tests/test_mcp.py -q --tb=short
-
       - name: Build the release artifacts once
         run: uv build --clear
 
@@ -199,9 +194,35 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  mcp-contracts:
+    # This lane resolves unlocked, unhashed dependencies from PyPI, so it runs
+    # in its own job: freshly resolved code must never execute inside the job
+    # that builds and archives the release artifacts.
+    name: Stable MCP v2 contracts
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.9.15"
+
+      - name: Run stable MCP v2 contracts
+        run: >-
+          uv run --isolated --with-editable '.[dev,mcp]'
+          pytest tests/test_mcp.py -q --tb=short
+
   publish:
     name: Publish exact tested artifacts
-    needs: [check, test]
+    needs: [check, test, mcp-contracts]
     if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20

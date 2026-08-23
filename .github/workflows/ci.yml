@@ -210,7 +210,7 @@ jobs:
     timeout-minutes: 45
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
         env:
           POSTGRES_PASSWORD: agnoclaw_test_only
           POSTGRES_DB: agnoclaw_test
@@ -346,7 +346,7 @@ jobs:
         run: >-
           uv run python scripts/postgres_failover_probe.py
           --allow-topology-create
-          --image postgres:17-alpine
+          --image postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
           --timeout 90
           --outage-timeout 1
 
@@ -356,7 +356,7 @@ jobs:
         run: >-
           uv run python scripts/postgres_synchronous_failover_probe.py
           --allow-topology-create
-          --image postgres:17-alpine
+          --image postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
           --timeout 30
           --outage-timeout 1
           --blocked-observation 0.5
@@ -371,7 +371,7 @@ jobs:
         run: >-
           uv run python scripts/postgres_role_rotation_probe.py
           --allow-topology-create
-          --image postgres:17-alpine
+          --image postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
           --timeout 90
           --outage-timeout 1
 
@@ -379,7 +379,7 @@ jobs:
         run: >-
           uv run python scripts/postgres_split_brain_authority_probe.py
           --allow-topology-create
-          --image postgres:17-alpine
+          --image postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
           --etcd-image quay.io/coreos/etcd@sha256:dfd3941bf6ced5fdb700f9b2d98b22b7bca7ceee13aec16224f93ff30d9a59c4
           --timeout 90
           --outage-timeout 1
