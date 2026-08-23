@@ -123,6 +123,29 @@ or turn post-response accounting into a prepaid provider ceiling.
 
 ## Core types
 
+### Dataclasses for kernel records, pydantic at ingress boundaries
+
+The runtime kernel's domain records (intents, snapshots, transitions,
+settlements, scheduler jobs, terminal records) are frozen dataclasses with
+explicit `__post_init__` validation and hand-written `to_dict`/`from_dict`.
+This is deliberate, not drift from Agno's pydantic models:
+
+- kernel records are internally constructed and validated once, fail-closed;
+  per-instantiation pydantic validation on hot store paths buys nothing;
+- idempotency, approvals, and fencing bind digests to canonical JSON of these
+  records, so serialization must stay byte-stable under agnoclaw's control
+  rather than track `model_dump` semantics across pydantic versions;
+- frozen dataclasses give cheap structural immutability and
+  `dataclasses.replace`, the kernel's pervasive update idiom;
+- dataclass definition keeps import time inside the enforced package budget.
+
+Pydantic belongs where untrusted or external data is parsed: configuration
+(`pydantic-settings`), the HTTP lifecycle surface, and any future ingress that
+accepts external JSON. Interop with Agno's pydantic objects happens by
+attribute access at the adapter boundary; kernel records are never subclasses
+of Agno models. Do not migrate kernel records to pydantic without revisiting
+the digest-stability and budget constraints above.
+
 ### `HarnessConfig` and internal runtime spec
 
 Existing public configuration resolves to one immutable, serializable internal
