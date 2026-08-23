@@ -458,3 +458,28 @@ def test_arguments_normalize_to_typed_contract(monkeypatch: pytest.MonkeyPatch) 
         timeout_seconds=45.0,
         outage_timeout_seconds=2.0,
     )
+
+
+def test_resolve_image_pulls_an_uncached_pinned_digest_then_verifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh runner has no cache: a pinned digest pulls once, then verifies."""
+    digest = "postgres@sha256:" + ("f" * 64)
+    calls: list[tuple[str, ...]] = []
+
+    def docker(*arguments: str, timeout: float) -> subprocess.CompletedProcess[str]:
+        del timeout
+        calls.append(arguments)
+        if arguments[:2] == ("image", "inspect") and len(calls) == 1:
+            raise RuntimeError("Docker action 'image' failed")
+        output = digest + "\n" if arguments[:2] == ("image", "inspect") else ""
+        return subprocess.CompletedProcess(arguments, 0, output, "")
+
+    monkeypatch.setattr(probe, "_docker", docker)
+
+    assert probe._resolve_image(digest, timeout=1) == digest
+    assert calls == [
+        ("image", "inspect", "--format", "{{index .RepoDigests 0}}", digest),
+        ("image", "pull", digest),
+        ("image", "inspect", "--format", "{{index .RepoDigests 0}}", digest),
+    ]

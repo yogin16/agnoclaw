@@ -224,21 +224,14 @@ def _image_identity(image: str, *, timeout: float) -> str:
     return identity
 
 
-def _resolve_image(image: str, *, timeout: float) -> str:
-    """Pull the exact allowed tag with bounded retry, then resolve its digest."""
-    if _POSTGRES_DIGEST_RE.fullmatch(image):
-        identity = _image_identity(image, timeout=timeout)
-        if identity != image:
-            raise RuntimeError("cached PostgreSQL image did not match the requested digest")
-        return identity
-    deadline = time.monotonic() + timeout
+def _pull_image_with_retry(image: str, *, deadline: float) -> None:
     for attempt in range(3):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         try:
             _docker("image", "pull", image, timeout=remaining)
-            return _image_identity(image, timeout=max(0.1, deadline - time.monotonic()))
+            return
         except RuntimeError:
             if attempt == 2:
                 raise
@@ -247,6 +240,24 @@ def _resolve_image(image: str, *, timeout: float) -> str:
                 raise
             time.sleep(delay)
     raise RuntimeError("Docker image resolution exceeded its bounded timeout")
+
+
+def _resolve_image(image: str, *, timeout: float) -> str:
+    """Resolve the allowed tag or pinned digest to one immutable content identity."""
+    deadline = time.monotonic() + timeout
+    if _POSTGRES_DIGEST_RE.fullmatch(image):
+        try:
+            identity = _image_identity(image, timeout=timeout)
+        except RuntimeError:
+            # A pinned digest is content-addressed, so pulling it is exactly as
+            # trustworthy as a cached copy — and fresh CI runners have no cache.
+            _pull_image_with_retry(image, deadline=deadline)
+            identity = _image_identity(image, timeout=max(0.1, deadline - time.monotonic()))
+        if identity != image:
+            raise RuntimeError("cached PostgreSQL image did not match the requested digest")
+        return identity
+    _pull_image_with_retry(image, deadline=deadline)
+    return _image_identity(image, timeout=max(0.1, deadline - time.monotonic()))
 
 
 def _single_dsn(*, port: int, password: str, application_name: str) -> str:

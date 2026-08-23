@@ -8585,7 +8585,6 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
 
     async def _command_runtime_run(self, run_id: str, command: RunCommand) -> Any:
         store = self._get_runtime_store()
-        snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
         if isinstance(command, Fork):
             raise HarnessError(
                 code="RUN_FORK_CHECKPOINT_REQUIRED",
@@ -8594,35 +8593,48 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 retryable=False,
                 details={"run_id": run_id},
             )
-        if isinstance(command, Pause) and snapshot.state != RunState.QUEUED:
-            raise HarnessError(
-                code="RUN_PAUSE_SAFE_POINT_UNAVAILABLE",
-                category="lifecycle",
-                message="This run can only pause before provider dispatch.",
-                retryable=False,
-                details={"run_id": run_id, "state": snapshot.state.value},
-            )
-        if isinstance(command, Steer) and snapshot.state not in {
-            RunState.CREATED,
-            RunState.QUEUED,
-        }:
-            raise HarnessError(
-                code="RUN_STEERING_CLOSED",
-                category="lifecycle",
-                message="The run has passed its steering safe point.",
-                retryable=False,
-                details={"run_id": run_id, "state": snapshot.state.value},
-            )
-        intent = command_decision(snapshot, command)
-        transition = intent.transition
-        if transition is None:
-            return intent
-        applied = await self._store_off_loop(
-            lambda: store.apply_transition(
-                transition,
-                expected_revision=snapshot.revision,
-            )
-        )
+        # Off-loop commits interleave with the worker's own transitions, so a
+        # revision race re-reads and revalidates against the fresh snapshot: a
+        # command that is still legal retries, and one the run has outgrown
+        # fails with its honest state-specific error instead of a raw conflict.
+        for attempt in range(5):
+            snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
+            if isinstance(command, Pause) and snapshot.state != RunState.QUEUED:
+                raise HarnessError(
+                    code="RUN_PAUSE_SAFE_POINT_UNAVAILABLE",
+                    category="lifecycle",
+                    message="This run can only pause before provider dispatch.",
+                    retryable=False,
+                    details={"run_id": run_id, "state": snapshot.state.value},
+                )
+            if isinstance(command, Steer) and snapshot.state not in {
+                RunState.CREATED,
+                RunState.QUEUED,
+            }:
+                raise HarnessError(
+                    code="RUN_STEERING_CLOSED",
+                    category="lifecycle",
+                    message="The run has passed its steering safe point.",
+                    retryable=False,
+                    details={"run_id": run_id, "state": snapshot.state.value},
+                )
+            intent = command_decision(snapshot, command)
+            transition = intent.transition
+            if transition is None:
+                return intent
+            expected_revision = snapshot.revision
+            try:
+                applied = await self._store_off_loop(
+                    functools.partial(
+                        store.apply_transition,
+                        transition,
+                        expected_revision=expected_revision,
+                    )
+                )
+                break
+            except (RunRevisionConflictError, InvalidRunTransitionError):
+                if attempt == 4:
+                    raise
         after = applied.lifecycle.after
         if isinstance(command, Pause):
             resume = self._run_resume_events.get(run_id)
@@ -8670,47 +8682,64 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
         runtime_run_lease: _RunGateLease | None = None
         runtime_gate_token: Any = None
 
-        async def _advance(call: Callable[[], Any]) -> Any:
-            """Commit one run-advancing transition, yielding to a concurrent cancel.
+        async def _advance(apply: Callable[[Any], Any], from_snapshot: Any) -> Any:
+            """Commit one run-advancing transition against the live revision.
 
-            Off-loop commits interleave with the cancel path, so a conflict or
-            now-invalid transition is re-read: a run that moved to CANCELLING
-            routes to the cancellation settle instead of a spurious failure.
+            Off-loop commits interleave with control commands, so a conflict or
+            now-invalid transition re-reads: a run that moved to CANCELLING
+            routes to the cancellation settle, and a concurrent
+            steering/control commit retries against the fresh snapshot instead
+            of surfacing a spurious failure.
             """
-            try:
-                return await self._store_off_loop(call)
-            except (RunRevisionConflictError, InvalidRunTransitionError):
-                latest = await self._store_off_loop(lambda: store.get_run(run_id))
-                if latest.state == RunState.CANCELLING:
-                    raise asyncio.CancelledError from None
-                raise
+            current = from_snapshot
+            for attempt in range(5):
+                basis = current
+                try:
+                    return await self._store_off_loop(functools.partial(apply, basis))
+                except (RunRevisionConflictError, InvalidRunTransitionError):
+                    latest = await self._store_off_loop(lambda: store.get_run(run_id))
+                    if latest.state == RunState.CANCELLING:
+                        raise asyncio.CancelledError from None
+                    if latest.terminal or attempt == 4:
+                        raise
+                    current = latest
+            raise AssertionError("unreachable")  # pragma: no cover
 
         try:
             await asyncio.sleep(0)
-            snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
-            if snapshot.state == RunState.PAUSED:
-                await self._run_resume_events[run_id].wait()
+            # A control command (pause/resume/steer/cancel) can commit between
+            # any two of the worker's off-loop store calls; loop on the fresh
+            # snapshot until the run is started or handed to cancellation.
+            while True:
                 snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
-            if snapshot.state == RunState.CANCELLING:
-                self._settle_runtime_cancel(run_id)
-                return
-            if snapshot.state == RunState.QUEUED:
-                start_from = snapshot
-                started = (
-                    await _advance(
-                        lambda: store.apply_transition(
-                            LifecycleTransition(
-                                run_id=run_id,
-                                kind=TransitionKind.START,
-                                transition_id=f"{run_id}:start",
-                            ),
-                            expected_revision=start_from.revision,
-                        )
-                    )
-                ).lifecycle.after
-            elif snapshot.state == RunState.RUNNING:
-                started = snapshot
-            else:
+                if snapshot.state == RunState.PAUSED:
+                    await self._run_resume_events[run_id].wait()
+                    continue
+                if snapshot.state == RunState.CANCELLING:
+                    self._settle_runtime_cancel(run_id)
+                    return
+                if snapshot.state == RunState.RUNNING:
+                    started = snapshot
+                    break
+                if snapshot.state == RunState.QUEUED:
+                    start_from = snapshot
+                    try:
+                        started = (
+                            await self._store_off_loop(
+                                functools.partial(
+                                    store.apply_transition,
+                                    LifecycleTransition(
+                                        run_id=run_id,
+                                        kind=TransitionKind.START,
+                                        transition_id=f"{run_id}:start",
+                                    ),
+                                    expected_revision=start_from.revision,
+                                )
+                            )
+                        ).lifecycle.after
+                        break
+                    except (RunRevisionConflictError, InvalidRunTransitionError):
+                        continue
                 raise HarnessError(
                     code="RUN_WORKER_STATE_INVALID",
                     category="lifecycle",
@@ -8719,14 +8748,15 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                     details={"run_id": run_id, "state": snapshot.state.value},
                 )
             await _advance(
-                lambda: store.apply_transition(
+                lambda snap: store.apply_transition(
                     LifecycleTransition(
                         run_id=run_id,
                         kind=TransitionKind.CLOSE_STEERING,
                         transition_id=f"{run_id}:steering-closed",
                     ),
-                    expected_revision=started.revision,
-                )
+                    expected_revision=snap.revision,
+                ),
+                started,
             )
             message = request["message"]
             steering = request["steering"]
@@ -8892,19 +8922,20 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 )
             self._run_results[run_id] = result
             await _advance(
-                lambda: store.apply_transition(
+                lambda snap: store.apply_transition(
                     LifecycleTransition(
                         run_id=run_id,
                         kind=TransitionKind.COMPLETE,
                         transition_id=f"{run_id}:complete",
                     ),
-                    expected_revision=current.revision,
+                    expected_revision=snap.revision,
                     terminal=TerminalRecord(
                         run_id=run_id,
                         state=RunState.COMPLETED,
                         value=persisted_result,
                     ),
-                )
+                ),
+                current,
             )
         except asyncio.CancelledError:
             self._settle_runtime_cancel_or_unknown(
