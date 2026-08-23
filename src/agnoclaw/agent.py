@@ -3843,7 +3843,7 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                     )
                 except HarnessError as exc:
                     self._raise_agent_run_exception(exc)
-            self._handle_tool_pre_hook(fc=fc, run_context=run_context)
+            self._handle_tool_pre_hook(fc=fc, run_context=run_context, function=function)
             # Expose the active RunContext to custom dispatch adapters for the
             # duration of this tool call (read via get_current_run_context()).
             self._set_active_run_context(fc, run_context)
@@ -4439,7 +4439,7 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 return inner
         return None
 
-    def _handle_tool_pre_hook(self, *, fc, run_context) -> None:
+    def _handle_tool_pre_hook(self, *, fc, run_context, function=None) -> None:
         if fc is None or getattr(fc, "function", None) is None:
             return
 
@@ -4468,7 +4468,12 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                     },
                 )
             capability_binding = self._capability_tool_map.get(tool_name)
-            builtin_spec = builtin_effect(fc.function)
+            # Agno may dispatch a per-run Function copy that drops the declared
+            # spec attribute; the registry Function the hook was attached to is
+            # the durable carrier.
+            builtin_spec = builtin_effect(fc.function) or (
+                builtin_effect(function) if function is not None else None
+            )
             governed_builtin = (
                 builtin_spec is not None and self._active_runtime_run_id.get() is not None
             )

@@ -223,6 +223,11 @@ class HarnessRun:
                 sequence = event.sequence
                 last_activity = monotonic()
                 yield event
+            if batch:
+                # Drain a full page before deciding to stop: a no-follow or
+                # terminal return here would silently truncate runs with more
+                # than one page of persisted events.
+                continue
             snapshot = await self.status()
             if follow is False:
                 return

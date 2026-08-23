@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -25,6 +26,7 @@ from agnoclaw.runtime.tool_ingress import (
     activate_builtin_ingress,
     builtin_effect,
     declare_builtin_effects,
+    restore_builtin_ingress,
     toolkit_functions,
 )
 from agnoclaw.tools.backends import LocalWorkspaceAdapter
@@ -62,7 +64,8 @@ class BuiltinCallingAgent:
             )
             function.pre_hook(agent=self, run_context=run_context, fc=call)
             try:
-                result = await function.entrypoint(**dict(call.arguments or {}))
+                maybe = call.function.entrypoint(**dict(call.arguments or {}))
+                result = await maybe if inspect.isawaitable(maybe) else maybe
                 call.result = result
             except Exception as exc:
                 call.error = str(exc)
@@ -88,7 +91,8 @@ class BuiltinMutatingAgent(BuiltinCallingAgent):
         )
         function.pre_hook(agent=self, run_context=run_context, fc=call)
         try:
-            result = await function.entrypoint(**dict(call.arguments or {}))
+            maybe = call.function.entrypoint(**dict(call.arguments or {}))
+            result = await maybe if inspect.isawaitable(maybe) else maybe
             call.result = result
             return SimpleNamespace(content=result)
         finally:
@@ -107,7 +111,8 @@ class MCPCallingAgent(BuiltinCallingAgent):
         )
         function.pre_hook(agent=self, run_context=run_context, fc=call)
         try:
-            result = await function.entrypoint(**dict(call.arguments or {}))
+            maybe = call.function.entrypoint(**dict(call.arguments or {}))
+            result = await maybe if inspect.isawaitable(maybe) else maybe
             call.result = result
             return result
         finally:
@@ -478,3 +483,31 @@ async def test_cancelled_nonrepeatable_builtin_is_ambiguous_not_replayed(tmp_pat
 
     await harness.aclose()
     store.close()
+
+
+def test_parallel_builtin_activation_keeps_the_shared_function_unmutated() -> None:
+    """Concurrent calls of one tool must never share per-call governance state."""
+
+    async def entry(**_kwargs):
+        return "ok"
+
+    function = Function(name="read_file", entrypoint=entry)
+    declare_builtin_effects([function])
+    harness = SimpleNamespace(_active_runtime_run_id=SimpleNamespace(get=lambda: "run-1"))
+    fc_a = SimpleNamespace(function=function, _agnoclaw_tool_runtime={"parent_step_id": "a"})
+    fc_b = SimpleNamespace(function=function, _agnoclaw_tool_runtime={"parent_step_id": "b"})
+
+    activate_builtin_ingress(function, fc=fc_a, harness=harness)
+    activate_builtin_ingress(function, fc=fc_b, harness=harness)
+
+    # The shared registry Function is untouched; each call owns a distinct copy.
+    assert function.entrypoint is entry
+    assert fc_a.function is not function and fc_b.function is not function
+    assert fc_a.function is not fc_b.function
+    assert fc_a.function.entrypoint is not fc_b.function.entrypoint
+
+    # Restoration order must not matter and must not leak a governed wrapper.
+    restore_builtin_ingress(function, fc=fc_b)
+    restore_builtin_ingress(function, fc=fc_a)
+    assert function.entrypoint is entry
+    assert fc_a.function is function and fc_b.function is function

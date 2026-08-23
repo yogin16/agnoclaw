@@ -104,7 +104,11 @@ def wait_for_model_operation_reconciliation(
         LifecycleTransition(
             run_id=run_id,
             kind=TransitionKind.WAIT_FOR_RECONCILIATION,
-            transition_id=f"{run_id}:wait-reconciliation",
+            # Scope the transition id to the revision being parked: retries of
+            # this park replay idempotently, while a later reconciliation cycle
+            # (new revision after RESUME) must apply a fresh transition instead
+            # of replaying the first cycle's historical decision.
+            transition_id=f"{run_id}:wait-reconciliation:r{snapshot.revision}",
             reason_code="MODEL_OPERATION_OUTCOME_UNKNOWN",
         ),
         expected_revision=snapshot.revision,
