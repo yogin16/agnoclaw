@@ -161,6 +161,28 @@ def test_fire_once_misfire_coalesces_backlog(tmp_path):
     assert backend.claim_due_runs(worker_id="worker-b") == []
 
 
+def test_fire_once_coalesces_within_grace_backlog_too(tmp_path):
+    """Multi-interval lateness inside the grace window fires once, not as a burst."""
+    backend = RuntimeSchedulerBackend(SQLiteRuntimeStore(tmp_path / "runtime.db"))
+    backend.upsert_job(
+        SchedulerJob(
+            name="frequent",
+            schedule="1m",
+            prompt="coalesce me",
+            next_run_at=_past(240),
+            misfire_grace_seconds=300,
+        )
+    )
+
+    first = backend.claim_due_runs(worker_id="worker-a")[0]
+    advanced = backend.get_job("frequent")
+
+    assert advanced is not None
+    assert datetime.fromisoformat(advanced.next_run_at) > datetime.now(UTC)
+    backend.finish_claim(first, status="completed")
+    assert backend.claim_due_runs(worker_id="worker-b") == []
+
+
 def test_concurrency_group_queues_second_job_until_first_settles(tmp_path):
     backend = RuntimeSchedulerBackend(SQLiteRuntimeStore(tmp_path / "runtime.db"))
     backend.upsert_job(_job("a", concurrency_key="serial"))

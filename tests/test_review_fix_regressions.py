@@ -142,3 +142,25 @@ def test_detached_scheduler_settlement_replays_idempotently(tmp_path):
     replayed = store.finish_scheduler_claim(claim, status="detached")
     assert replayed.status == "detached"
     assert replayed.run_id == detached.run_id
+
+
+def test_outbox_availability_uses_the_store_clock(tmp_path):
+    """A future or non-UTC occurred_at must not delay outbox export."""
+    store = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    _running_run(store)
+    store.append_runtime_event(
+        RuntimeEventInput(
+            event_id="evt_future",
+            run_id="run-1",
+            event_type="model.request.started",
+            occurred_at=(datetime.now(UTC) + timedelta(days=365)).isoformat(),
+            attempt_id="run-1:attempt:1",
+            payload={"future": True},
+        ),
+        owner=OWNER,
+    )
+
+    leased = store.lease_outbox(owner="exporter-1", limit=100)
+    assert any(
+        item.event.event_id == "evt_future" for item in leased
+    ), "future occurred_at stranded the outbox row"

@@ -349,6 +349,11 @@ class OperationGateway:
             )
             if authoritative.state is OperationState.SUCCEEDED:
                 return await self._completed_value(authoritative)
+            if authoritative.terminal:
+                # A settled FAILED/CANCELLED/UNKNOWN operation must surface its
+                # terminal (and, for UNKNOWN, reconciliation-required) semantics,
+                # not a retryable in-flight signal.
+                raise OperationTerminalError(authoritative) from exc
             raise OperationInFlightError(authoritative) from exc
         active = dispatching.record
         if cancelled:

@@ -489,3 +489,47 @@ async def test_cancellation_after_external_success_is_durably_unknown(tmp_path):
     assert record.state is OperationState.UNKNOWN
     assert record.settlement is not None
     assert record.settlement.safe_error["code"] == ("OPERATION_CANCELLED_AFTER_EXTERNAL_SUCCESS")
+
+
+@pytest.mark.asyncio
+async def test_settled_terminal_conflict_surfaces_terminal_not_inflight(tmp_path):
+    """A revision conflict against a settled FAILED operation is terminal, not retryable."""
+    store = _store(tmp_path)
+    intent = _intent()
+    stale = store.prepare_operation(intent)
+    assert stale.record.state is OperationState.PLANNED
+
+    def _boom():
+        raise RuntimeError("dispatch failed")
+
+    with pytest.raises(OperationTerminalError):
+        await OperationGateway(store, worker_id="worker-1").execute(intent, _boom)
+    assert store.get_operation(intent.operation_id).state is OperationState.FAILED
+
+    class _StalePrepareStore:
+        def __init__(self, inner, decision):
+            self._inner = inner
+            self._decision = decision
+
+        def prepare_operation(self, _intent):
+            return self._decision
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    # A distinct attempt/fence keeps the mutation id fresh so the contender
+    # reaches the revision CAS (and its conflict handler) rather than the
+    # mutation-identity idempotency check.
+    from dataclasses import replace as _replace
+
+    doctored = _replace(
+        stale,
+        record=_replace(stale.record, dispatch_attempt=5, fence_token=7),
+    )
+    contender = OperationGateway(
+        _StalePrepareStore(store, doctored),
+        worker_id="contender",
+    )
+    with pytest.raises(OperationTerminalError) as caught:
+        await contender.execute(intent, lambda: "must-not-run")
+    assert caught.value.record.state is OperationState.FAILED
