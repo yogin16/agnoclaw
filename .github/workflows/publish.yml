@@ -26,6 +26,7 @@ jobs:
     name: Detect version bump
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       publish: ${{ steps.v.outputs.publish }}
       version: ${{ steps.v.outputs.version }}
@@ -50,6 +51,7 @@ jobs:
     needs: check
     if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -166,7 +168,9 @@ jobs:
           RELEASE_VERSION: ${{ needs.check.outputs.version }}
         run: |
           mkdir -p release-evidence
-          uv export --locked --no-dev --format cyclonedx1.5 \
+          # --all-extras: the published wheel advertises every optional extra,
+          # so the SBOM must describe them, not just the core dependencies.
+          uv export --locked --no-dev --all-extras --format cyclonedx1.5 \
             --output-file "release-evidence/agnoclaw-$RELEASE_VERSION.cdx.json"
           sha256sum dist/* > "release-evidence/agnoclaw-$RELEASE_VERSION.sha256"
           {
@@ -200,6 +204,7 @@ jobs:
     needs: [check, test]
     if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: pypi
     permissions:
       contents: read
@@ -211,9 +216,23 @@ jobs:
           name: agnoclaw-${{ needs.check.outputs.version }}-release
           path: dist
 
+      - name: Restore the release evidence
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: agnoclaw-${{ needs.check.outputs.version }}-evidence
+          path: release-evidence
+
+      - name: Verify restored artifacts against the recorded digests
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: sha256sum --check --strict "release-evidence/agnoclaw-$VERSION.sha256"
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
+          # skip-existing keeps a manual re-run idempotent after a partial
+          # failure between publish and tag; the digest check above ensures a
+          # re-run always carries the same bytes the original run archived.
           skip-existing: true
 
   tag:
@@ -221,6 +240,7 @@ jobs:
     needs: [check, publish]
     if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

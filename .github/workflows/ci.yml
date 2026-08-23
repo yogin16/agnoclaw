@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Supersede in-flight runs for the same ref (a push burst otherwise stacks
+# ~15 Docker-heavy jobs per commit); main keeps every run for release evidence.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
 
@@ -13,6 +19,7 @@ jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +59,7 @@ jobs:
   agno-compatibility:
     name: Agno ${{ matrix.agno-version }} contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +94,7 @@ jobs:
   agno-preview:
     name: Agno 3 preview (quarantined)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     continue-on-error: true
 
     steps:
@@ -115,6 +124,7 @@ jobs:
   agentos-edge:
     name: AgentOS edge / FastAPI ${{ matrix.fastapi-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -142,6 +152,7 @@ jobs:
   mcp-compatibility:
     name: MCP 2026-07-28 / Python SDK v2 contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -164,6 +175,7 @@ jobs:
   dependency-audit:
     name: Locked dependency vulnerability audit
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -195,6 +207,7 @@ jobs:
   postgres-runtime-store:
     name: PostgreSQL RuntimeStore contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:17-alpine
@@ -245,11 +258,18 @@ jobs:
           --max-p95-slowdown-ratio 6
 
       - name: Measure bounded learning evaluation archive performance (advisory)
+        id: archive-benchmark
         continue-on-error: true
         run: >-
           uv run python scripts/benchmark_learning_evaluation_archive.py
           --dsn postgresql://postgres:agnoclaw_test_only@127.0.0.1:5432/agnoclaw_test
           --max-p99-ms 150
+
+      - name: Surface the advisory archive measurement outcome
+        if: steps.archive-benchmark.outcome == 'failure'
+        run: |
+          echo "::warning::Advisory learning-evaluation archive benchmark exceeded its target in this run"
+          echo "⚠️ Advisory gate failed: learning-evaluation archive benchmark (p99/slowdown target missed)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Resolve the exact PostgreSQL service container
         shell: bash
@@ -278,6 +298,7 @@ jobs:
   postgres-fenced-promotion:
     name: PostgreSQL HA recovery resilience
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -330,6 +351,7 @@ jobs:
           --outage-timeout 1
 
       - name: Exercise remote-apply acknowledgement and abrupt-loss recovery (advisory)
+        id: abrupt-loss-drill
         continue-on-error: true
         run: >-
           uv run python scripts/postgres_synchronous_failover_probe.py
@@ -338,6 +360,12 @@ jobs:
           --timeout 30
           --outage-timeout 1
           --blocked-observation 0.5
+
+      - name: Surface the advisory abrupt-loss drill outcome
+        if: steps.abrupt-loss-drill.outcome == 'failure'
+        run: |
+          echo "::warning::Advisory remote-apply abrupt-loss container drill failed in this run"
+          echo "⚠️ Advisory gate failed: remote-apply abrupt-loss recovery drill" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prove old-primary rejoin and round-trip role rotation
         run: >-
@@ -359,6 +387,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -387,6 +416,7 @@ jobs:
   package:
     name: Wheel, sdist, and lean-core budgets
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -487,7 +517,11 @@ jobs:
 
       - name: Smoke-test the default provider extra
         run: |
-          uv pip install --python .venv-wheel/bin/python 'agnoclaw[anthropic]' --find-links dist
+          # Install the built wheel by path: a bare requirement with
+          # --find-links may resolve the already-published PyPI release of the
+          # same version instead of the artifact under test.
+          WHEELS=(dist/*.whl)
+          uv pip install --python .venv-wheel/bin/python "${WHEELS[0]}[anthropic]"
           AGNOCLAW_STORAGE__SQLITE_PATH=.venv-wheel/provider-smoke.db \
             .venv-wheel/bin/python -I -c \
             "from agnoclaw import AgentHarness; h=AgentHarness(include_default_tools=False); assert h; h.close()"
