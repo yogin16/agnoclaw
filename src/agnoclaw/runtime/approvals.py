@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 from .errors import HarnessError
-from .security import AuthorizationGrant, GrantScope
+from .security import AuthorizationGrant, GrantScope, canonical_json_digest
 
 APPROVAL_SCHEMA_VERSION = "1.0"
 
@@ -47,13 +45,7 @@ def _parse_timestamp(value: str, *, field_name: str) -> datetime:
 
 
 def _digest(value: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+    return canonical_json_digest(value)
 
 
 class ApprovalState(StrEnum):

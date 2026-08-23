@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
-import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -27,18 +25,16 @@ from .runtime.hooks import ToolCallRequest
 from .runtime.lifecycle import LifecycleTransition, RunState, TransitionKind
 from .runtime.permissions import PermissionController
 from .runtime.policy import PolicyDecision
-from .runtime.security import AuthorizationGrant, GrantScope, freeze_data, thaw_data
+from .runtime.security import (
+    AuthorizationGrant,
+    GrantScope,
+    canonical_json_digest,
+)
 from .runtime.store import RunOwner, RuntimeStore
 
 
 def _digest(value: Any) -> str:
-    canonical = json.dumps(
-        thaw_data(freeze_data(value)),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+    return canonical_json_digest(value)
 
 
 @dataclass(frozen=True)

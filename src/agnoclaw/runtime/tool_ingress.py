@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import hashlib
 import inspect
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +16,7 @@ from .errors import HarnessError
 from .hooks import ToolCallRequest, ToolCallResult
 from .operations import EffectClass, OperationIntent, OperationKind
 from .policy import PolicyAction
+from .security import canonical_json_digest
 
 
 @dataclass(frozen=True)
@@ -160,8 +159,7 @@ async def _call_entrypoint(entrypoint, args: tuple[Any, ...], kwargs: dict[str, 
 
 
 def _digest(value: Any) -> str:
-    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return f"sha256:{hashlib.sha256(payload.encode()).hexdigest()}"
+    return canonical_json_digest(value)
 
 
 async def _result_policy(harness, *, runtime: dict[str, Any], value: Any) -> Any:

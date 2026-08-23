@@ -147,6 +147,7 @@ from .runtime import (
     HarnessRun,
     IdentityAssertion,
     IdentitySource,
+    InvalidRunTransitionError,
     LifecycleHook,
     LifecycleHookRequest,
     LifecycleTransition,
@@ -176,6 +177,7 @@ from .runtime import (
     RunLeaseClaim,
     RunOwner,
     RunResultEnvelope,
+    RunRevisionConflictError,
     RunSnapshot,
     RunState,
     RuntimeClosePolicy,
@@ -6898,6 +6900,22 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
             "debug_reference": diagnostic.debug_reference,
         }
 
+    async def _store_off_loop(self, call: Callable[[], Any]) -> Any:
+        """Run one synchronous store call off the event loop.
+
+        A cancellation arriving mid-call is re-armed for the next await, so the
+        durable outcome is never torn away from its in-flight control flow —
+        the same delivery point a blocking on-loop call would have had.
+        """
+        value, cancelled, error = await drain_thread_call(call)
+        if cancelled:
+            task = asyncio.current_task()
+            if task is not None:
+                task.cancel()
+        if error is not None:
+            raise error
+        return value
+
     def _runtime_handle(self, run_id: str, *, owner: RunOwner) -> HarnessRun:
         store = self._get_runtime_store()
         snapshot = store.get_run(run_id, owner=owner)
@@ -7053,9 +7071,8 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
         }
         if _child_spec is not None:
             create_options["child_spec"] = _child_spec
-        created = store.create_run(
-            snapshot,
-            **create_options,
+        created = await self._store_off_loop(
+            lambda: store.create_run(snapshot, **create_options)
         )
         authoritative = created.snapshot
         owner = self._runtime_owner(resolved)
@@ -7068,13 +7085,16 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 _presentation.finish()
             return self._runtime_handle(authoritative.run_id, owner=owner)
         if authoritative.state == RunState.CREATED:
-            queued = store.apply_transition(
-                LifecycleTransition(
-                    run_id=authoritative.run_id,
-                    kind=TransitionKind.QUEUE,
-                    transition_id=f"{authoritative.run_id}:queue",
-                ),
-                expected_revision=authoritative.revision,
+            queue_from = authoritative
+            queued = await self._store_off_loop(
+                lambda: store.apply_transition(
+                    LifecycleTransition(
+                        run_id=queue_from.run_id,
+                        kind=TransitionKind.QUEUE,
+                        transition_id=f"{queue_from.run_id}:queue",
+                    ),
+                    expected_revision=queue_from.revision,
+                )
             )
             authoritative = queued.lifecycle.after
         if authoritative.state != RunState.QUEUED:
@@ -8044,34 +8064,46 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                             reason_code=reason_code,
                         )
                     else:
-                        current = store.get_run(run_id, owner=owner)
+                        current = await self._store_off_loop(
+                            lambda: store.get_run(run_id, owner=owner)
+                        )
                         if current.state is RunState.WAITING_FOR_RECONCILIATION:
-                            current = store.apply_transition(
-                                LifecycleTransition(
-                                    run_id=run_id,
-                                    kind=TransitionKind.RESUME,
-                                    transition_id=f"{run_id}:reconciliation-resume",
-                                    reason_code="MODEL_OPERATION_RECONCILED",
-                                ),
-                                expected_revision=current.revision,
+                            resume_from = current
+                            current = (
+                                await self._store_off_loop(
+                                    lambda: store.apply_transition(
+                                        LifecycleTransition(
+                                            run_id=run_id,
+                                            kind=TransitionKind.RESUME,
+                                            transition_id=f"{run_id}:reconciliation-resume",
+                                            reason_code="MODEL_OPERATION_RECONCILED",
+                                        ),
+                                        expected_revision=resume_from.revision,
+                                    )
+                                )
                             ).lifecycle.after
                         self._run_results[run_id] = restored
-                        store.apply_transition(
-                            LifecycleTransition(
-                                run_id=run_id,
-                                kind=TransitionKind.COMPLETE,
-                                transition_id=f"{run_id}:complete",
-                                reason_code="RUN_RECOVERED_FROM_RESULT_ARTIFACT",
-                            ),
-                            expected_revision=current.revision,
-                            terminal=TerminalRecord(
-                                run_id=run_id,
-                                state=RunState.COMPLETED,
-                                value=restored,
-                            ),
+                        complete_from = current
+                        await self._store_off_loop(
+                            lambda: store.apply_transition(
+                                LifecycleTransition(
+                                    run_id=run_id,
+                                    kind=TransitionKind.COMPLETE,
+                                    transition_id=f"{run_id}:complete",
+                                    reason_code="RUN_RECOVERED_FROM_RESULT_ARTIFACT",
+                                ),
+                                expected_revision=complete_from.revision,
+                                terminal=TerminalRecord(
+                                    run_id=run_id,
+                                    state=RunState.COMPLETED,
+                                    value=restored,
+                                ),
+                            )
                         )
             elif restartable_operation:
-                current = store.get_run(run_id, owner=owner)
+                current = await self._store_off_loop(
+                    lambda: store.get_run(run_id, owner=owner)
+                )
                 if child_recovery.terminal_ancestor is not None:
                     self._settle_runtime_cancel(
                         run_id,
@@ -8241,6 +8273,11 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 await asyncio.sleep(0.05)
         return self._run_results.get(run_id)
 
+    # The terminal settle helpers below run synchronously by design: they are
+    # short store sequences invoked from exception/cancellation handlers, where
+    # interleaving fresh cancellation delivery around a threaded hop is riskier
+    # than the brief on-loop commit. Run-advancing calls go through
+    # _store_off_loop instead.
     def _settle_runtime_cancel(
         self,
         run_id: str,
@@ -8514,17 +8551,22 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
 
     async def _cancel_runtime_run(self, run_id: str) -> RunSnapshot:
         store = self._get_runtime_store()
-        snapshot = store.get_run(run_id)
+        snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
         if snapshot.terminal or snapshot.state is RunState.WAITING_FOR_RECONCILIATION:
             return snapshot
         if snapshot.state != RunState.CANCELLING:
-            snapshot = store.apply_transition(
-                LifecycleTransition(
-                    run_id=run_id,
-                    kind=TransitionKind.REQUEST_CANCEL,
-                    transition_id=f"{run_id}:cancel-request",
-                ),
-                expected_revision=snapshot.revision,
+            cancel_from = snapshot
+            snapshot = (
+                await self._store_off_loop(
+                    lambda: store.apply_transition(
+                        LifecycleTransition(
+                            run_id=run_id,
+                            kind=TransitionKind.REQUEST_CANCEL,
+                            transition_id=f"{run_id}:cancel-request",
+                        ),
+                        expected_revision=cancel_from.revision,
+                    )
+                )
             ).lifecycle.after
         resume = self._run_resume_events.get(run_id)
         if resume is not None:
@@ -8536,14 +8578,14 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 await asyncio.shield(task)
             except asyncio.CancelledError:
                 pass
-        current = store.get_run(run_id)
+        current = await self._store_off_loop(lambda: store.get_run(run_id))
         if current.state == RunState.CANCELLING:
             current = self._settle_runtime_cancel(run_id)
         return current
 
     async def _command_runtime_run(self, run_id: str, command: RunCommand) -> Any:
         store = self._get_runtime_store()
-        snapshot = store.get_run(run_id)
+        snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
         if isinstance(command, Fork):
             raise HarnessError(
                 code="RUN_FORK_CHECKPOINT_REQUIRED",
@@ -8572,11 +8614,14 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 details={"run_id": run_id, "state": snapshot.state.value},
             )
         intent = command_decision(snapshot, command)
-        if intent.transition is None:
+        transition = intent.transition
+        if transition is None:
             return intent
-        applied = store.apply_transition(
-            intent.transition,
-            expected_revision=snapshot.revision,
+        applied = await self._store_off_loop(
+            lambda: store.apply_transition(
+                transition,
+                expected_revision=snapshot.revision,
+            )
         )
         after = applied.lifecycle.after
         if isinstance(command, Pause):
@@ -8624,23 +8669,44 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
         request = self._run_requests[run_id]
         runtime_run_lease: _RunGateLease | None = None
         runtime_gate_token: Any = None
+
+        async def _advance(call: Callable[[], Any]) -> Any:
+            """Commit one run-advancing transition, yielding to a concurrent cancel.
+
+            Off-loop commits interleave with the cancel path, so a conflict or
+            now-invalid transition is re-read: a run that moved to CANCELLING
+            routes to the cancellation settle instead of a spurious failure.
+            """
+            try:
+                return await self._store_off_loop(call)
+            except (RunRevisionConflictError, InvalidRunTransitionError):
+                latest = await self._store_off_loop(lambda: store.get_run(run_id))
+                if latest.state == RunState.CANCELLING:
+                    raise asyncio.CancelledError from None
+                raise
+
         try:
             await asyncio.sleep(0)
-            snapshot = store.get_run(run_id)
+            snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
             if snapshot.state == RunState.PAUSED:
                 await self._run_resume_events[run_id].wait()
-                snapshot = store.get_run(run_id)
+                snapshot = await self._store_off_loop(lambda: store.get_run(run_id))
             if snapshot.state == RunState.CANCELLING:
                 self._settle_runtime_cancel(run_id)
                 return
             if snapshot.state == RunState.QUEUED:
-                started = store.apply_transition(
-                    LifecycleTransition(
-                        run_id=run_id,
-                        kind=TransitionKind.START,
-                        transition_id=f"{run_id}:start",
-                    ),
-                    expected_revision=snapshot.revision,
+                start_from = snapshot
+                started = (
+                    await _advance(
+                        lambda: store.apply_transition(
+                            LifecycleTransition(
+                                run_id=run_id,
+                                kind=TransitionKind.START,
+                                transition_id=f"{run_id}:start",
+                            ),
+                            expected_revision=start_from.revision,
+                        )
+                    )
                 ).lifecycle.after
             elif snapshot.state == RunState.RUNNING:
                 started = snapshot
@@ -8652,13 +8718,15 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                     retryable=False,
                     details={"run_id": run_id, "state": snapshot.state.value},
                 )
-            store.apply_transition(
-                LifecycleTransition(
-                    run_id=run_id,
-                    kind=TransitionKind.CLOSE_STEERING,
-                    transition_id=f"{run_id}:steering-closed",
-                ),
-                expected_revision=started.revision,
+            await _advance(
+                lambda: store.apply_transition(
+                    LifecycleTransition(
+                        run_id=run_id,
+                        kind=TransitionKind.CLOSE_STEERING,
+                        transition_id=f"{run_id}:steering-closed",
+                    ),
+                    expected_revision=started.revision,
+                )
             )
             message = request["message"]
             steering = request["steering"]
@@ -8806,7 +8874,7 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 self._active_runtime_checkpoint_resume.reset(resume_token)
                 self._active_durable_model_loop.reset(durable_token)
                 self._active_runtime_run_id.reset(token)
-            current = store.get_run(run_id)
+            current = await self._store_off_loop(lambda: store.get_run(run_id))
             if current.state == RunState.CANCELLING:
                 self._settle_runtime_cancel(run_id)
                 return
@@ -8823,18 +8891,20 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                     result=persisted_result,
                 )
             self._run_results[run_id] = result
-            store.apply_transition(
-                LifecycleTransition(
-                    run_id=run_id,
-                    kind=TransitionKind.COMPLETE,
-                    transition_id=f"{run_id}:complete",
-                ),
-                expected_revision=current.revision,
-                terminal=TerminalRecord(
-                    run_id=run_id,
-                    state=RunState.COMPLETED,
-                    value=persisted_result,
-                ),
+            await _advance(
+                lambda: store.apply_transition(
+                    LifecycleTransition(
+                        run_id=run_id,
+                        kind=TransitionKind.COMPLETE,
+                        transition_id=f"{run_id}:complete",
+                    ),
+                    expected_revision=current.revision,
+                    terminal=TerminalRecord(
+                        run_id=run_id,
+                        state=RunState.COMPLETED,
+                        value=persisted_result,
+                    ),
+                )
             )
         except asyncio.CancelledError:
             self._settle_runtime_cancel_or_unknown(
