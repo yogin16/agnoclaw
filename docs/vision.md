@@ -14,7 +14,7 @@ pack surfaces adapt to the harness; they do not replace it.
 
 ### Developers embedding AI agents
 
-Use agnoclaw as a library in your product. Import `AgentHarness`, configure it with a `HarnessConfig`, and you have a production-ready agent with tools, skills, memory, and workspace — without building any of that plumbing yourself.
+Use agnoclaw as a library in your product. Import `AgentHarness`, configure it with a `HarnessConfig`, and you have a working, governed agent with tools, skills, memory, and workspace — without building any of that plumbing yourself. Per-capability maturity is tracked honestly in `docs/evaluation.md` and `docs/harness-gap-analysis.md`; nothing is labeled stable until its gates pass.
 
 ```python
 from agnoclaw import AgentHarness

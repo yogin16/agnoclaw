@@ -2,7 +2,7 @@
 
 Status: target quality contract
 
-Last reviewed: 2026-08-18
+Last reviewed: 2026-08-23
 
 A world-class harness is defined by repeatable outcomes under failure, scale, and hostile
 inputs—not by the number of tools it exposes. This document specifies the evidence
@@ -618,7 +618,9 @@ uv run python scripts/benchmark_postgres_runtime.py \
 
 The executable oracle uses a random, exactly cleaned prefix and 10,000 terminal rows.
 It requires exact-owner recovery under three noisy workers, 400 completed probe calls,
-no p99 above 25 ms, no p95 slowdown above 4x, four typed overloads when a two-connection
+no p99 above 25 ms, no p95 slowdown above 6x on shared hosted runners (4x remains
+the local target; the CI limit was widened on 2026-08-20 after healthy runners
+measured unstable ratios), four typed overloads when a two-connection
 pool plus two-request queue is saturated, and cool-tenant admission after at most one
 ready hot-tenant turn. Retain the JSON output from three consecutive passes. This gate
 is intentionally narrower than production certification: cross-process weighted
@@ -638,8 +640,12 @@ The gate refuses non-loopback hosts or a database name without `test`. It create
 random exact owners with 10,000 immutable evaluations each, reads two disjoint 50-item
 descending keyset pages for every sample, applies evaluator/reason/mechanism/target/
 safety filters, and runs three concurrent noisy workers against the second owner. It
-fails on an owner leak, duplicate/overlapping cursor page, p99 above 100 ms, slowdown
-above 5x, or inexact cleanup.
+fails on an owner leak, duplicate/overlapping cursor page, p99 above 100 ms locally
+(150 ms on shared hosted runners), slowdown above 5x, or inexact cleanup. Since
+2026-08-20 the hosted CI lane runs this measurement as a non-blocking advisory
+step (`continue-on-error`, surfaced in the run summary) after materially
+different timings on otherwise healthy shared runners; the functional
+archive/index, migration, owner-isolation, and store contracts stay blocking.
 
 The latest PostgreSQL 17 loopback run completed 309 hot queries and passed at 49.17 ms
 noisy p50, 56.64 ms p95, 58.87 ms p99, 60.78 ms maximum, and 0.974x slowdown; cleanup
@@ -714,7 +720,13 @@ exact acknowledged state/event/lease-fence manifest, abrupt primary `SIGKILL`, a
 bounded no-writer interval, explicit promotion with the old primary still fenced, and
 byte-equivalent serialized events plus state through existing/fresh pools under a two-
 connection cap. A false acknowledgement, missing manifest row/event, policy mismatch,
-surviving old primary, connection-bound breach, or resource leak is a hard failure.
+surviving old primary, connection-bound breach, or resource leak is a hard failure
+when the probe runs. Since 2026-08-20 the hosted CI lane runs this container drill
+as a non-blocking advisory step (`continue-on-error`, surfaced in the run summary)
+because GitHub's runner did not restore the published host port after an
+intentional Docker network detach; the pure contracts and the other etcd,
+promotion, role-rotation, and split-brain gates stay blocking, and the drill
+remains a blocking local gate.
 
 Five completed hardened runs passed on 2026-08-12. The partition withheld
 acknowledgement for 0.500–0.504 seconds; rejoin took 0.231–0.294 seconds;
@@ -968,6 +980,10 @@ This is more useful than marking both products “durable: yes.”
 
 ## CI lanes
 
+Only the pull-request and release lanes exist in `.github/workflows/` today
+(`ci.yml`, `publish.yml`); the nightly and weekly lanes below are the target
+structure, not scheduled workflows.
+
 ### Pull request
 
 - unit and contract tests;
@@ -975,6 +991,15 @@ This is more useful than marking both products “durable: yes.”
 - deterministic scenario subset;
 - security static checks;
 - Agno 2.9.0 primary plus affected compatibility fixtures.
+
+### Core coverage gate
+
+The per-commit suite enforces `--cov-fail-under=80` on the core scope defined in
+`pyproject.toml`. Since 2026-08-20 that scope excludes the optional service
+adapters exercised in dedicated dependency/PostgreSQL lanes
+(`runtime/http_lifecycle.py`, `runtime/postgres_store.py`,
+`learning_postgres.py`), so measurements from before and after that change
+(for example 82.61% vs 82.42%) are not directly comparable.
 
 ### Nightly
 

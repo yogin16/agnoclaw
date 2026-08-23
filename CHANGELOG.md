@@ -8,6 +8,61 @@ No changes yet.
 
 ## [0.12.0] - 2026-08-20
 
+### Fixed (pre-release review hardening)
+
+- Governed first-party tool ingress no longer mutates the shared Agno `Function`
+  entrypoint: each call binds its governed wrapper to its own `FunctionCall`
+  Function copy, so Agno's parallel dispatch of one tool can no longer
+  cross-contaminate per-call governance state or leave a stale wrapper installed.
+- Real Agno dispatches per-run Function copies whose object identity and
+  declared-spec attribute differ from the registry Function the ingress hooks
+  were attached to. Before this fix, synchronous builtin entrypoints (the files,
+  bash, and web tools, and model skill activation) therefore silently bypassed
+  the governed operation ledger in real lifecycle runs — the governed wrapper
+  landed on a stale object Agno never dispatched. The pre-hook now resolves the
+  declared spec from the registry Function, and the governed wrapper matches
+  the entrypoint's sync/async identity so Agno's worker-thread lane drives the
+  full governed pipeline to completion instead of skipping it.
+- Reconciliation parking uses a revision-scoped transition id, so a second
+  UNKNOWN-effect cycle after a resume applies a fresh
+  `WAITING_FOR_RECONCILIATION` transition instead of replaying the first cycle's
+  historical decision while the run silently stayed `RUNNING`.
+- PostgreSQL `_mutate_operation` re-checks mutation idempotency after acquiring
+  the row lock, so a concurrent duplicate replays idempotently instead of
+  raising a spurious revision conflict under `READ COMMITTED`.
+- `HarnessRun.events()` drains full pages before honoring `follow=False` or a
+  terminal snapshot, removing the silent 100-event truncation.
+- `finish_scheduler_claim(status="detached")` is idempotent on both SQLite and
+  PostgreSQL: a retry after a committed detach replays instead of raising
+  `SchedulerLeaseLostError`.
+- `classify_agno_version` routes 2.x prereleases (for example `2.9.0a1`,
+  `2.10.0rc1`) to the preview lane instead of classifying them
+  production-stable.
+- Synchronous `MCPToolkit.connect()` validates connectivity and closes instead
+  of pinning persistent clients to a throwaway event loop, which permanently
+  bricked the toolkit and leaked stdio subprocesses.
+- Legacy raw subagents now inherit the parent's configured web network posture
+  instead of a hard-coded default `WebToolkit` policy.
+- The publish workflow verifies restored artifacts against the recorded SHA-256
+  evidence before uploading, and the release SBOM covers every optional extra.
+
+### Changed (compatibility with 0.11 configurations)
+
+- Operator-configured loopback MCP endpoints (for example
+  `http://localhost:3001/sse`) are exempt from the HTTPS and private-host
+  posture during construction; explicit blocked-host entries still apply.
+- URL-configured MCP servers without an explicit `transport` key infer legacy
+  `sse` when the URL path ends in `/sse` (matching pre-0.12 behavior for
+  documented configs); all other URLs default to `streamable_http`. Set
+  `transport` explicitly to override.
+- Custom browser backends without `set_network_policy()` construct with a
+  loud warning under the default materialized policy instead of failing;
+  passing an explicit `network_policy` still fails fast.
+- `AgentHarness(enable_learning=True)` without `learning_knowledge` still fails
+  fast (`LEARNING_KNOWLEDGE_REQUIRED`, a deliberate 0.12 change — before 0.12 it
+  constructed but learned knowledge silently did nothing); the error now names
+  the exact parameter and recipe.
+
 ### Added
 
 - Offline `agnoclaw doctor`, `agnoclaw explain ERROR_CODE`, and redacted mode-0600

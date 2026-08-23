@@ -2,7 +2,7 @@
 
 Status: implementation-aligned audit
 
-Last reviewed: 2026-08-18
+Last reviewed: 2026-08-23
 
 Repository version: 0.12.0 development branch
 
@@ -59,8 +59,10 @@ The immediate blockers are:
    service-wide deletion proof, production migration certification, and measured
    benefit remain; local and PostgreSQL learning/schedule migration lifecycles are
    implemented, with the service path still awaiting production certification;
-5. incomplete skill activation plus MCP authorization/extensions and real-network
-   certification beyond the implemented modern tool ingress;
+5. skill activation now includes the governed `get_skill_instructions`
+   progressive-disclosure tool; scaling evidence for it plus MCP
+   authorization/extensions and real-network certification beyond the implemented
+   modern tool ingress remain;
 6. explicit registered host/plugin/pack capabilities and currently constructed
    first-party tools now route through the effect ledger. Raw caller, plugin, pack,
    context-provider, and caller-supplied MCP surfaces normalize to opaque evidence and
@@ -89,7 +91,7 @@ The immediate blockers are:
 | Files and shell | Rich local tools including background shell and atomic multi-edit | preview | Large outputs, effect metadata, idempotency, and durable task ownership are missing. |
 | Browser/media/notebook | Optional toolkits | experimental | Need capability metadata, artifact handling, security suites, and backend parity. |
 | Web | Multiple search backends and fetch | experimental | Output truncation, provenance/taint, citation evidence, SSRF/DLP hardening needed. |
-| Skills | Discovery, precedence, explicit activation, trust levels, restrictions, fork/dispatch metadata | preview | No actual model-callable activation tool; supply-chain manifest/signing and concurrency-safe scope needed. |
+| Skills | Discovery, precedence, explicit activation, governed `get_skill_instructions` model activation, trust levels, restrictions, fork/dispatch metadata | preview | Tool-discovery scaling evidence (docs/evaluation.md) is unrecorded; supply-chain manifest/signing and concurrency-safe scope needed. |
 | Packs/plugins | Inspect/install/trust/load hooks, governed capability registrations, and fail-closed raw-tool lifecycle containment | experimental | Stronger pinning, checksums, signatures, isolated materialization, and migrations. |
 | MCP tools | SDK 2.0 / `2026-07-28`; two-tool deferred discovery/call; stdio, Streamable HTTP, explicit legacy SSE; pagination, structured results, schema-digest drift checks, run-owned quick/legacy clients, conservative lifecycle settlement | preview | OAuth/enterprise identity, resources/prompts/subscriptions/Apps/Tasks/extensions/MRTR, real-network reference servers, reconnect/expired-auth, and hostile-server/soak gates remain. |
 | Workspace | Hierarchical Markdown context, hooks, memory files | preview | Prompt size, authority/conflict rules, trust boundary, and context manifest needed. |
@@ -265,13 +267,16 @@ in [Personal and session learning administration](learning-administration.md).
 
 ### Skill activation
 
-The registry loads only skill metadata into the catalog and explicit callers can pass
-`skill=` or use CLI/TUI selection. The system prompt can tell the model which skills
-exist, but the model has no `activate_skill`/Skill tool that loads a chosen `SKILL.md`
-inside the active run. Catalog visibility is not automatic activation.
+The registry loads only skill metadata into the catalog. Activation is explicit
+(`skill=` or CLI/TUI selection) or model-driven: the governed
+`get_skill_instructions` progressive-disclosure tool lets the model select one
+eligible local skill and load its bounded `SKILL.md` content inside the active
+governed turn (see `docs/skills.md`). Catalog visibility alone is still not
+activation.
 
-Required change: add a real activation capability following the Agent Skills lifecycle,
-or describe skills as explicitly selected only.
+Remaining change: record the tool-discovery scaling evidence defined in
+`docs/evaluation.md` (10 -> 1,000 tools) before claiming activation quality at
+catalog scale.
 
 ### MCP
 
