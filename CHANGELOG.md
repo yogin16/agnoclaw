@@ -53,12 +53,26 @@ No changes yet.
 - SQLite outbox availability uses the store clock (matching PostgreSQL's
   `CURRENT_TIMESTAMP`), so a caller-supplied non-UTC or future `occurred_at`
   can no longer delay or strand event export.
+- Run-advancing lifecycle store calls (`start`, worker start/steering/complete,
+  cancel, command, recovery resume/complete) now run off the event loop through
+  a cancellation-preserving thread hop, with typed conflict handling that
+  routes a concurrent cancel to the cancellation settle instead of a spurious
+  failure. Terminal exception settles deliberately stay synchronous.
+- Every idempotency/approval/fencing digest now flows through one canonical
+  `canonical_json_digest` in `runtime/security.py` (byte-identical for all
+  previously valid inputs), removing five divergent per-module
+  implementations.
 - The publish workflow verifies restored artifacts against the recorded SHA-256
   evidence before uploading, the release SBOM covers every optional extra, the
   unlocked MCP-contract lane runs in its own job so freshly resolved code never
   executes inside the job that builds and archives the release artifacts, and
   the PostgreSQL and release-journey base images are digest-pinned with
   Dependabot tracking the Dockerfile.
+- The wheel/sdist/extra/journey/etcd release verification steps are one shared
+  composite action (`.github/actions/verify-release-artifacts`) used verbatim
+  by both `ci.yml` and `publish.yml`, so the release path can no longer drift
+  from the CI path; `smoke_core_install.py` refuses `-O`/`-OO` runs that would
+  strip its assertion contracts.
 
 ### Changed (compatibility with 0.11 configurations)
 
