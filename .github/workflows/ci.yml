@@ -442,78 +442,10 @@ jobs:
       - name: Validate package metadata
         run: uv run twine check dist/*
 
-      - name: Install only the built core wheel
-        run: |
-          uv venv .venv-wheel --python 3.13
-          uv pip install --python .venv-wheel/bin/python dist/*.whl
-          uv pip check --python .venv-wheel/bin/python
-
-      - name: Verify the exact wheel with stable MCP v2
-        run: |
-          uv venv .venv-wheel-mcp --python 3.13
-          WHEELS=(dist/*.whl)
-          uv pip install --python .venv-wheel-mcp/bin/python "${WHEELS[0]}[mcp]"
-          uv pip check --python .venv-wheel-mcp/bin/python
-          .venv-wheel-mcp/bin/python -I scripts/smoke_core_install.py
-
-      - name: Verify the exact wheel with AgentOS lifecycle dependencies
-        run: |
-          uv venv .venv-wheel-server --python 3.13
-          WHEELS=(dist/*.whl)
-          uv pip install --python .venv-wheel-server/bin/python "${WHEELS[0]}[server]"
-          uv pip check --python .venv-wheel-server/bin/python
-          .venv-wheel-server/bin/python -I -c "import multipart; from fastapi import FastAPI; from agnoclaw.runtime.http_lifecycle import build_lifecycle_router; app=FastAPI(); app.include_router(build_lifecycle_router({})); assert '/agnoclaw/v1/harnesses/{harness_id}/runs' in app.openapi()['paths']"
-
-      - name: Verify the exact wheel with OpenTelemetry and OTLP/HTTP dependencies
-        shell: bash
-        run: |
-          uv venv .venv-wheel-otel --python 3.13
-          mapfile -t WHEELS < <(find dist -maxdepth 1 -type f -name '*.whl' -print)
-          uv pip install --python .venv-wheel-otel/bin/python "${WHEELS[0]}[otel]"
-          uv pip check --python .venv-wheel-otel/bin/python
-          .venv-wheel-otel/bin/python -I scripts/smoke_otel_install.py
-
-      - name: Verify the exact wheel with PostgreSQL and service-migration CLI dependencies
-        run: |
-          uv venv .venv-wheel-postgres --python 3.13
-          WHEELS=(dist/*.whl)
-          uv pip install --python .venv-wheel-postgres/bin/python "${WHEELS[0]}[postgres,cli,scheduler]"
-          uv pip check --python .venv-wheel-postgres/bin/python
-          .venv-wheel-postgres/bin/python -I -c "from agnoclaw import PostgresRuntimeStore; from agnoclaw.runtime import EtcdGatewayCredentials, EtcdPostgresWriterAuthority, PostgresWriterAuthorityError, PostgresWriterAuthorityGrant, PostgresWriterAuthorityProvider; grant=PostgresWriterAuthorityGrant(authority_id='smoke', server_id='node-a', fence_token=1, remaining_seconds=3); credentials=EtcdGatewayCredentials(endpoint='https://etcd.example:2379', username='reader', password='secret'); assert grant.fence_token == 1 and credentials and PostgresRuntimeStore and EtcdPostgresWriterAuthority and PostgresWriterAuthorityError and PostgresWriterAuthorityProvider"
-          .venv-wheel-postgres/bin/agnoclaw migrate 0.12 service check --help
-          .venv-wheel-postgres/bin/agnoclaw migrate 0.12 service preview --help
-          .venv-wheel-postgres/bin/agnoclaw migrate 0.12 service apply --help
-          .venv-wheel-postgres/bin/agnoclaw migrate 0.12 service verify --help
-          .venv-wheel-postgres/bin/agnoclaw migrate 0.12 service cutover --help
-          .venv-wheel-postgres/bin/agnoclaw migrate 0.12 service rollback --help
-          .venv-wheel-postgres/bin/agnoclaw inspect run --help
-
-      - name: Certify the exact core wheel against secure etcd quorum
-        run: >-
-          .venv-wheel/bin/python -I scripts/etcd_secure_quorum_probe.py
-          --allow-topology-create
-          --image quay.io/coreos/etcd@sha256:dfd3941bf6ced5fdb700f9b2d98b22b7bca7ceee13aec16224f93ff30d9a59c4
-          --timeout 90
-          --lease-ttl 15
-
-      - name: Smoke-test the installed artifact
-        run: .venv-wheel/bin/python -I scripts/smoke_core_install.py
-
-      - name: Prove exact-wheel journeys with OS networking denied
-        run: |
-          docker build --file scripts/release-journey.Dockerfile --tag agnoclaw-release-journey .
-          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev \
-            agnoclaw-release-journey /opt/agnoclaw/public_api_journey_probe.py
-          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev \
-            agnoclaw-release-journey /opt/agnoclaw/agno_stack_restart_probe.py \
-            --allow-process-crash
-
-      - name: Install and smoke-test the built source distribution
-        run: |
-          uv venv .venv-sdist --python 3.13
-          uv pip install --python .venv-sdist/bin/python dist/*.tar.gz
-          uv pip check --python .venv-sdist/bin/python
-          .venv-sdist/bin/python -I scripts/smoke_core_install.py
+      - name: Verify the exact release artifacts
+        uses: ./.github/actions/verify-release-artifacts
+        with:
+          venv-prefix: .venv-verify
 
       - name: Smoke-test the default provider extra
         run: |
@@ -521,7 +453,7 @@ jobs:
           # --find-links may resolve the already-published PyPI release of the
           # same version instead of the artifact under test.
           WHEELS=(dist/*.whl)
-          uv pip install --python .venv-wheel/bin/python "${WHEELS[0]}[anthropic]"
-          AGNOCLAW_STORAGE__SQLITE_PATH=.venv-wheel/provider-smoke.db \
-            .venv-wheel/bin/python -I -c \
+          uv pip install --python .venv-verify-wheel/bin/python "${WHEELS[0]}[anthropic]"
+          AGNOCLAW_STORAGE__SQLITE_PATH=.venv-verify-wheel/provider-smoke.db \
+            .venv-verify-wheel/bin/python -I -c \
             "from agnoclaw import AgentHarness; h=AgentHarness(include_default_tools=False); assert h; h.close()"
