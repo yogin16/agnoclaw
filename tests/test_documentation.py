@@ -245,12 +245,18 @@ def test_exact_wheel_public_journeys_are_release_gates() -> None:
     publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(
         encoding="utf-8"
     )
+    verify_action = (
+        ROOT / ".github" / "actions" / "verify-release-artifacts" / "action.yml"
+    ).read_text(encoding="utf-8")
 
+    # Both lanes run the identical shared verification steps, so the release
+    # path can never silently drift from the CI path.
     for workflow in (ci, publish):
-        assert "scripts/release-journey.Dockerfile" in workflow
-        assert "--network none" in workflow
-        assert "/opt/agnoclaw/public_api_journey_probe.py" in workflow
-        assert "/opt/agnoclaw/agno_stack_restart_probe.py" in workflow
+        assert "uses: ./.github/actions/verify-release-artifacts" in workflow
+    assert "scripts/release-journey.Dockerfile" in verify_action
+    assert "--network none" in verify_action
+    assert "/opt/agnoclaw/public_api_journey_probe.py" in verify_action
+    assert "/opt/agnoclaw/agno_stack_restart_probe.py" in verify_action
     content = dockerfile.read_text(encoding="utf-8")
     assert "dist/*.whl" in content
     assert "USER 65532:65532" in content
@@ -345,7 +351,7 @@ def test_postgres_ci_runs_the_bounded_load_gate() -> None:
     assert "tests/test_postgres_split_brain_authority_probe.py" in failover_commands
     assert "scripts/postgres_split_brain_authority_probe.py" in failover_commands
     assert "--allow-topology-create" in failover_commands
-    assert "--image postgres:17-alpine" in failover_commands
+    assert "--image postgres@sha256:" in failover_commands
     assert "quay.io/coreos/etcd@sha256:" in failover_commands
 
     failover_probe = (ROOT / "scripts" / "postgres_failover_probe.py").read_text(
@@ -358,18 +364,24 @@ def test_postgres_ci_runs_the_bounded_load_gate() -> None:
     assert "owned two-node PostgreSQL gate" in learning_docs
 
     package_steps = workflow["jobs"]["package"]["steps"]
-    package_commands = "\n".join(step.get("run", "") for step in package_steps)
-    assert ".venv-wheel/bin/python -I scripts/etcd_secure_quorum_probe.py" in package_commands
-    assert '"${WHEELS[0]}[otel]"' in package_commands
-    assert ".venv-wheel-otel/bin/python -I scripts/smoke_otel_install.py" in package_commands
-    assert ".venv-wheel-postgres/bin/agnoclaw inspect run --help" in package_commands
+    package_actions = {step.get("uses", "") for step in package_steps}
+    assert "./.github/actions/verify-release-artifacts" in package_actions
+    verify_action = (
+        ROOT / ".github" / "actions" / "verify-release-artifacts" / "action.yml"
+    ).read_text(encoding="utf-8")
+    assert "scripts/etcd_secure_quorum_probe.py" in verify_action
+    assert '"${WHEELS[0]}[otel]"' in verify_action
+    assert "scripts/smoke_otel_install.py" in verify_action
+    assert '"$VENV-postgres/bin/agnoclaw" inspect run --help' in verify_action
 
 
 def test_release_workflow_publishes_the_checked_artifacts() -> None:
     workflow_path = ROOT / ".github" / "workflows" / "publish.yml"
     workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-    check_commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["test"]["steps"])
-    assert ".venv-release-wheel/bin/python -I scripts/etcd_secure_quorum_probe.py" in check_commands
+    verify_action = (
+        ROOT / ".github" / "actions" / "verify-release-artifacts" / "action.yml"
+    ).read_text(encoding="utf-8")
+    assert "scripts/etcd_secure_quorum_probe.py" in verify_action
     test_steps = workflow["jobs"]["test"]["steps"]
     publish_steps = workflow["jobs"]["publish"]["steps"]
     test_commands = "\n".join(step.get("run", "") for step in test_steps)
@@ -387,23 +399,20 @@ def test_release_workflow_publishes_the_checked_artifacts() -> None:
     assert "mypy src/agnoclaw/" in test_commands
     assert "uv build --clear" in test_commands
     assert "twine check dist/*" in test_commands
-    assert "dist/*.whl" in test_commands
-    assert "dist/*.tar.gz" in test_commands
-    assert '"${WHEELS[0]}[postgres,cli,scheduler]"' in test_commands
-    assert '"${WHEELS[0]}[otel]"' in test_commands
-    assert ".venv-release-otel/bin/python -I scripts/smoke_otel_install.py" in test_commands
-    assert ".venv-release-postgres/bin/agnoclaw migrate 0.12 service check --help" in test_commands
-    assert (
-        ".venv-release-postgres/bin/agnoclaw migrate 0.12 service preview --help" in test_commands
-    )
-    for command in ("apply", "verify", "cutover", "rollback"):
+    assert "./.github/actions/verify-release-artifacts" in test_actions
+    assert "dist/*.whl" in verify_action
+    assert "dist/*.tar.gz" in verify_action
+    assert '"${WHEELS[0]}[postgres,cli,scheduler]"' in verify_action
+    assert '"${WHEELS[0]}[otel]"' in verify_action
+    assert "scripts/smoke_otel_install.py" in verify_action
+    for command in ("check", "preview", "apply", "verify", "cutover", "rollback"):
         assert (
-            f".venv-release-postgres/bin/agnoclaw migrate 0.12 service {command} --help"
-            in test_commands
+            f'"$VENV-postgres/bin/agnoclaw" migrate 0.12 service {command} --help'
+            in verify_action
         )
-    assert ".venv-release-postgres/bin/agnoclaw inspect run --help" in test_commands
-    assert "PostgresWriterAuthorityGrant" in test_commands
-    assert "EtcdPostgresWriterAuthority" in test_commands
+    assert '"$VENV-postgres/bin/agnoclaw" inspect run --help' in verify_action
+    assert "PostgresWriterAuthorityGrant" in verify_action
+    assert "EtcdPostgresWriterAuthority" in verify_action
     assert "--format cyclonedx1.5" in test_commands
     assert ".sha256" in test_commands
     assert ".provenance" in test_commands

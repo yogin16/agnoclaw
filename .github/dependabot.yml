@@ -17,3 +17,10 @@ updates:
       python-runtime:
         patterns:
           - "*"
+
+  # Tracks the digest-pinned release-journey base image. The digest-pinned
+  # postgres/etcd images inside workflow run steps are updated manually.
+  - package-ecosystem: "docker"
+    directory: "/scripts"
+    schedule:
+      interval: "weekly"

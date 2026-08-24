@@ -786,7 +786,12 @@ class SQLiteSchedulerStoreMixin:
                 allow_released=True,
             )
             existing = _record_from_row(row)
-            if row["released_at"] is not None and existing.status in _TERMINAL_STATUSES:
+            # A committed detach releases the lease like a terminal settlement,
+            # so its retry must replay idempotently instead of tripping the
+            # expiry check below as a spurious lease loss.
+            if row["released_at"] is not None and (
+                existing.status in _TERMINAL_STATUSES or existing.status == "detached"
+            ):
                 if existing.status != status:
                     raise SchedulerLeaseLostError(run_id=claim.run_id)
                 return existing
@@ -1566,7 +1571,12 @@ class PostgresSchedulerStoreMixin:
                 allow_released=True,
             )
             existing = _record_from_row(row)
-            if row["released_at"] is not None and existing.status in _TERMINAL_STATUSES:
+            # A committed detach releases the lease like a terminal settlement,
+            # so its retry must replay idempotently instead of tripping the
+            # expiry check below as a spurious lease loss.
+            if row["released_at"] is not None and (
+                existing.status in _TERMINAL_STATUSES or existing.status == "detached"
+            ):
                 if existing.status != status:
                     raise SchedulerLeaseLostError(run_id=claim.run_id)
                 return existing

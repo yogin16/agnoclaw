@@ -947,6 +947,15 @@ class RuntimeSchedulerBackend:
                 else scheduled_at
             )
             next_run_at = next_schedule_time(job, after=next_base)
+            if (
+                job.misfire_policy == SchedulerMisfirePolicy.FIRE_ONCE.value
+                and _parse_iso(next_run_at) <= _parse_iso(due_job.observed_at)
+            ):
+                # fire_once promises one late occurrence with old backlog
+                # coalesced. Within-grace lateness spanning several intervals
+                # must not burst-replay each missed occurrence, so re-anchor
+                # the next nominal time past the observation instant.
+                next_run_at = next_schedule_time(job, after=due_job.observed_at)
             occurrence_id = scheduler_occurrence_id(
                 job_name=job.name,
                 job_revision=job.revision,

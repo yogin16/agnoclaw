@@ -11,6 +11,11 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
+# This probe expresses its contracts as assert statements; under -O/-OO they
+# would vanish and the smoke would pass vacuously. Refuse optimized runs.
+if sys.flags.optimize:
+    raise SystemExit("smoke_core_install.py must run without -O/-OO")
+
 from agno.agent import Agent
 from agno.models.base import Model
 from agno.models.response import ModelResponse

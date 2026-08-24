@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import hashlib
 import inspect
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +16,7 @@ from .errors import HarnessError
 from .hooks import ToolCallRequest, ToolCallResult
 from .operations import EffectClass, OperationIntent, OperationKind
 from .policy import PolicyAction
+from .security import canonical_json_digest
 
 
 @dataclass(frozen=True)
@@ -160,8 +159,7 @@ async def _call_entrypoint(entrypoint, args: tuple[Any, ...], kwargs: dict[str, 
 
 
 def _digest(value: Any) -> str:
-    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return f"sha256:{hashlib.sha256(payload.encode()).hexdigest()}"
+    return canonical_json_digest(value)
 
 
 async def _result_policy(harness, *, runtime: dict[str, Any], value: Any) -> Any:
@@ -291,6 +289,8 @@ def activate_builtin_ingress(function: Function, *, fc: Any, harness: Any) -> No
     spec = builtin_effect(function)
     if spec is None or harness._active_runtime_run_id.get() is None:
         return
+    if getattr(fc, _ORIGINAL_ATTRIBUTE, None) is not None:
+        return
     if function.cache_results:
         raise HarnessError(
             code="BUILTIN_AGNO_CACHE_UNSUPPORTED",
@@ -321,18 +321,49 @@ def activate_builtin_ingress(function: Function, *, fc: Any, harness: Any) -> No
             retryable=False,
         )
 
-    @functools.wraps(entrypoint)
-    async def governed(*args, **kwargs):
-        return await _execute(harness, spec, entrypoint, fc, runtime, args, kwargs)
+    # The governed wrapper must keep the original's sync/async identity: Agno
+    # chooses the dispatch lane (event loop vs worker thread) from
+    # iscoroutinefunction(entrypoint) before activation runs.
+    if inspect.iscoroutinefunction(entrypoint):
 
-    setattr(fc, _ORIGINAL_ATTRIBUTE, entrypoint)
-    function.entrypoint = governed
+        @functools.wraps(entrypoint)
+        async def governed(*args, **kwargs):
+            return await _execute(harness, spec, entrypoint, fc, runtime, args, kwargs)
+
+    else:
+
+        @functools.wraps(entrypoint)
+        def governed(*args, **kwargs):
+            coroutine = _execute(harness, spec, entrypoint, fc, runtime, args, kwargs)
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                # Agno routes sync entrypoints to a worker thread with no
+                # running loop; drive the governed pipeline to completion
+                # there. Before 0.12 this lane silently bypassed governance
+                # because the wrapper landed on a stale Function object.
+                return harness._resolve_sync_value(
+                    coroutine,
+                    operation=f"builtin_ingress:{spec.name}",
+                )
+            # A running loop means an async caller dispatched directly; hand
+            # back the coroutine for it to await.
+            return coroutine
+
+    # Agno dispatches parallel calls of one tool against the same registry
+    # Function object and reads `entrypoint` at dispatch time, so the shared
+    # Function must never carry per-call governance state. Bind the governed
+    # wrapper to this call's own Function copy instead.
+    governed_function = function.model_copy()
+    governed_function.entrypoint = governed
+    setattr(fc, _ORIGINAL_ATTRIBUTE, function)
+    fc.function = governed_function
 
 
 def restore_builtin_ingress(function: Function, *, fc: Any) -> None:
-    entrypoint = getattr(fc, _ORIGINAL_ATTRIBUTE, None)
-    if entrypoint is not None:
-        function.entrypoint = entrypoint
+    original = getattr(fc, _ORIGINAL_ATTRIBUTE, None)
+    if original is not None:
+        fc.function = original
         delattr(fc, _ORIGINAL_ATTRIBUTE)
 
 

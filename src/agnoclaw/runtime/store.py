@@ -1678,7 +1678,11 @@ class SQLiteRuntimeStore(SQLiteSchedulerStoreMixin):
                 run_id, sequence, event_json, available_at
             ) VALUES (?, ?, ?, ?)
             """,
-            (run_id, sequence, event_json, occurred_at),
+            # available_at uses the store clock (matching the PostgreSQL
+            # variant's CURRENT_TIMESTAMP): a caller-supplied non-UTC or
+            # future occurred_at must not delay export under the outbox's
+            # lexicographic availability comparison.
+            (run_id, sequence, event_json, _now()),
         )
         return event
 

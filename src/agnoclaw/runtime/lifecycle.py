@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -12,7 +10,7 @@ from typing import Any
 
 from ..commands import Fork, Pause, Respond, Resume, RunCommand, Steer, command_to_dict
 from .errors import HarnessError
-from .security import freeze_data, thaw_data
+from .security import canonical_json_digest, freeze_data, thaw_data
 
 
 class RunState(StrEnum):
@@ -127,13 +125,7 @@ def _require_id(value: str, *, field_name: str) -> str:
 
 
 def _digest(value: Any) -> str:
-    canonical = json.dumps(
-        thaw_data(freeze_data(value)),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+    return canonical_json_digest(value)
 
 
 class RunNotFoundError(HarnessError):

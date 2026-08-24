@@ -110,6 +110,21 @@ def test_mcp_server_requires_exactly_one_transport() -> None:
     assert server_budget.value.code == "MCP_SERVER_BUDGET_EXCEEDED"
 
 
+def test_url_transport_defaults_infer_legacy_sse_paths() -> None:
+    from agnoclaw.tools.mcp import MCPServerDefinition
+
+    sse = MCPServerDefinition.parse({"name": "legacy", "url": "http://localhost:3001/sse"})
+    assert sse.transport == "sse"
+
+    modern = MCPServerDefinition.parse({"name": "modern", "url": "https://example.com/mcp"})
+    assert modern.transport == "streamable_http"
+
+    explicit = MCPServerDefinition.parse(
+        {"name": "pinned", "url": "http://localhost:3001/sse", "transport": "streamable_http"}
+    )
+    assert explicit.transport == "streamable_http"
+
+
 @pytest.mark.asyncio
 async def test_search_then_digest_bound_call_preserves_structured_content() -> None:
     toolkit, client, contexts = _toolkit()
@@ -344,7 +359,7 @@ async def test_sync_connect_fails_cleanly_inside_running_loop() -> None:
 def test_remote_mcp_url_uses_harness_network_posture(tmp_path) -> None:
     denied = HarnessConfig(
         enable_plugins=False,
-        mcp_servers=[{"name": "local", "url": "http://127.0.0.1:8000/mcp"}],
+        mcp_servers=[{"name": "internal", "url": "http://10.0.0.5:8000/mcp"}],
     )
     with patch("agnoclaw.agent.Agent", MagicMock()):
         with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
@@ -360,6 +375,45 @@ def test_remote_mcp_url_uses_harness_network_posture(tmp_path) -> None:
         "NETWORK_HTTPS_REQUIRED",
         "NETWORK_PRIVATE_HOST_BLOCKED",
     }
+
+
+def test_loopback_mcp_url_is_exempt_from_network_posture(tmp_path) -> None:
+    """Operator-configured local MCP bridges keep constructing (pre-0.12 behavior)."""
+    allowed = HarnessConfig(
+        enable_plugins=False,
+        mcp_servers=[
+            {"name": "local_sse", "url": "http://localhost:3001/sse"},
+            {"name": "local_http", "url": "http://127.0.0.1:8000/mcp"},
+        ],
+    )
+    with patch("agnoclaw.agent.Agent", MagicMock()):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            harness = AgentHarness(
+                model="model",
+                provider="custom",
+                workspace_dir=tmp_path / "allowed",
+                config=allowed,
+            )
+    assert harness is not None
+    harness.close()
+
+
+def test_loopback_mcp_url_still_honors_explicit_blocked_hosts(tmp_path) -> None:
+    denied = HarnessConfig(
+        enable_plugins=False,
+        network_blocked_hosts=["localhost"],
+        mcp_servers=[{"name": "local", "url": "http://localhost:3001/sse"}],
+    )
+    with patch("agnoclaw.agent.Agent", MagicMock()):
+        with patch("agnoclaw.agent._make_db", return_value=MagicMock()):
+            with pytest.raises(HarnessError) as caught:
+                AgentHarness(
+                    model="model",
+                    provider="custom",
+                    workspace_dir=tmp_path / "denied",
+                    config=denied,
+                )
+    assert caught.value.code == "MCP_SERVER_URL_DENIED"
 
 
 def test_mcp_search_and_call_fail_closed_when_network_is_disabled(tmp_path) -> None:

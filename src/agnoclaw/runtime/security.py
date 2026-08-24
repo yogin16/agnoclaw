@@ -61,6 +61,24 @@ def _normalized_strings(values: Sequence[str] | None) -> tuple[str, ...]:
     return tuple(sorted({value for value in (values or ()) if value}))
 
 
+def canonical_json_digest(value: Any) -> str:
+    """One canonical sha256 digest over normalized, strictly-finite JSON.
+
+    Every digest that binds idempotency, approvals, or fencing evidence must
+    come from this function so serialization semantics cannot drift between
+    call sites. Freeze/thaw normalizes frozen structures, and rejecting NaN
+    keeps the canonical form total.
+    """
+    canonical = json.dumps(
+        thaw_data(freeze_data(value)),
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
 def freeze_data(value: Any) -> Any:
     """Deep-freeze JSON-like admission data and reject live/opaque objects."""
     if isinstance(value, float) and not isfinite(value):
@@ -777,6 +795,7 @@ __all__ = [
     "SealedContent",
     "TelemetryControl",
     "data_handling_for",
+    "canonical_json_digest",
     "freeze_data",
     "resolve_principal",
     "sanitize_diagnostic_details",

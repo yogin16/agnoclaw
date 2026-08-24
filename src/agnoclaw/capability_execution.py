@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 import json
 import threading
@@ -25,7 +24,12 @@ from .capability_schema import (
 from .runtime.errors import HarnessError
 from .runtime.gateway import OperationExecution, OperationGateway
 from .runtime.operations import OperationKind, OperationRecord
-from .runtime.security import AdmissionEnvelope, freeze_data, thaw_data
+from .runtime.security import (
+    AdmissionEnvelope,
+    canonical_json_digest,
+    freeze_data,
+    thaw_data,
+)
 from .runtime.store import RunOwner
 
 CapabilityInvoker = Callable[[Any, Mapping[str, Any]], Any | Awaitable[Any]]
@@ -54,8 +58,7 @@ def _canonical_json(value: Any) -> str:
 
 
 def _digest(value: Any) -> str:
-    canonical = _canonical_json(value)
-    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+    return canonical_json_digest(value)
 
 
 def _session_digest(session_id: str) -> str:

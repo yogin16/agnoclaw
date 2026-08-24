@@ -498,7 +498,10 @@ execution = await OperationGateway(
 assert execution.record.settlement.result_slot_id == intent.result_slot_id
 ```
 
-Synchronous store calls run off the event loop. Mutation calls finish their database
+Inside the runtime kernel (gateway and operation paths), synchronous store calls run
+off the event loop; some `AgentHarness` lifecycle methods still call synchronous
+stores directly on the loop, retained as post-0.12 robustness work (see
+`docs/releases/v0.12.0-progress.md`). Mutation calls finish their database
 commit even if the calling coroutine is cancelled, closing the race where a thread
 commits after the task has already reported cancellation. Existing in-flight work is
 never stolen implicitly; recovery is a separate explicit action.

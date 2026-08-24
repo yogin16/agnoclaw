@@ -26,6 +26,7 @@ jobs:
     name: Detect version bump
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       publish: ${{ steps.v.outputs.publish }}
       version: ${{ steps.v.outputs.version }}
@@ -50,6 +51,7 @@ jobs:
     needs: check
     if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -76,11 +78,6 @@ jobs:
       - name: Run mypy
         run: uv run mypy src/agnoclaw/ --ignore-missing-imports
 
-      - name: Run stable MCP v2 contracts
-        run: >-
-          uv run --isolated --with-editable '.[dev,mcp]'
-          pytest tests/test_mcp.py -q --tb=short
-
       - name: Build the release artifacts once
         run: uv build --clear
 
@@ -90,83 +87,19 @@ jobs:
       - name: Validate package metadata
         run: uv run twine check dist/*
 
-      - name: Verify the exact wheel in a clean environment
-        run: |
-          uv venv .venv-release-wheel --python 3.13
-          uv pip install --python .venv-release-wheel/bin/python dist/*.whl
-          uv pip check --python .venv-release-wheel/bin/python
-          .venv-release-wheel/bin/python -I scripts/smoke_core_install.py
-
-      - name: Prove exact-wheel journeys with OS networking denied
-        run: |
-          docker build --file scripts/release-journey.Dockerfile --tag agnoclaw-release-journey .
-          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev \
-            agnoclaw-release-journey /opt/agnoclaw/public_api_journey_probe.py
-          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev \
-            agnoclaw-release-journey /opt/agnoclaw/agno_stack_restart_probe.py \
-            --allow-process-crash
-
-      - name: Verify the exact source distribution in a clean environment
-        run: |
-          uv venv .venv-release-sdist --python 3.13
-          uv pip install --python .venv-release-sdist/bin/python dist/*.tar.gz
-          uv pip check --python .venv-release-sdist/bin/python
-          .venv-release-sdist/bin/python -I scripts/smoke_core_install.py
-
-      - name: Verify the exact wheel with stable MCP v2
-        run: |
-          uv venv .venv-release-mcp --python 3.13
-          WHEELS=(dist/*.whl)
-          uv pip install --python .venv-release-mcp/bin/python "${WHEELS[0]}[mcp]"
-          uv pip check --python .venv-release-mcp/bin/python
-          .venv-release-mcp/bin/python -I scripts/smoke_core_install.py
-
-      - name: Verify the exact wheel with AgentOS lifecycle dependencies
-        run: |
-          uv venv .venv-release-server --python 3.13
-          WHEELS=(dist/*.whl)
-          uv pip install --python .venv-release-server/bin/python "${WHEELS[0]}[server]"
-          uv pip check --python .venv-release-server/bin/python
-          .venv-release-server/bin/python -I -c "import multipart; from fastapi import FastAPI; from agnoclaw.runtime.http_lifecycle import build_lifecycle_router; app=FastAPI(); app.include_router(build_lifecycle_router({})); assert '/agnoclaw/v1/harnesses/{harness_id}/runs' in app.openapi()['paths']"
-
-      - name: Verify the exact wheel with OpenTelemetry and OTLP/HTTP dependencies
-        shell: bash
-        run: |
-          uv venv .venv-release-otel --python 3.13
-          mapfile -t WHEELS < <(find dist -maxdepth 1 -type f -name '*.whl' -print)
-          uv pip install --python .venv-release-otel/bin/python "${WHEELS[0]}[otel]"
-          uv pip check --python .venv-release-otel/bin/python
-          .venv-release-otel/bin/python -I scripts/smoke_otel_install.py
-
-      - name: Verify the exact wheel with PostgreSQL and service-migration CLI dependencies
-        run: |
-          uv venv .venv-release-postgres --python 3.13
-          WHEELS=(dist/*.whl)
-          uv pip install --python .venv-release-postgres/bin/python "${WHEELS[0]}[postgres,cli,scheduler]"
-          uv pip check --python .venv-release-postgres/bin/python
-          .venv-release-postgres/bin/python -I -c "from agnoclaw import PostgresRuntimeStore; from agnoclaw.runtime import EtcdGatewayCredentials, EtcdPostgresWriterAuthority, PostgresWriterAuthorityError, PostgresWriterAuthorityGrant, PostgresWriterAuthorityProvider; grant=PostgresWriterAuthorityGrant(authority_id='smoke', server_id='node-a', fence_token=1, remaining_seconds=3); credentials=EtcdGatewayCredentials(endpoint='https://etcd.example:2379', username='reader', password='secret'); assert grant.fence_token == 1 and credentials and PostgresRuntimeStore and EtcdPostgresWriterAuthority and PostgresWriterAuthorityError and PostgresWriterAuthorityProvider"
-          .venv-release-postgres/bin/agnoclaw migrate 0.12 service check --help
-          .venv-release-postgres/bin/agnoclaw migrate 0.12 service preview --help
-          .venv-release-postgres/bin/agnoclaw migrate 0.12 service apply --help
-          .venv-release-postgres/bin/agnoclaw migrate 0.12 service verify --help
-          .venv-release-postgres/bin/agnoclaw migrate 0.12 service cutover --help
-          .venv-release-postgres/bin/agnoclaw migrate 0.12 service rollback --help
-          .venv-release-postgres/bin/agnoclaw inspect run --help
-
-      - name: Certify the exact core wheel against secure etcd quorum
-        run: >-
-          .venv-release-wheel/bin/python -I scripts/etcd_secure_quorum_probe.py
-          --allow-topology-create
-          --image quay.io/coreos/etcd@sha256:dfd3941bf6ced5fdb700f9b2d98b22b7bca7ceee13aec16224f93ff30d9a59c4
-          --timeout 90
-          --lease-ttl 15
+      - name: Verify the exact release artifacts
+        uses: ./.github/actions/verify-release-artifacts
+        with:
+          venv-prefix: .venv-verify
 
       - name: Record SBOM and artifact provenance
         env:
           RELEASE_VERSION: ${{ needs.check.outputs.version }}
         run: |
           mkdir -p release-evidence
-          uv export --locked --no-dev --format cyclonedx1.5 \
+          # --all-extras: the published wheel advertises every optional extra,
+          # so the SBOM must describe them, not just the core dependencies.
+          uv export --locked --no-dev --all-extras --format cyclonedx1.5 \
             --output-file "release-evidence/agnoclaw-$RELEASE_VERSION.cdx.json"
           sha256sum dist/* > "release-evidence/agnoclaw-$RELEASE_VERSION.sha256"
           {
@@ -195,11 +128,38 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  publish:
-    name: Publish exact tested artifacts
-    needs: [check, test]
+  mcp-contracts:
+    # This lane resolves unlocked, unhashed dependencies from PyPI, so it runs
+    # in its own job: freshly resolved code must never execute inside the job
+    # that builds and archives the release artifacts.
+    name: Stable MCP v2 contracts
+    needs: check
     if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.9.15"
+
+      - name: Run stable MCP v2 contracts
+        run: >-
+          uv run --isolated --with-editable '.[dev,mcp]'
+          pytest tests/test_mcp.py -q --tb=short
+
+  publish:
+    name: Publish exact tested artifacts
+    needs: [check, test, mcp-contracts]
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: pypi
     permissions:
       contents: read
@@ -211,9 +171,23 @@ jobs:
           name: agnoclaw-${{ needs.check.outputs.version }}-release
           path: dist
 
+      - name: Restore the release evidence
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: agnoclaw-${{ needs.check.outputs.version }}-evidence
+          path: release-evidence
+
+      - name: Verify restored artifacts against the recorded digests
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: sha256sum --check --strict "release-evidence/agnoclaw-$VERSION.sha256"
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
+          # skip-existing keeps a manual re-run idempotent after a partial
+          # failure between publish and tag; the digest check above ensures a
+          # re-run always carries the same bytes the original run archived.
           skip-existing: true
 
   tag:
@@ -221,6 +195,7 @@ jobs:
     needs: [check, publish]
     if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

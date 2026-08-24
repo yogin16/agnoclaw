@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import types
 from collections.abc import AsyncIterator, Iterable
 from typing import Any
@@ -21,6 +20,7 @@ from .gateway import (
 )
 from .operations import EffectClass, OperationIntent, OperationKind
 from .reconciliation import inspect_run_operation_safety
+from .security import canonical_json_digest
 from .store import RuntimeStore
 from .usage import agno_model_response_settlement_evidence
 
@@ -88,14 +88,7 @@ def _provider_request_value(args: tuple[Any, ...], kwargs: dict[str, Any]) -> di
 
 
 def _digest_value(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    )
-    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+    return canonical_json_digest(value)
 
 
 def provider_request_digest(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:

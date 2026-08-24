@@ -9,8 +9,8 @@ and LangChain DeepAgents' middleware insights — and runs them on Agno's produc
 ## Tech Stack
 
 - **Runtime**: Python 3.11-3.14, UV package manager
-- **Framework**: Agno >=2.6.4,<2.9; lockfile 2.8.7. Agno 2.6.4 is the legacy lane,
-  2.8.7 is the primary stable lane, and 3.0.0a1 is a quarantined preview as of
+- **Framework**: Agno >=2.6.4,<2.10; lockfile 2.9.0. Agno 2.6.4 is the legacy lane,
+  2.9.0 is the primary stable lane, and 3.0.0a1 is a quarantined preview as of
   2026-08-07. Update through `agnoclaw.compat` and the compatibility suite, never by
   assuming minor-version behavior.
 - **CLI**: Click + Rich + prompt-toolkit (optional extra: `agnoclaw[cli]`)
@@ -90,8 +90,10 @@ src/agnoclaw/
 - SKILL.md follows the AgentSkills standard (compatible with ClawHub format)
 - Selective skill injection: only one skill's content loaded per turn
 - Skill discovery: when no skill is active, available descriptions may be injected into
-  the prompt. Full activation is currently explicit (`skill=` or CLI/TUI selection);
-  there is no model-callable activation tool yet.
+  the prompt. Full activation is explicit (`skill=` or CLI/TUI selection) or
+  model-driven through the governed `get_skill_instructions` progressive-disclosure
+  tool, which loads one eligible local skill's bounded content into the same
+  governed turn (see `docs/skills.md`).
 - Skill enforcement: `context: fork` routes to an isolated subagent;
   `command-dispatch: tool` bypasses the LLM but still traverses governed Agno Function
   guardrail/policy/permission/event hooks; plain callables are rejected.

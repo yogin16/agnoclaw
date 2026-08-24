@@ -2199,9 +2199,8 @@ class PostgresRuntimeStore(PostgresSchedulerStoreMixin):
         if not isinstance(mutation_id, str) or not mutation_id.strip():
             raise ValueError("mutation_id must be a non-empty string")
         digest = _operation_mutation_digest(mutation_kind, mutation_payload)
-        with self._transaction() as conn:
-            if owner is not None:
-                self._get_operation_in_transaction(conn, operation_id, owner=owner)
+
+        def _replay_prior_mutation(conn: Any) -> StoredOperationDecision | None:
             prior = conn.execute(
                 """
                 SELECT mutation_digest, record_json, event_json
@@ -2210,24 +2209,39 @@ class PostgresRuntimeStore(PostgresSchedulerStoreMixin):
                 """,
                 (operation_id, mutation_id),
             ).fetchone()
-            if prior is not None:
-                if prior["mutation_digest"] != digest:
-                    raise OperationIdempotencyConflictError(
-                        operation_id=operation_id,
-                        mutation_id=mutation_id,
-                    )
-                return StoredOperationDecision(
-                    record=self._operation_from_json(prior["record_json"]),
-                    event=self._event_from_json(prior["event_json"]),
-                    applied=False,
-                    idempotent=True,
+            if prior is None:
+                return None
+            if prior["mutation_digest"] != digest:
+                raise OperationIdempotencyConflictError(
+                    operation_id=operation_id,
+                    mutation_id=mutation_id,
                 )
+            return StoredOperationDecision(
+                record=self._operation_from_json(prior["record_json"]),
+                event=self._event_from_json(prior["event_json"]),
+                applied=False,
+                idempotent=True,
+            )
+
+        with self._transaction() as conn:
+            if owner is not None:
+                self._get_operation_in_transaction(conn, operation_id, owner=owner)
+            replayed = _replay_prior_mutation(conn)
+            if replayed is not None:
+                return replayed
             current = self._get_operation_in_transaction(
                 conn,
                 operation_id,
                 owner=owner,
                 for_update=True,
             )
+            # Re-check after acquiring the row lock: under READ COMMITTED a
+            # concurrent duplicate may have committed while this transaction
+            # was blocked on FOR UPDATE, and it must replay idempotently here
+            # instead of surfacing as a spurious revision conflict below.
+            replayed = _replay_prior_mutation(conn)
+            if replayed is not None:
+                return replayed
             if current.revision != expected_revision:
                 raise OperationRevisionConflictError(
                     operation_id=operation_id,

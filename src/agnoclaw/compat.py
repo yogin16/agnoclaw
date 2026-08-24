@@ -143,6 +143,11 @@ def classify_agno_version(raw: str) -> AgnoLane:
     minimum = parse_agno_version(MIN_AGNO_VERSION)
     maximum = parse_agno_version(MAX_STABLE_AGNO_VERSION)
     if minimum <= parsed < maximum and parsed.major == 2:
+        if parsed.prerelease:
+            # PEP 440 phase ordering places 2.x prereleases (2.9.0a1,
+            # 2.10.0rc1) inside the window; they are preview builds, never
+            # production-supported lanes.
+            return AgnoLane.PREVIEW
         if parsed.minor == 6:
             return AgnoLane.LEGACY
         return AgnoLane.STABLE
