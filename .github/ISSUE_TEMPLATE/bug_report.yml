@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible agnoclaw defect
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never include credentials, prompts, model outputs, customer data, or private paths.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: agnoclaw, Python, Agno, operating system, and runtime profile
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Smallest code or command sequence that demonstrates the problem
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Paste content-free doctor output or attach a reviewed support bundle

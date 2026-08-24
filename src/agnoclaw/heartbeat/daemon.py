@@ -45,10 +45,20 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from agnoclaw.config import HarnessConfig, get_config
-from agnoclaw.runtime.scheduler import SchedulerBackend, SchedulerJob
+from agnoclaw.runtime.scheduler import (
+    DurableSchedulerBackend,
+    SchedulerBackend,
+    SchedulerJob,
+    SchedulerLeaseLostError,
+    SchedulerRunClaim,
+    is_durable_scheduler_backend,
+    scheduler_idempotency_key,
+)
+from agnoclaw.runtime.store import RuntimeStoreConnectionLostError
 from agnoclaw.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -64,6 +74,14 @@ If something does need attention, describe it clearly so the user can act."""
 HEARTBEAT_OK_TOKEN = "HEARTBEAT_OK"
 
 
+class _IsolatedRunDetached(asyncio.CancelledError):
+    """Carry lifecycle identity when scheduler supervision is cancelled."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__("isolated lifecycle run detached from scheduler supervision")
+        self.run_id = run_id
+
+
 @dataclass
 class CronJob:
     """
@@ -77,8 +95,9 @@ class CronJob:
         skill: Optional skill name to activate for this run.
         isolated: If True, runs in a fresh isolated session (clean slate).
                   If False (default), runs in the main agent's session.
-        model_id: Optional model override for this job (e.g. 'claude-haiku-4-5-20251001').
-        provider: Optional provider override for this job.
+        model_id: Optional compatibility-backend model override. Durable workers reject
+                  per-job overrides and use one immutable worker model.
+        provider: Optional compatibility-backend provider override.
         enabled: Set to False to disable without removing.
     """
 
@@ -90,6 +109,18 @@ class CronJob:
     model_id: str | None = None
     provider: str | None = None
     enabled: bool = True
+    timezone: str = "UTC"
+    max_retries: int = 0
+    retry_delay_seconds: int = 30
+    retry_backoff_multiplier: float = 2.0
+    retry_max_delay_seconds: int = 3_600
+    retry_jitter_seconds: int = 0
+    jitter_seconds: int = 0
+    misfire_policy: str = "fire_once"
+    misfire_grace_seconds: int = 300
+    concurrency_key: str | None = None
+    overlap_policy: str = "queue"
+    learning_consent: bool = False
     _next_run: datetime | None = field(default=None, repr=False, compare=False)
 
     def to_scheduler_job(self) -> SchedulerJob:
@@ -102,6 +133,18 @@ class CronJob:
             model_id=self.model_id,
             provider=self.provider,
             enabled=self.enabled,
+            timezone=self.timezone,
+            max_retries=self.max_retries,
+            retry_delay_seconds=self.retry_delay_seconds,
+            retry_backoff_multiplier=self.retry_backoff_multiplier,
+            retry_max_delay_seconds=self.retry_max_delay_seconds,
+            retry_jitter_seconds=self.retry_jitter_seconds,
+            jitter_seconds=self.jitter_seconds,
+            misfire_policy=self.misfire_policy,
+            misfire_grace_seconds=self.misfire_grace_seconds,
+            concurrency_key=self.concurrency_key,
+            overlap_policy=self.overlap_policy,
+            metadata={"learning_consent": self.learning_consent},
         )
 
     @classmethod
@@ -115,6 +158,18 @@ class CronJob:
             model_id=job.model_id,
             provider=job.provider,
             enabled=job.enabled,
+            timezone=job.timezone,
+            max_retries=job.max_retries,
+            retry_delay_seconds=job.retry_delay_seconds,
+            retry_backoff_multiplier=job.retry_backoff_multiplier,
+            retry_max_delay_seconds=job.retry_max_delay_seconds,
+            retry_jitter_seconds=job.retry_jitter_seconds,
+            jitter_seconds=job.jitter_seconds,
+            misfire_policy=job.misfire_policy,
+            misfire_grace_seconds=job.misfire_grace_seconds,
+            concurrency_key=job.concurrency_key,
+            overlap_policy=job.overlap_policy,
+            learning_consent=job.metadata.get("learning_consent") is True,
         )
 
 
@@ -136,7 +191,10 @@ class HeartbeatDaemon:
         on_alert: Callable[[str], None] | None = None,
         config: HarnessConfig | None = None,
         workspace: Workspace | None = None,
-        scheduler_backend: SchedulerBackend | None = None,
+        scheduler_backend: SchedulerBackend | DurableSchedulerBackend | None = None,
+        scheduler_poll_interval_seconds: float = 1.0,
+        scheduler_claim_limit: int = 10,
+        heartbeat_enabled: bool = True,
     ):
         self._agent = agent
         self._on_alert = on_alert or self._default_alert
@@ -149,10 +207,18 @@ class HeartbeatDaemon:
         self._running = False
         self._cron_jobs: list[CronJob] = []
         self._scheduler_backend = scheduler_backend
+        if scheduler_poll_interval_seconds <= 0:
+            raise ValueError("scheduler_poll_interval_seconds must be positive")
+        if not 1 <= scheduler_claim_limit <= 100:
+            raise ValueError("scheduler_claim_limit must be between 1 and 100")
+        self._scheduler_poll_interval_seconds = scheduler_poll_interval_seconds
+        self._scheduler_claim_limit = scheduler_claim_limit
+        self._heartbeat_enabled = heartbeat_enabled
+        self._scheduler_worker_id = f"scheduler_{uuid4().hex}"
+        self._scheduler_tasks: dict[str, asyncio.Task[Any]] = {}
         if self._scheduler_backend is not None:
             self._cron_jobs.extend(
-                CronJob.from_scheduler_job(job)
-                for job in self._scheduler_backend.list_jobs()
+                CronJob.from_scheduler_job(job) for job in self._scheduler_backend.list_jobs()
             )
 
     def add_cron_job(self, job: CronJob) -> None:
@@ -178,7 +244,8 @@ class HeartbeatDaemon:
             logger.warning(
                 "Cron job '%s': no cron library available to validate schedule '%s'. "
                 "Install croniter: uv add croniter",
-                job.name, job.schedule,
+                job.name,
+                job.schedule,
             )
         self._upsert_cron_job(job)
         if self._scheduler_backend is not None:
@@ -221,6 +288,18 @@ class HeartbeatDaemon:
                 model_id=job.model_id,
                 provider=job.provider,
                 enabled=enabled,
+                timezone=job.timezone,
+                max_retries=job.max_retries,
+                retry_delay_seconds=job.retry_delay_seconds,
+                retry_backoff_multiplier=job.retry_backoff_multiplier,
+                retry_max_delay_seconds=job.retry_max_delay_seconds,
+                retry_jitter_seconds=job.retry_jitter_seconds,
+                jitter_seconds=job.jitter_seconds,
+                misfire_policy=job.misfire_policy,
+                misfire_grace_seconds=job.misfire_grace_seconds,
+                concurrency_key=job.concurrency_key,
+                overlap_policy=job.overlap_policy,
+                learning_consent=job.learning_consent,
             )
             updated = True
             break
@@ -240,21 +319,31 @@ class HeartbeatDaemon:
             return
         self._running = True
 
-        # Start main heartbeat loop
-        self._task = asyncio.create_task(self._run_heartbeat_loop(), name="agnoclaw-heartbeat")
+        if self._heartbeat_enabled:
+            self._task = asyncio.create_task(
+                self._run_heartbeat_loop(),
+                name="agnoclaw-heartbeat",
+            )
 
-        # Start each cron job
-        for job in self._cron_jobs:
-            if job.enabled:
-                task = asyncio.create_task(
-                    self._run_cron_loop(job),
-                    name=f"agnoclaw-cron-{job.name}",
+        if self._durable_scheduler() is not None:
+            self._cron_tasks.append(
+                asyncio.create_task(
+                    self._run_durable_scheduler_loop(),
+                    name="agnoclaw-durable-scheduler",
                 )
-                self._cron_tasks.append(task)
+            )
+        else:
+            for job in self._cron_jobs:
+                if job.enabled:
+                    task = asyncio.create_task(
+                        self._run_cron_loop(job),
+                        name=f"agnoclaw-cron-{job.name}",
+                    )
+                    self._cron_tasks.append(task)
 
         logger.info(
             "Heartbeat daemon started (interval=%dm, active=%s-%s, cron_jobs=%d)",
-            self._config.heartbeat.interval_minutes,
+            self._config.heartbeat.interval_minutes if self._heartbeat_enabled else 0,
             self._config.heartbeat.active_hours_start,
             self._config.heartbeat.active_hours_end,
             len(self._cron_jobs),
@@ -269,7 +358,29 @@ class HeartbeatDaemon:
             if not task.done():
                 task.cancel()
         self._cron_tasks.clear()
+        for task in self._scheduler_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._scheduler_tasks.clear()
         logger.info("Heartbeat daemon stopped")
+
+    async def astop(self) -> None:
+        """Stop the daemon and wait until every owned task has quiesced.
+
+        ``stop()`` remains the synchronous cancellation signal for embedded callers.
+        Process and service owners should await this method before closing the agent
+        or its runtime store so in-flight scheduler cleanup cannot race resource
+        teardown.
+        """
+        tasks = [
+            task
+            for task in [self._task, *self._cron_tasks, *self._scheduler_tasks.values()]
+            if task is not None and task is not asyncio.current_task()
+        ]
+        self.stop()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._task = None
 
     async def run_forever(self) -> None:
         """
@@ -285,7 +396,9 @@ class HeartbeatDaemon:
             while self._running:
                 await asyncio.sleep(1)
         except (KeyboardInterrupt, asyncio.CancelledError):
-            self.stop()
+            pass
+        finally:
+            await self.astop()
 
     async def trigger_now(self) -> str | None:
         """
@@ -305,6 +418,17 @@ class HeartbeatDaemon:
         """
         for job in self._cron_jobs:
             if job.name == job_name:
+                durable = self._durable_scheduler()
+                if durable is not None:
+                    claim = await asyncio.to_thread(
+                        durable.claim_now,
+                        job_name,
+                        worker_id=self._scheduler_worker_id,
+                        lease_seconds=self._scheduler_lease_seconds,
+                    )
+                    if claim is None:
+                        return f"[busy] Cron job '{job_name}' already has an active run."
+                    return await self._run_claimed_job(claim)
                 return await self._run_cron_job(job)
         return f"[error] Cron job '{job_name}' not found."
 
@@ -344,14 +468,236 @@ class HeartbeatDaemon:
             prompt = f"{HEARTBEAT_PROMPT}\n\nYour HEARTBEAT.md:\n{heartbeat_content}"
 
         try:
-            response = await self._agent.arun(prompt)
-            content = str(response.content) if response and response.content else ""
+            from agnoclaw.runtime.first_party import first_party_run
+
+            run = await first_party_run(self._agent, prompt)
+            response = await run.wait()
+            response_content = getattr(response, "content", None)
+            content = str(response_content) if response_content else ""
             return self._filter_response(content)
         except Exception as e:
-            logger.error("Heartbeat run failed: %s", e)
-            return f"[heartbeat error] {e}"
+            code = getattr(e, "code", "HEARTBEAT_RUN_FAILED")
+            logger.error("Heartbeat run failed (code=%s, type=%s)", code, type(e).__name__)
+            return f"[heartbeat error] {code}"
 
     # ── Cron job loop ──────────────────────────────────────────────────────────
+
+    @property
+    def _scheduler_lease_seconds(self) -> int:
+        return max(3, int(getattr(self._config, "runtime_lease_seconds", 30)))
+
+    def _durable_scheduler(self) -> DurableSchedulerBackend | None:
+        backend = self._scheduler_backend
+        if backend is None or not is_durable_scheduler_backend(backend):
+            return None
+        return backend  # type: ignore[return-value]
+
+    async def _run_durable_scheduler_loop(self) -> None:
+        """Poll database-authoritative due work and supervise a bounded task set."""
+        while self._running:
+            try:
+                backend = self._durable_scheduler()
+                if backend is None:  # pragma: no cover - constructor path is stable
+                    return
+                self._scheduler_tasks = {
+                    run_id: task
+                    for run_id, task in self._scheduler_tasks.items()
+                    if not task.done()
+                }
+                capacity = max(0, self._scheduler_claim_limit - len(self._scheduler_tasks))
+                if capacity:
+                    claims = await asyncio.to_thread(
+                        backend.claim_due_runs,
+                        worker_id=self._scheduler_worker_id,
+                        limit=capacity,
+                        lease_seconds=self._scheduler_lease_seconds,
+                    )
+                    for claim in claims:
+                        task = asyncio.create_task(
+                            self._run_claimed_job(claim),
+                            name=f"agnoclaw-schedule:{claim.run_id}",
+                        )
+                        self._scheduler_tasks[claim.run_id] = task
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Durable scheduler poll failed (code=%s, type=%s)",
+                    getattr(exc, "code", "SCHEDULER_POLL_FAILED"),
+                    type(exc).__name__,
+                )
+            await asyncio.sleep(self._scheduler_poll_interval_seconds)
+
+    async def _wait_or_recover_bound_run(self, runtime_run_id: str) -> Any:
+        """Observe a bound run, then use the lifecycle's fenced recovery path."""
+        run = self._agent.get_run(runtime_run_id)
+        interval = min(5.0, self._scheduler_poll_interval_seconds)
+        while True:
+            try:
+                return await run.wait(timeout=interval)
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                pass
+            except Exception as exc:
+                error_code = getattr(exc, "code", None)
+                if error_code == "RUN_RECONCILIATION_REQUIRED":
+                    raise
+                if error_code != "RUN_WAIT_INCOMPLETE":
+                    raise
+            try:
+                run = await self._agent.recover_run(runtime_run_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if getattr(exc, "code", None) != "RUNTIME_LEASE_UNAVAILABLE":
+                    raise
+                await asyncio.sleep(interval)
+
+    async def _renew_scheduler_claim(
+        self,
+        backend: DurableSchedulerBackend,
+        claim: SchedulerRunClaim,
+        execution: asyncio.Task[Any],
+    ) -> None:
+        current = claim
+        interval = min(
+            float(getattr(self._config, "runtime_lease_renew_interval_seconds", 10.0)),
+            self._scheduler_lease_seconds / 3,
+        )
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                current = await asyncio.to_thread(
+                    backend.renew_claim,
+                    current,
+                    lease_seconds=self._scheduler_lease_seconds,
+                )
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            execution.cancel()
+
+    @staticmethod
+    async def _release_scheduler_claim_safely(
+        backend: DurableSchedulerBackend,
+        claim: SchedulerRunClaim,
+    ) -> None:
+        try:
+            await asyncio.to_thread(backend.release_claim, claim)
+        except (SchedulerLeaseLostError, RuntimeStoreConnectionLostError):
+            pass
+
+    async def _run_claimed_job(self, claim: SchedulerRunClaim) -> str | None:
+        backend = self._durable_scheduler()
+        if backend is None:  # pragma: no cover - only invoked from the durable path
+            return None
+        execution = asyncio.current_task()
+        if execution is None:  # pragma: no cover - asyncio always owns this coroutine
+            raise RuntimeError("durable scheduler execution requires an asyncio task")
+        heartbeat = asyncio.create_task(
+            self._renew_scheduler_claim(backend, claim, execution),
+            name=f"agnoclaw-schedule-lease:{claim.run_id}",
+        )
+        current = claim
+        lifecycle_admitted = current.record.runtime_run_id is not None
+        lifecycle_settled = False
+        try:
+            if current.record.runtime_run_id:
+                result = await self._wait_or_recover_bound_run(
+                    current.record.runtime_run_id
+                )
+            else:
+                job = CronJob.from_scheduler_job(current.job)
+                metadata = self._scheduler_metadata(
+                    job,
+                    schedule_run_id=current.run_id,
+                    scheduled_at=current.record.scheduled_at,
+                    attempt=current.record.attempt,
+                    fence_token=current.fence_token,
+                )
+                run = await self._agent.start(
+                    job.prompt,
+                    idempotency_key=scheduler_idempotency_key(current.record),
+                    session_id=(
+                        f"schedule:{current.record.occurrence_id}" if job.isolated else None
+                    ),
+                    skill=job.skill,
+                    metadata=metadata,
+                    learning_consent=job.learning_consent,
+                )
+                if run.run_id is None:  # pragma: no cover - AgentHarness.start invariant
+                    raise RuntimeError("durable scheduler received a run without identity")
+                lifecycle_admitted = True
+                current = await asyncio.to_thread(
+                    backend.bind_runtime_run,
+                    current,
+                    runtime_run_id=run.run_id,
+                )
+                result = await run.wait()
+            lifecycle_settled = True
+            content = str(getattr(result, "content", result) or "")
+            await asyncio.to_thread(
+                backend.finish_claim,
+                current,
+                status="completed",
+                output=content,
+            )
+            return content or None
+        except asyncio.CancelledError:
+            await self._release_scheduler_claim_safely(backend, current)
+            raise
+        except Exception as exc:
+            error_code = getattr(exc, "code", "SCHEDULER_RUN_FAILED")
+            if isinstance(exc, RuntimeStoreConnectionLostError) or (
+                lifecycle_admitted
+                and (
+                    lifecycle_settled
+                    or isinstance(exc, SchedulerLeaseLostError)
+                    or error_code in {
+                        "RUN_RECONCILIATION_REQUIRED",
+                        "RUN_WAIT_INCOMPLETE",
+                    }
+                )
+            ):
+                await self._release_scheduler_claim_safely(backend, current)
+                return None
+            try:
+                await asyncio.to_thread(
+                    backend.finish_claim,
+                    current,
+                    status=("failed" if getattr(exc, "retryable", False) else "dead_lettered"),
+                    error=str(error_code),
+                )
+            except (SchedulerLeaseLostError, RuntimeStoreConnectionLostError):
+                pass
+            return None
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+
+    @staticmethod
+    def _scheduler_metadata(
+        job: CronJob,
+        *,
+        schedule_run_id: str | None,
+        scheduled_at: str | None = None,
+        attempt: int | None = None,
+        fence_token: int | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "scheduler": {
+                "schedule_id": job.name,
+                "schedule_run_id": schedule_run_id,
+                "schedule_name": job.name,
+                "scheduled_at": scheduled_at,
+                "attempt": attempt,
+                "fence_token": fence_token,
+            }
+        }
 
     async def _run_cron_loop(self, job: CronJob) -> None:
         """Loop for a single cron job — waits for next scheduled time then fires."""
@@ -374,44 +720,82 @@ class HeartbeatDaemon:
 
     async def _run_cron_job(self, job: CronJob) -> str | None:
         """Execute a single cron job run."""
+        from agnoclaw.runtime.first_party import first_party_run
+
         prompt = job.prompt
         schedule_run = None
-        if self._scheduler_backend is not None:
-            schedule_run = self._scheduler_backend.record_run_start(
+        runtime_run_id: str | None = None
+        legacy_backend = (
+            cast(SchedulerBackend, self._scheduler_backend)
+            if self._scheduler_backend is not None
+            and self._durable_scheduler() is None
+            else None
+        )
+        if legacy_backend is not None:
+            schedule_run = legacy_backend.record_run_start(
                 job.name,
                 metadata={"schedule": job.schedule, "isolated": job.isolated},
             )
-        metadata = {
-            "scheduler": {
-                "schedule_id": job.name,
-                "schedule_run_id": schedule_run.run_id if schedule_run else None,
-                "schedule_name": job.name,
-            }
-        }
+        metadata = self._scheduler_metadata(
+            job,
+            schedule_run_id=schedule_run.run_id if schedule_run else None,
+        )
 
         try:
             if job.isolated:
                 # Isolated: fresh agent session — no prior context
-                result = await self._run_isolated(job, prompt, metadata=metadata)
+                run, result = await self._run_isolated(job, prompt, metadata=metadata)
+                runtime_run_id = run.run_id
             else:
                 # Main session: run on the shared agent (has workspace + history)
-                result = await self._agent.arun(prompt, skill=job.skill, metadata=metadata)
+                run_options: dict[str, Any] = {
+                    "skill": job.skill,
+                    "metadata": metadata,
+                }
+                if job.learning_consent:
+                    run_options["learning_consent"] = True
+                run = await first_party_run(
+                    self._agent,
+                    prompt,
+                    **run_options,
+                )
+                runtime_run_id = run.run_id
+                result = await run.wait()
 
-            content = str(result.content) if result and result.content else ""
-            if schedule_run is not None and self._scheduler_backend is not None:
-                self._scheduler_backend.record_run_finish(
+            result_content = getattr(result, "content", None)
+            content = str(result_content) if result_content else ""
+            if schedule_run is not None and legacy_backend is not None:
+                legacy_backend.record_run_finish(
                     schedule_run.run_id,
                     status="completed",
                     output=content,
+                    metadata={"runtime_run_id": runtime_run_id} if runtime_run_id else None,
                 )
             return content if content else None
+        except asyncio.CancelledError as exc:
+            runtime_run_id = getattr(exc, "run_id", runtime_run_id)
+            if schedule_run is not None and legacy_backend is not None:
+                legacy_backend.record_run_finish(
+                    schedule_run.run_id,
+                    status="detached" if runtime_run_id else "cancelled",
+                    error="SCHEDULER_EXECUTION_DETACHED" if runtime_run_id else "RUN_CANCELLED",
+                    metadata={"runtime_run_id": runtime_run_id} if runtime_run_id else None,
+                )
+            raise
         except Exception as e:
-            logger.error("Cron job '%s' failed: %s", job.name, e)
-            if schedule_run is not None and self._scheduler_backend is not None:
-                self._scheduler_backend.record_run_finish(
+            code = getattr(e, "code", "SCHEDULER_RUN_FAILED")
+            logger.error(
+                "Cron job '%s' failed (code=%s, type=%s)",
+                job.name,
+                code,
+                type(e).__name__,
+            )
+            if schedule_run is not None and legacy_backend is not None:
+                legacy_backend.record_run_finish(
                     schedule_run.run_id,
                     status="failed",
-                    error=str(e),
+                    error=str(code),
+                    metadata={"runtime_run_id": runtime_run_id} if runtime_run_id else None,
                 )
             return None
 
@@ -421,9 +805,10 @@ class HeartbeatDaemon:
         prompt: str,
         *,
         metadata: dict | None = None,
-    ) -> object:
-        """Run a cron job in a fresh isolated session."""
+    ) -> tuple[Any, Any]:
+        """Run a cron job in a fresh owned harness and close it after settlement."""
         from agnoclaw.agent import AgentHarness
+        from agnoclaw.runtime.first_party import first_party_run
 
         cfg = self._config
         model_id = job.model_id or cfg.heartbeat.model or cfg.default_model
@@ -431,6 +816,7 @@ class HeartbeatDaemon:
 
         # Build an isolated AgentHarness (not raw Agent) so skills work
         from agnoclaw.agent import _resolve_model
+
         model_str = _resolve_model(model_id, provider, cfg)
         isolated = AgentHarness(
             model=model_str,
@@ -440,7 +826,33 @@ class HeartbeatDaemon:
             ),
             config=cfg,
         )
-        return await isolated.arun(prompt, skill=job.skill, metadata=metadata)
+        run = None
+        closed = False
+        try:
+            run_options: dict[str, Any] = {
+                "skill": job.skill,
+                "metadata": metadata,
+            }
+            if job.learning_consent:
+                run_options["learning_consent"] = True
+            run = await first_party_run(
+                isolated,
+                prompt,
+                **run_options,
+            )
+            result = await run.wait()
+            return run, result
+        except asyncio.CancelledError:
+            if run is not None and run.run_id is not None:
+                await isolated.aclose(policy="detach")
+                closed = True
+                raise _IsolatedRunDetached(run.run_id) from None
+            await isolated.aclose(policy="cancel")
+            closed = True
+            raise
+        finally:
+            if not closed:
+                await isolated.aclose()
 
     # ── Schedule parsing ───────────────────────────────────────────────────────
 
@@ -460,8 +872,9 @@ class HeartbeatDaemon:
         # ── Interval string parsing ──────────────────────────────────────────
         # Supports: 30m, 1h, 6h, 2h30m, 45s, 1h30m
         import re
+
         interval_pattern = re.compile(
-            r'^(?:(?P<hours>\d+)h)?(?:(?P<minutes>\d+)m)?(?:(?P<seconds>\d+)s)?$',
+            r"^(?:(?P<hours>\d+)h)?(?:(?P<minutes>\d+)m)?(?:(?P<seconds>\d+)s)?$",
             re.IGNORECASE,
         )
         m = interval_pattern.match(schedule)
@@ -479,21 +892,29 @@ class HeartbeatDaemon:
         # Try croniter if available, else fall back to cronsim
         try:
             from croniter import croniter
-            now = datetime.now()
-            ci = croniter(schedule, now)
-            next_dt = ci.get_next(datetime)
-            return max(0.0, (next_dt - now).total_seconds())
         except ImportError:
             pass
+        else:
+            now = datetime.now()
+            try:
+                ci = croniter(schedule, now)
+                next_dt = ci.get_next(datetime)
+            except ValueError:
+                return -1.0
+            return max(0.0, (next_dt - now).total_seconds())
 
         try:
             from cronsim import CronSim
-            now = datetime.now()
-            sim = CronSim(schedule, now)
-            next_dt = next(sim)
-            return max(0.0, (next_dt - now).total_seconds())
         except ImportError:
             pass
+        else:
+            now = datetime.now()
+            try:
+                sim = CronSim(schedule, now)
+                next_dt = next(sim)
+            except (StopIteration, ValueError):
+                return -1.0
+            return max(0.0, (next_dt - now).total_seconds())
 
         logger.warning(
             "No cron library found for expression '%s'. "

@@ -20,10 +20,11 @@ import tempfile
 from pathlib import Path
 
 from _utils import detect_model
+
 from agnoclaw.tools.tasks import ProgressToolkit
 
-
 # ── Direct toolkit usage (no agent required) ──────────────────────────────────
+
 
 def demo_features_checklist(project_dir: str) -> None:
     """Show the full features.md lifecycle: write → update → read."""
@@ -147,6 +148,6 @@ if __name__ == "__main__":
         # (uncomment to make a real API call)
         # demo_with_agent(project_dir)
 
-        print(f"\nFiles created:")
+        print("\nFiles created:")
         for f in Path(project_dir).iterdir():
             print(f"  {f.name}: {f.stat().st_size} bytes")

@@ -61,6 +61,8 @@ celerybeat.pid
 *.sage.py
 .env
 .venv
+.venv-*/
+/.gstack/
 env/
 venv/
 ENV/

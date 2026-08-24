@@ -1,3 +1,4 @@
+from .agno import AgnoClawSkills
 from .backends import (
     AutoApproveSkillInstallApprover,
     CommandExecutorSkillRuntimeBackend,
@@ -9,9 +10,10 @@ from .backends import (
 )
 from .hub import ClawHubClient, HubSkillDetail, HubSkillInfo
 from .loader import Skill, SkillMeta, load_skill_from_path
-from .registry import SkillRegistry
+from .registry import ModelSkillActivation, ModelSkillActivationError, SkillRegistry
 
 __all__ = [
+    "AgnoClawSkills",
     "AutoApproveSkillInstallApprover",
     "ClawHubClient",
     "CommandExecutorSkillRuntimeBackend",
@@ -19,6 +21,8 @@ __all__ = [
     "HubSkillInfo",
     "InteractiveSkillInstallApprover",
     "LocalSkillRuntimeBackend",
+    "ModelSkillActivation",
+    "ModelSkillActivationError",
     "Skill",
     "SkillInstallApprover",
     "SkillInstallResult",

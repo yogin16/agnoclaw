@@ -8,19 +8,27 @@ and LangChain DeepAgents' middleware insights — and runs them on Agno's produc
 
 ## Tech Stack
 
-- **Runtime**: Python 3.12, UV package manager
-- **Framework**: Agno v2.5.x (`pip install agno`)
+- **Runtime**: Python 3.11-3.14, UV package manager
+- **Framework**: Agno >=2.6.4,<2.9; lockfile 2.8.7. Agno 2.6.4 is the legacy lane,
+  2.8.7 is the primary stable lane, and 3.0.0a1 is a quarantined preview as of
+  2026-08-07. Update through `agnoclaw.compat` and the compatibility suite, never by
+  assuming minor-version behavior.
 - **CLI**: Click + Rich + prompt-toolkit (optional extra: `agnoclaw[cli]`)
 - **TUI**: Textual >= 0.85 (optional extra: `agnoclaw[tui]`)
 - **Storage**: SQLite (dev), PostgreSQL (prod) — via Agno's `SqliteDb` / `PostgresDb`
 - **Scheduling**: asyncio (heartbeat daemon + cron jobs)
-- **Frontmatter**: python-frontmatter (SKILL.md parsing)
+- **Frontmatter**: safe PyYAML parsing with an agnoclaw-owned delimiter reader
 
 ## Package Layout
 
 ```
 src/agnoclaw/
 ├── agent.py          # AgentHarness — main class, wraps Agno Agent
+├── capabilities.py   # Immutable capability descriptor and bounded registry
+├── capability_execution.py # Governed materialization and operation dispatch
+├── capability_approval.py # Durable exact approval coordination
+├── capability_runtime.py # Policy/approval/lease/effect composition for AgentHarness
+├── compat.py         # Central Agno version/capability compatibility boundary
 ├── workspace.py      # Workspace: hierarchical (global → project → workspace)
 ├── memory.py         # Memory hierarchy loader (AGENTS.md, SOUL.md, USER.md, MEMORY.md)
 ├── config.py         # Settings via pydantic-settings + TOML
@@ -47,7 +55,16 @@ src/agnoclaw/
 │   └── hub.py        # ClawHubClient — HTTP client for ClawHub skill registry
 ├── heartbeat/
 │   └── daemon.py     # asyncio-based HeartbeatDaemon + CronJob scheduler
-├── runtime/          # v0.2 runtime contracts (hooks, policy, events, guardrails)
+├── runtime/          # Runtime kernel contracts and transactional authorities
+│   ├── lifecycle.py  # Versioned run state/reducer
+│   ├── operations.py # Effect intent/settlement domain
+│   ├── gateway.py    # Async-first fenced OperationGateway
+│   ├── store.py      # RuntimeStore protocol + SQLite authority
+│   ├── postgres_store.py # Bounded PostgreSQL service authority
+│   ├── leases.py     # Run/session execution ownership and fences
+│   ├── artifacts.py  # Scoped content bytes, integrity, paging, encryption seam
+│   ├── approvals.py  # Immutable request/decision/approval lifecycle domain
+│   ├── security.py   # Admission, authority, grants, labels, safe diagnostics
 │   ├── hooks.py      # PreRunHook, PostRunHook
 │   ├── policy.py     # PolicyEngine, PolicyDecision
 │   ├── events.py     # EventSink (observability)
@@ -72,13 +89,36 @@ src/agnoclaw/
 - System prompt is assembled from sections, with memory files injected last
 - SKILL.md follows the AgentSkills standard (compatible with ClawHub format)
 - Selective skill injection: only one skill's content loaded per turn
-- Auto-skill selection: when no skill is active, available skill descriptions are injected into the system prompt so the model can self-select relevant skills
-- Skill enforcement: `context: fork` routes to isolated subagent; `command-dispatch: tool` bypasses LLM
+- Skill discovery: when no skill is active, available descriptions may be injected into
+  the prompt. Full activation is currently explicit (`skill=` or CLI/TUI selection);
+  there is no model-callable activation tool yet.
+- Skill enforcement: `context: fork` routes to an isolated subagent;
+  `command-dispatch: tool` bypasses the LLM but still traverses governed Agno Function
+  guardrail/policy/permission/event hooks; plain callables are rejected.
 - Hierarchical workspace: global (~/.agnoclaw/global) → project (.agnoclaw/) → workspace; child overrides parent
 - Plugin system: Python entry-point-based discovery (group: `agnoclaw.plugins`) + explicit module paths
 - ClawHub integration: HTTP client for community skill registry (search, inspect, install)
 - Heartbeat: asyncio-based, HEARTBEAT_OK suppression, active hours, configurable model
 - All workspace files are plain Markdown — transparent, grep-able, git-backup-friendly
+
+## Architecture and quality direction
+
+- `docs/world-class-harness.md` — primary-source research, product strategy, and roadmap
+- `docs/architecture.md` — target immutable spec/per-run runtime architecture
+- `docs/harness-gap-analysis.md` — implementation-aligned current truth
+- `docs/operations-and-recovery.md` — implemented effect/operation/cancellation contract
+- `docs/artifacts.md` — implemented durable result artifact and recovery contract
+- `docs/capabilities.md` — capability descriptor/registry and bounded discovery contract
+- `docs/learning.md` — verified Agno learning behavior and target profiles
+- `docs/evaluation.md` — maturity definitions and release gates
+
+Do not mark a capability complete from a code-path checklist. Use the maturity labels
+and conformance evidence in `docs/evaluation.md`. In particular, do not claim automatic
+conversation compaction, automatic skill activation, MCP parity, isolated concurrent
+shared-harness execution, or measured institutional self-improvement until their listed
+gates pass. Current overlap is safe by typed single-flight rejection. Registered
+capability approval evidence is durable, but it does not serialize an arbitrary
+suspended Agno/model continuation after worker-process death.
 
 ## File Naming Conventions
 

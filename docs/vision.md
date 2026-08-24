@@ -67,9 +67,23 @@ Use agnoclaw as the core of a vertical copilot:
 - Data analysis and reporting
 - Any domain where an AI assistant adds value
 
-The harness handles the hard parts (tool execution, memory, context management, scheduling) so teams can focus on the domain expertise captured in skills and configs.
+The harness should own the hard runtime contracts (tool execution, state isolation,
+context lifecycle, policy, learning scope, and observability) so teams can focus on the
+domain expertise captured in skills and configs. Some of those long-running guarantees
+are target architecture rather than stable current behavior; the distinction is tracked
+in [Harness gap analysis](harness-gap-analysis.md).
 
 ## Design principles
+
+### Tiny surface, explicit guarantees
+
+The default API stays small. Profiles choose coherent behavior for quick, session,
+durable, local-safe, and service use instead of forcing users to coordinate dozens of
+booleans. Power lives in composable capabilities and a per-run runtime below the API.
+
+Public claims describe observable guarantees—concurrency isolation, cancellation,
+recovery, context bounds, effect policy, learning scope—not the mere presence of a code
+path.
 
 ### Config-driven, not code-driven
 
@@ -85,7 +99,11 @@ Skills are plain markdown files with YAML frontmatter. They're the primary way t
 
 ### Transparent by default
 
-All agent state is stored as plain markdown files in the workspace directory. No opaque databases, no proprietary formats. Everything is grep-able, git-trackable, and human-readable.
+Workspace instructions and curated memory are plain Markdown and remain human-readable,
+grep-able, and git-trackable. Exact sessions, learning stores, scheduler records, event
+trajectories, and artifacts may use databases or append-only formats appropriate to their
+durability and privacy needs. The documentation must identify the canonical owner,
+retention, and export path for every state type.
 
 ### Model-agnostic
 
@@ -102,21 +120,36 @@ Each level builds on the previous one without requiring knowledge of the layers 
 
 ## What makes it different
 
-| Concern | Raw Agno | agnoclaw |
-|---------|----------|----------|
-| System prompt | Manual string | Layered composition from workspace files |
-| Tools | Register manually | Batteries-included + config toggles |
-| Skills | N/A | SKILL.md format + registry + ClawHub |
-| Memory | Manual file I/O | Workspace hierarchy (AGENTS/SOUL/USER/MEMORY.md) |
-| Scheduling | HTTP callback server | In-process daemon with active hours |
-| Config | Code only | TOML + env vars + pydantic-settings |
-| Plugins | N/A | Entry-point discovery |
-| Browser/MCP/Media | Build it yourself | Optional extras, config-enabled |
+Agno evolves quickly and increasingly supplies first-party skills, learning, scheduling,
+AgentOS, HITL, tracing, and evaluation primitives. A static “raw Agno versus agnoclaw”
+feature checklist goes stale and encourages duplicate implementations.
 
-agnoclaw doesn't replace Agno — it wraps it with the patterns and conventions that make agents actually useful in practice.
+`agnoclaw` should differentiate through the quality of its composition:
+
+- one embeddable, profile-driven API with optional CLI/TUI/server adapters;
+- a coherent execution backend and policy boundary across first-party capabilities;
+- transparent workspace conventions and interoperable Agent Skills;
+- stronger run lifecycle, concurrency, context, effect, and learning guarantees;
+- an evidence-backed conformance suite across supported Agno versions;
+- defaults with excellent taste: small for short tasks, durable when requested, safe for
+  embedding.
+
+`agnoclaw` does not replace Agno. It turns selected Agno primitives into a stable,
+opinionated harness contract and delegates platform concerns back to Agno/AgentOS when
+that is the stronger boundary.
 
 ## Current direction
 
-See [agnoclaw v0.8 Direction](../spec/v0.8-harness-sdk-server-packs.md) for the
-current plan around Agno context providers, optional AgentOS export, Python-native
-packs, and SDK ergonomics.
+The durable product direction is defined by:
+
+- [World-class harness strategy](world-class-harness.md) — research, product decision,
+  keep/change/remove/add analysis, and roadmap;
+- [Harness architecture](architecture.md) — target kernel and invariants;
+- [Learning and self-improvement](learning.md) — correct Agno store usage and promotion
+  model;
+- [Harness evaluation](evaluation.md) — evidence required to call a capability stable;
+- [Harness gap analysis](harness-gap-analysis.md) — implementation-aligned current truth.
+
+The older [v0.8 direction](../spec/v0.8-harness-sdk-server-packs.md) remains a historical
+design record for context providers, AgentOS export, packs, and SDK ergonomics. Those
+surfaces adapt to the new run kernel; they do not replace it.

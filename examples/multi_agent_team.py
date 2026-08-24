@@ -5,6 +5,7 @@ Run: uv run python examples/multi_agent_team.py
 """
 
 from _utils import detect_model
+
 from agnoclaw.teams import code_team, research_team
 
 MODEL = detect_model()

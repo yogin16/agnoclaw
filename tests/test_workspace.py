@@ -77,6 +77,7 @@ def test_workspace_context_files(ws):
 def test_workspace_daily_log(ws):
     ws.log_to_daily("Completed feature X")
     from datetime import date
+
     today = date.today().isoformat()
     log_path = ws.path / "memory" / f"{today}.md"
     assert log_path.exists()
@@ -133,6 +134,7 @@ def test_workspace_context_files_order(ws):
 def test_workspace_write_session_summary(ws):
     ws.write_session_summary("Summarized research on quantum computing.")
     from datetime import date
+
     today = date.today().isoformat()
     log_path = ws.path / "memory" / f"{today}.md"
     assert log_path.exists()
@@ -144,6 +146,7 @@ def test_workspace_write_session_summary(ws):
 def test_workspace_workspace_files_mapping():
     """WORKSPACE_FILES should include all new file types."""
     from agnoclaw.workspace import WORKSPACE_FILES
+
     assert "identity" in WORKSPACE_FILES
     assert "tools" in WORKSPACE_FILES
     assert "boot" in WORKSPACE_FILES
@@ -191,16 +194,19 @@ def test_memory_startup_line_cap_under_limit(tmp_path):
 def test_memory_startup_line_cap_constant():
     """MEMORY_STARTUP_LINES constant should be 200."""
     from agnoclaw.workspace import MEMORY_STARTUP_LINES
+
     assert MEMORY_STARTUP_LINES == 200
 
 
 def test_bootstrap_max_chars_constant():
     from agnoclaw.workspace import BOOTSTRAP_MAX_CHARS
+
     assert BOOTSTRAP_MAX_CHARS == 20_000
 
 
 def test_bootstrap_total_max_chars_constant():
     from agnoclaw.workspace import BOOTSTRAP_TOTAL_MAX_CHARS
+
     assert BOOTSTRAP_TOTAL_MAX_CHARS == 150_000
 
 

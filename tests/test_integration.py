@@ -15,11 +15,11 @@ These tests are skipped in CI unless explicitly enabled.
 
 import pytest
 
-
 pytestmark = pytest.mark.integration
 
 
 # ── Basic inference ───────────────────────────────────────────────────────────
+
 
 def test_live_agent_basic_response(live_agent):
     """Agent returns a non-empty response."""
@@ -39,10 +39,13 @@ def test_live_agent_arithmetic(live_agent):
 def test_live_agent_session_persistence(tmp_workspace_path):
     """Two agents sharing a session ID share conversation context."""
     import os
+
     from agnoclaw import HarnessAgent
 
     provider = os.environ.get("AGNOCLAW_TEST_PROVIDER", "ollama")
-    model = os.environ.get("AGNOCLAW_TEST_MODEL", "qwen3:0.6b" if provider == "ollama" else "claude-haiku-4-5-20251001")
+    model = os.environ.get(
+        "AGNOCLAW_TEST_MODEL", "qwen3:0.6b" if provider == "ollama" else "claude-haiku-4-5-20251001"
+    )
 
     if provider == "ollama":
         from tests._ollama import ollama_available
@@ -54,22 +57,29 @@ def test_live_agent_session_persistence(tmp_workspace_path):
 
     session = "integration-test-session"
 
-    agent1 = HarnessAgent(
-        provider=provider, model_id=model,
-        workspace_dir=tmp_workspace_path, session_id=session,
-    )
     marker = "ORION-42"
-    agent1.run(f"The project codename is {marker}. Remember this exact code.")
+    with HarnessAgent(
+        model=f"{provider}:{model}",
+        workspace_dir=tmp_workspace_path,
+        session_id=session,
+        include_default_tools=False,
+    ) as agent1:
+        agent1.run(f"The project codename is {marker}. Remember this exact code.")
 
-    agent2 = HarnessAgent(
-        provider=provider, model_id=model,
-        workspace_dir=tmp_workspace_path, session_id=session,
-    )
-    response = agent2.run("What project codename did I tell you? Reply with only the code.")
+    with HarnessAgent(
+        model=f"{provider}:{model}",
+        workspace_dir=tmp_workspace_path,
+        session_id=session,
+        include_default_tools=False,
+    ) as agent2:
+        response = agent2.run(
+            "What project codename did I tell you? Reply with only the code."
+        )
     assert marker in str(response.content)
 
 
 # ── Skills ────────────────────────────────────────────────────────────────────
+
 
 def test_live_agent_skill_injection(live_agent):
     """Skill content is injected and influences the response."""
@@ -84,6 +94,7 @@ def test_live_agent_skill_injection(live_agent):
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
+
 def test_live_agent_file_tool(live_agent):
     """Agent can use file tools to list files."""
     response = live_agent.run(
@@ -96,9 +107,11 @@ def test_live_agent_file_tool(live_agent):
 
 # ── Workspace context ─────────────────────────────────────────────────────────
 
+
 def test_live_agent_reads_soul_md(live_agent):
     """Agent picks up SOUL.md content from workspace."""
     import os
+
     from agnoclaw import HarnessAgent
 
     live_agent.workspace.write_file(
@@ -107,14 +120,15 @@ def test_live_agent_reads_soul_md(live_agent):
     )
     # Rebuild agent to pick up new workspace content
     provider = os.environ.get("AGNOCLAW_TEST_PROVIDER", "ollama")
-    model = os.environ.get("AGNOCLAW_TEST_MODEL", "qwen3:0.6b" if provider == "ollama" else "claude-haiku-4-5-20251001")
-
-    agent = HarnessAgent(
-        provider=provider,
-        model_id=model,
-        workspace_dir=live_agent.workspace.path,
+    model = os.environ.get(
+        "AGNOCLAW_TEST_MODEL", "qwen3:0.6b" if provider == "ollama" else "claude-haiku-4-5-20251001"
     )
-    response = agent.run("What is 1 + 1?")
+
+    with HarnessAgent(
+        model=f"{provider}:{model}",
+        workspace_dir=live_agent.workspace.path,
+    ) as agent:
+        response = agent.run("What is 1 + 1?")
     # Note: small models may not always follow instructions perfectly,
     # so we just verify a response was returned.
     assert response is not None

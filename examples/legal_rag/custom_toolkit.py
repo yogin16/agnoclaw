@@ -14,9 +14,7 @@ Usage:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Optional
 
 from agno.tools.toolkit import Toolkit
 
@@ -85,11 +83,11 @@ class ContractToolkit(Toolkit):
                 if results:
                     parts = []
                     for i, doc in enumerate(results, 1):
-                        source = getattr(doc, 'name', 'unknown')
-                        content = doc.content if hasattr(doc, 'content') else str(doc)
+                        source = getattr(doc, "name", "unknown")
+                        content = doc.content if hasattr(doc, "content") else str(doc)
                         parts.append(f"[{i}] Source: {source}\n{content[:500]}")
                     return "\n\n".join(parts)
-            except Exception as e:
+            except Exception:
                 pass  # Fall through to keyword search
 
         # Keyword search fallback
@@ -103,7 +101,7 @@ class ContractToolkit(Toolkit):
                     start = max(0, i - 2)
                     end = min(len(lines), i + 3)
                     context = "\n".join(lines[start:end])
-                    results.append(f"[{name}] (line {i+1}):\n{context}")
+                    results.append(f"[{name}] (line {i + 1}):\n{context}")
                     if len(results) >= limit:
                         break
             if len(results) >= limit:
@@ -133,7 +131,9 @@ class ContractToolkit(Toolkit):
                     self._contract_cache[name] = text
                     return text
 
-        return f"[error] Contract '{name}' not found. Use list_contracts to see available contracts."
+        return (
+            f"[error] Contract '{name}' not found. Use list_contracts to see available contracts."
+        )
 
     def list_contracts(self) -> str:
         """
@@ -169,6 +169,7 @@ class ContractToolkit(Toolkit):
             return text
 
         import re
+
         query_upper = section_query.upper()
 
         # Try numbered section match: "4. TERM" or "Section 4"
@@ -183,7 +184,7 @@ class ContractToolkit(Toolkit):
             if match:
                 start = match.start()
                 # Find the next section
-                next_section = re.search(rf"^\d+\.\s+", text[match.end():], re.MULTILINE)
+                next_section = re.search(r"^\d+\.\s+", text[match.end() :], re.MULTILINE)
                 end = match.end() + next_section.start() if next_section else len(text)
                 return text[start:end].strip()
 
@@ -192,8 +193,7 @@ class ContractToolkit(Toolkit):
         section_start = None
         for i, line in enumerate(lines):
             if query_upper in line.upper() and (
-                line.strip().startswith(tuple("0123456789"))
-                or line.strip().isupper()
+                line.strip().startswith(tuple("0123456789")) or line.strip().isupper()
             ):
                 section_start = i
                 break
@@ -204,8 +204,7 @@ class ContractToolkit(Toolkit):
             for i in range(section_start + 1, len(lines)):
                 line = lines[i].strip()
                 if line and (
-                    re.match(r"^\d+\.\s+[A-Z]", line)
-                    or (line.isupper() and len(line) > 3)
+                    re.match(r"^\d+\.\s+[A-Z]", line) or (line.isupper() and len(line) > 3)
                 ):
                     section_end = i
                     break

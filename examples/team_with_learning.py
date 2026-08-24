@@ -10,7 +10,8 @@ Demonstrates:
 """
 
 from _utils import detect_model
-from agnoclaw.teams import research_team, code_team, data_team
+
+from agnoclaw.teams import code_team, data_team, research_team
 
 MODEL = detect_model()
 

@@ -24,7 +24,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from _utils import detect_model
-
 from agno.tools.toolkit import Toolkit
 
 from agnoclaw import AgentHarness
@@ -121,9 +120,7 @@ Key relationships:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
 
-        contract = conn.execute(
-            "SELECT * FROM contracts WHERE id = ?", (contract_id,)
-        ).fetchone()
+        contract = conn.execute("SELECT * FROM contracts WHERE id = ?", (contract_id,)).fetchone()
 
         if not contract:
             conn.close()
@@ -157,7 +154,9 @@ Key relationships:
 
         parts.append("\nClauses from DB:")
         for c in clauses:
-            parts.append(f"  [{c['risk_level']}] §{c['section_number']} {c['clause_type']}: {c['summary']}")
+            parts.append(
+                f"  [{c['risk_level']}] §{c['section_number']} {c['clause_type']}: {c['summary']}"
+            )
 
         return "\n".join(parts)
 
@@ -261,8 +260,9 @@ Key relationships:
                 f"    Value: ${s['total_value']:,.0f} | Expires: {s['expiration_date']}\n"
                 f"    Clauses: {s['total_clauses']} total, "
                 f"{s['critical']} critical, {s['high']} high\n"
-                f"    Max liability: ${s['max_liability']:,.0f}" if s['max_liability'] else
-                f"  {s['name']} ({s['contract_type']})\n"
+                f"    Max liability: ${s['max_liability']:,.0f}"
+                if s["max_liability"]
+                else f"  {s['name']} ({s['contract_type']})\n"
                 f"    Value: ${s['total_value']:,.0f} | Expires: {s['expiration_date']}\n"
                 f"    Clauses: {s['total_clauses']} total, "
                 f"{s['critical']} critical, {s['high']} high"
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     print(f"Using model: {model}")
 
     # Setup database (reuse from data_agent_rag.py)
-    from data_agent_rag import setup_database, DB_PATH
+    from data_agent_rag import DB_PATH, setup_database
 
     setup_database()
 

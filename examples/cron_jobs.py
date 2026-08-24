@@ -1,13 +1,14 @@
 """
-Cron jobs example — scheduled agent tasks beyond heartbeat.
+Scheduling example — embedded convenience and durable unattended work.
 
 Demonstrates agnoclaw's CronJob system, inspired by OpenClaw's CronManager.
 
-OpenClaw has two distinct schedulers inside the same Gateway daemon:
-  1. Heartbeat  — interval-based (30m default), main session, HEARTBEAT_OK suppression
-  2. Cron jobs  — expression-based OR interval string, main OR isolated session
+Agnoclaw exposes two deliberately different scheduling paths:
+  1. Heartbeat/in-process CronJob — process-local convenience for an embedded session
+  2. RuntimeSchedulerBackend      — durable jobs, attempts, leases, and crash recovery
 
-Neither uses OS-level cron. Both live inside the same asyncio event loop.
+Neither requires OS-level cron. New unattended work should use the RuntimeStore path;
+the in-memory/JSON scheduler is for embedded convenience and compatibility.
 
 Run:
     uv run python examples/cron_jobs.py
@@ -19,6 +20,7 @@ Set AGNOCLAW_TEST_PROVIDER=anthropic for cloud inference.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 from pathlib import Path
 
@@ -35,8 +37,11 @@ def _check_ollama() -> bool:
     """Check if Ollama is running."""
     if PROVIDER != "ollama":
         return True
+    if importlib.util.find_spec("ollama") is None:
+        return False
     try:
         import httpx
+
         r = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
         return r.status_code == 200
     except Exception:
@@ -44,6 +49,7 @@ def _check_ollama() -> bool:
 
 
 # ── Part 1: Interval-string scheduling ────────────────────────────────────────
+
 
 def demo_interval_parsing():
     """
@@ -54,11 +60,11 @@ def demo_interval_parsing():
 
     print("=== Schedule Parsing ===")
     cases = [
-        ("30m",    "30 minutes   → 1800s"),
-        ("1h",     "1 hour       → 3600s"),
-        ("2h30m",  "2.5 hours    → 9000s"),
-        ("45s",    "45 seconds   →   45s"),
-        ("6h",     "6 hours      → 21600s"),
+        ("30m", "30 minutes   → 1800s"),
+        ("1h", "1 hour       → 3600s"),
+        ("2h30m", "2.5 hours    → 9000s"),
+        ("45s", "45 seconds   →   45s"),
+        ("6h", "6 hours      → 21600s"),
     ]
 
     for schedule, label in cases:
@@ -77,6 +83,7 @@ def demo_interval_parsing():
 
 # ── Part 2: CronJob dataclass ──────────────────────────────────────────────────
 
+
 def demo_cron_job_api():
     """Show the CronJob API without running anything."""
     from agnoclaw.heartbeat.daemon import CronJob
@@ -94,26 +101,71 @@ def demo_cron_job_api():
     # Cron expression, isolated session, skill-activated
     standup = CronJob(
         name="daily-standup",
-        schedule="0 9 * * 1-5",   # 9am Monday-Friday
+        schedule="0 9 * * 1-5",  # 9am Monday-Friday
         prompt="Generate today's standup from recent git history.",
         skill="daily-standup",
-        isolated=True,             # fresh session — no conversation bleed
+        isolated=True,  # fresh session — no conversation bleed
     )
-    print(f"  {standup.name}: schedule='{standup.schedule}' isolated={standup.isolated} skill={standup.skill}")
+    print(
+        f"  {standup.name}: schedule='{standup.schedule}' "
+        f"isolated={standup.isolated} skill={standup.skill}"
+    )
 
-    # One-shot at specific time (demonstrates override model)
+    # Per-job model overrides are compatibility-only. Durable workers deliberately use
+    # one immutable model/provider; deploy a separately configured worker partition for
+    # another model.
     weekly_review = CronJob(
         name="weekly-review",
-        schedule="0 17 * * 5",    # 5pm Friday
+        schedule="0 17 * * 5",  # 5pm Friday
         prompt="Summarize this week's git commits and open issues.",
         isolated=True,
         model_id="claude-haiku-4-5-20251001",  # cheap model for this job
     )
-    print(f"  {weekly_review.name}: schedule='{weekly_review.schedule}' model_id={weekly_review.model_id}")
+    print(
+        f"  {weekly_review.name}: schedule='{weekly_review.schedule}' "
+        f"model_id={weekly_review.model_id}"
+    )
     print()
 
 
-# ── Part 3: Daemon with jobs (live run) ───────────────────────────────────────
+# ── Part 3: Durable RuntimeStore scheduling ───────────────────────────────────
+
+
+def demo_durable_scheduler(tmp_workspace: Path):
+    """Persist and reopen a crash-recoverable job without making a model call."""
+    from agnoclaw import RuntimeSchedulerBackend, SchedulerJob, SQLiteRuntimeStore
+    from agnoclaw.runtime.store import RUNTIME_SCHEMA_VERSION
+
+    print("=== Durable RuntimeStore Scheduler ===")
+    runtime_path = tmp_workspace / "runtime.db"
+    store = SQLiteRuntimeStore(runtime_path)
+    try:
+        scheduler = RuntimeSchedulerBackend(store)
+        job = scheduler.upsert_job(
+            SchedulerJob(
+                name="durable-health-check",
+                schedule="1h",
+                prompt="Check the service queue and write a bounded status report.",
+                isolated=True,
+                max_retries=2,
+                retry_delay_seconds=30,
+                retry_backoff_multiplier=2,
+                retry_max_delay_seconds=3_600,
+                retry_jitter_seconds=10,
+                concurrency_key="service-health",
+            )
+        )
+        print(f"  Persisted {job.name!r} at schema v{RUNTIME_SCHEMA_VERSION}")
+        print(f"  Next nominal occurrence: {job.next_run_at}")
+        print("  Start a worker with:")
+        print(f"    agnoclaw schedule worker --runtime-db {runtime_path}")
+    finally:
+        store.close()
+    print()
+
+
+# ── Part 4: Process-local daemon with jobs (live run) ─────────────────────────
+
 
 async def demo_live_daemon(tmp_workspace: Path):
     """
@@ -121,7 +173,7 @@ async def demo_live_daemon(tmp_workspace: Path):
     Runs with a 5-second loop for demo purposes.
     """
     from agnoclaw import AgentHarness
-    from agnoclaw.heartbeat.daemon import HeartbeatDaemon, CronJob
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     print("=== Live Daemon Demo ===")
 
@@ -146,19 +198,23 @@ async def demo_live_daemon(tmp_workspace: Path):
     daemon = HeartbeatDaemon(agent, on_alert=on_alert)
 
     # Job 1: interval string, main session
-    daemon.add_cron_job(CronJob(
-        name="health-check",
-        schedule="5m",       # would fire every 5 min in production
-        prompt="Reply with exactly: HEALTH_OK",
-    ))
+    daemon.add_cron_job(
+        CronJob(
+            name="health-check",
+            schedule="5m",  # would fire every 5 min in production
+            prompt="Reply with exactly: HEALTH_OK",
+        )
+    )
 
     # Job 2: interval string, isolated session
-    daemon.add_cron_job(CronJob(
-        name="isolated-task",
-        schedule="10m",      # every 10 min
-        prompt="Reply with exactly: ISOLATED_OK",
-        isolated=True,
-    ))
+    daemon.add_cron_job(
+        CronJob(
+            name="isolated-task",
+            schedule="10m",  # every 10 min
+            prompt="Reply with exactly: ISOLATED_OK",
+            isolated=True,
+        )
+    )
 
     print(f"  Registered {len(daemon._cron_jobs)} cron jobs")
 
@@ -178,12 +234,12 @@ async def demo_live_daemon(tmp_workspace: Path):
     print()
 
 
-# ── Part 4: Service install (show command, don't execute) ─────────────────────
+# ── Part 5: Service install (show command, don't execute) ─────────────────────
+
 
 def demo_service_install():
     """Show the service install command (informational only)."""
     import platform
-    import shutil
 
     os_name = platform.system()
     print("=== Service Install (persistent daemon) ===")
@@ -211,6 +267,7 @@ def demo_service_install():
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+
 async def main():
     import tempfile
 
@@ -224,16 +281,21 @@ async def main():
     # Part 2 — no API needed
     demo_cron_job_api()
 
-    # Part 3 — live run with Ollama/cloud
-    if _check_ollama() or PROVIDER != "ollama":
-        with tempfile.TemporaryDirectory() as tmp:
-            await demo_live_daemon(Path(tmp))
-    else:
-        print("=== Live Daemon Demo ===")
-        print("  (Skipped: Ollama not running. Start with: ollama serve)")
-        print()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_workspace = Path(tmp)
 
-    # Part 4 — informational only
+        # Part 3 — durable store contract; no API needed
+        demo_durable_scheduler(tmp_workspace)
+
+        # Part 4 — live process-local run with Ollama/cloud
+        if _check_ollama() or PROVIDER != "ollama":
+            await demo_live_daemon(tmp_workspace)
+        else:
+            print("=== Live Daemon Demo ===")
+            print("  (Skipped: Ollama not running. Start with: ollama serve)")
+            print()
+
+    # Part 5 — informational only
     demo_service_install()
 
     print("Done.")

@@ -13,7 +13,7 @@ Usage:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -78,16 +78,18 @@ class ClauseAwareChunker:
         sections = self._split_into_sections(text)
         chunks = []
 
-        for i, (section_num, section_title, section_body) in enumerate(sections):
+        for section_num, section_title, section_body in sections:
             # If section is small enough, keep as one chunk
             if len(section_body) <= self.max_chunk_size:
-                chunks.append(ContractChunk(
-                    text=f"{section_num}. {section_title}\n\n{section_body}".strip(),
-                    section_number=section_num,
-                    section_title=section_title,
-                    chunk_index=len(chunks),
-                    source_file=source_file,
-                ))
+                chunks.append(
+                    ContractChunk(
+                        text=f"{section_num}. {section_title}\n\n{section_body}".strip(),
+                        section_number=section_num,
+                        section_title=section_title,
+                        chunk_index=len(chunks),
+                        source_file=source_file,
+                    )
+                )
             else:
                 # Split large sections on subsection boundaries
                 sub_chunks = self._split_section(section_body, section_num, section_title)
@@ -117,7 +119,7 @@ class ClauseAwareChunker:
 
         # Include any preamble before the first section
         if matches and matches[0].start() > 0:
-            preamble = text[:matches[0].start()].strip()
+            preamble = text[: matches[0].start()].strip()
             if preamble:
                 sections.insert(0, ("0", "Preamble", preamble))
 
@@ -134,24 +136,28 @@ class ClauseAwareChunker:
         current_text = ""
         for part in parts:
             if len(current_text) + len(part) > self.max_chunk_size and current_text:
-                chunks.append(ContractChunk(
-                    text=f"{section_num}. {section_title}\n\n{current_text.strip()}",
-                    section_number=section_num,
-                    section_title=section_title,
-                    parent_section=section_num,
-                ))
+                chunks.append(
+                    ContractChunk(
+                        text=f"{section_num}. {section_title}\n\n{current_text.strip()}",
+                        section_number=section_num,
+                        section_title=section_title,
+                        parent_section=section_num,
+                    )
+                )
                 # Overlap: keep last sentence
                 sentences = current_text.strip().split(".")
                 current_text = sentences[-1] + "." if sentences else ""
             current_text += part
 
         if current_text.strip():
-            chunks.append(ContractChunk(
-                text=f"{section_num}. {section_title}\n\n{current_text.strip()}",
-                section_number=section_num,
-                section_title=section_title,
-                parent_section=section_num,
-            ))
+            chunks.append(
+                ContractChunk(
+                    text=f"{section_num}. {section_title}\n\n{current_text.strip()}",
+                    section_number=section_num,
+                    section_title=section_title,
+                    parent_section=section_num,
+                )
+            )
 
         return chunks
 

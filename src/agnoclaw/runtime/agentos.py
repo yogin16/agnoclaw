@@ -1,7 +1,5 @@
 """AgentOS compatibility adapters for AgentHarness."""
 
-from __future__ import annotations
-
 import inspect
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -10,6 +8,8 @@ from typing import Any
 from uuid import uuid4
 
 from .context import ExecutionContext
+from .errors import HarnessError
+from .security import IdentitySource
 
 
 def _first_non_empty(mapping: Mapping[str, Any], keys: Iterable[str]) -> Any:
@@ -43,6 +43,24 @@ def _as_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _claim_authoritative_identity(
+    field: str,
+    claim_value: str | None,
+    requested_value: str | None,
+) -> str | None:
+    """Resolve identity with authenticated claims as the authority."""
+    if claim_value is not None and requested_value is not None:
+        if claim_value != requested_value:
+            raise HarnessError(
+                code="IDENTITY_CLAIM_CONFLICT",
+                category="identity",
+                message=(f"Authenticated {field} conflicts with the requested {field}."),
+                retryable=False,
+                details={"field": field},
+            )
+    return claim_value if claim_value is not None else requested_value
 
 
 def _agentos_scheduler_metadata(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -107,9 +125,11 @@ class AgentOSContextAdapter:
             }
         )
 
-        resolved_user = user_id or _as_str(_first_non_empty(claims, self.claim_keys.user_id))
-        resolved_session = session_id or _as_str(
-            _first_non_empty(claims, self.claim_keys.session_id)
+        claimed_user = _as_str(_first_non_empty(claims, self.claim_keys.user_id))
+        claimed_session = _as_str(_first_non_empty(claims, self.claim_keys.session_id))
+        resolved_user = _claim_authoritative_identity("user_id", claimed_user, _as_str(user_id))
+        resolved_session = _claim_authoritative_identity(
+            "session_id", claimed_session, _as_str(session_id)
         )
         resolved_tenant = _as_str(_first_non_empty(claims, self.claim_keys.tenant_id))
         resolved_org = _as_str(_first_non_empty(claims, self.claim_keys.org_id))
@@ -131,6 +151,7 @@ class AgentOSContextAdapter:
             request_id=resolved_request,
             trace_id=resolved_trace,
             metadata=payload,
+            identity_source=IdentitySource.AUTHENTICATED_CLAIMS,
         )
 
 
@@ -155,10 +176,7 @@ class AgentOSHarnessAgent:
     ) -> None:
         self.harness = harness
         self._id = (
-            id
-            or getattr(harness, "agent_id", None)
-            or getattr(harness, "name", None)
-            or "agnoclaw"
+            id or getattr(harness, "agent_id", None) or getattr(harness, "name", None) or "agnoclaw"
         )
         self._name = name or getattr(harness, "name", None) or self._id
         self.context_adapter = context_adapter or AgentOSContextAdapter()
@@ -177,14 +195,22 @@ class AgentOSHarnessAgent:
 
     @property
     def db(self) -> Any:
-        agent = getattr(self.harness, "_agent", None)
-        return getattr(agent, "db", None)
+        return self.harness.storage
 
     @db.setter
     def db(self, value: Any) -> None:
-        agent = getattr(self.harness, "_agent", None)
-        if agent is not None:
-            agent.db = value
+        current = self.harness.storage
+        if value is current:
+            return
+        raise HarnessError(
+            code="AGENTOS_STORAGE_REBIND_UNSUPPORTED",
+            category="lifecycle",
+            message=(
+                "AgentOS cannot replace harness storage after construction; "
+                "configure the shared database on AgentHarness first."
+            ),
+            retryable=False,
+        )
 
     def _context_from_agentos_kwargs(
         self,
@@ -195,15 +221,17 @@ class AgentOSHarnessAgent:
         dependencies: Mapping[str, Any] | None,
     ) -> ExecutionContext:
         metadata_payload = dict(metadata or {})
-        claims = metadata_payload.pop("agentos_claims", None)
-        if claims is None:
-            claims = metadata_payload.pop("claims", None)
-        if not isinstance(claims, Mapping):
-            claims = {}
+        # AgentOS accepts `metadata` as client-controlled form data. It is not a
+        # trustworthy claim channel, even if a nested object is named `claims`.
+        # The upstream AgentOS router already resolves authenticated user/session
+        # values from request.state before invoking this adapter; richer verified
+        # claims must enter through AgentOSContextAdapter at a trusted host edge.
+        metadata_payload.pop("agentos_claims", None)
+        metadata_payload.pop("claims", None)
         if dependencies:
             metadata_payload["dependencies"] = dict(dependencies)
         return self.context_adapter.to_execution_context(
-            claims,
+            {},
             workspace_id=str(self.harness.workspace.path),
             user_id=user_id,
             session_id=session_id,
@@ -229,6 +257,10 @@ class AgentOSHarnessAgent:
         for key in scheduler_metadata:
             call_kwargs.pop(key, None)
         run_metadata = dict(metadata or {})
+        # Never preserve client-supplied objects that present themselves as
+        # authenticated claims in events or downstream run metadata.
+        run_metadata.pop("agentos_claims", None)
+        run_metadata.pop("claims", None)
         if scheduler_metadata:
             run_metadata.setdefault("agentos", {})
             if isinstance(run_metadata["agentos"], dict):
@@ -244,6 +276,7 @@ class AgentOSHarnessAgent:
         should_stream_events = bool(stream_events) if stream_events is not None else should_stream
 
         if should_stream:
+
             async def _stream():
                 result = await self.harness.arun(
                     str(input),
@@ -418,6 +451,8 @@ def create_agentos_app(
     harnesses: Sequence[Any],
     *,
     include_agnoclaw_admin: bool = False,
+    include_agnoclaw_lifecycle: bool = True,
+    child_templates: Mapping[str, Mapping[str, Any]] | None = None,
     enable_mcp_server: bool = False,
     scheduler: bool = False,
     approvals: bool = False,
@@ -426,8 +461,9 @@ def create_agentos_app(
     """
     Create a FastAPI app backed by Agno AgentOS and agnoclaw harness adapters.
 
-    AgentOS owns the agent/session/trace/schedule/approval API surface. The
-    optional `/agnoclaw` admin routes expose only harness-owned inspection data.
+    AgentOS owns its compatibility agent/session/trace/schedule/approval API surface.
+    The versioned `/agnoclaw/v1` router exposes agnoclaw's durable lifecycle contract;
+    the optional unversioned `/agnoclaw` admin routes expose harness-owned diagnostics.
     """
     if not harnesses:
         raise ValueError("create_agentos_app requires at least one harness")
@@ -445,13 +481,17 @@ def create_agentos_app(
         db = getattr(agents[0], "db", None)
     if approvals:
         _attach_agentos_approval_bridge(harnesses, agents, db)
-    agent_os = AgentOS(
-        agents=agents,
-        db=db,
-        enable_mcp_server=enable_mcp_server,
-        scheduler=scheduler,
+    agentos_kwargs = {
+        "agents": agents,
+        "db": db,
+        "scheduler": scheduler,
         **kwargs,
-    )
+    }
+    if "mcp_server" in inspect.signature(AgentOS).parameters:
+        agentos_kwargs["mcp_server"] = enable_mcp_server
+    else:  # pragma: no cover - compatibility with older supported Agno releases
+        agentos_kwargs["enable_mcp_server"] = enable_mcp_server
+    agent_os = AgentOS(**agentos_kwargs)
     app = agent_os.get_app()
     app.state.agnoclaw_harnesses = {
         agent.id: harness for agent, harness in zip(agents, harnesses, strict=True)
@@ -459,9 +499,21 @@ def create_agentos_app(
     app.state.agnoclaw_approvals_requested = approvals
     app.state.agnoclaw_scheduler_requested = scheduler
     app.state.agnoclaw_mcp_requested = enable_mcp_server
+    app.state.agnoclaw_lifecycle_enabled = include_agnoclaw_lifecycle
+    app.state.agnoclaw_child_templates = child_templates or {}
     for harness in harnesses:
         harness._agentos_scheduler_enabled = scheduler
         harness._agentos_mcp_enabled = enable_mcp_server
+    if include_agnoclaw_lifecycle:
+        from .http_lifecycle import build_lifecycle_router
+
+        app.include_router(
+            build_lifecycle_router(
+                app.state.agnoclaw_harnesses,
+                settings=getattr(agent_os, "settings", None),
+                child_templates=child_templates,
+            )
+        )
     if include_agnoclaw_admin:
         app.include_router(
             _build_agnoclaw_admin_router(
@@ -501,6 +553,29 @@ def _build_agnoclaw_admin_router(harnesses: Mapping[str, Any], *, settings: Any 
         if harness is None:
             raise HTTPException(status_code=404, detail="Harness not found")
         return harness
+
+    def _sandbox_context(
+        request: Request,
+        harness: Any,
+        session_id: str,
+    ) -> ExecutionContext:
+        claims = getattr(request.state, "claims", None) or {}
+        try:
+            return AgentOSContextAdapter().to_execution_context(
+                claims if isinstance(claims, Mapping) else {},
+                workspace_id=str(harness.workspace.path),
+                user_id=getattr(request.state, "user_id", None),
+                session_id=session_id,
+                metadata={"source": "agnoclaw_admin"},
+            )
+        except HarnessError as exc:
+            raise HTTPException(status_code=403, detail=exc.code) from exc
+
+    def _sandbox_admin_call(operation: Any, /, **kwargs: Any) -> Any:
+        try:
+            return operation(**kwargs)
+        except HarnessError as exc:
+            raise HTTPException(status_code=403, detail=exc.code) from exc
 
     @router.get("/harnesses")
     async def list_harnesses() -> list[dict[str, Any]]:
@@ -569,45 +644,77 @@ def _build_agnoclaw_admin_router(harnesses: Mapping[str, Any], *, settings: Any 
         return list(lister(run_id=run_id) if callable(lister) else [])
 
     @router.get("/harnesses/{harness_id}/sandboxes/{session_id}")
-    async def harness_sandbox(harness_id: str, session_id: str) -> dict[str, Any]:
+    async def harness_sandbox(
+        request: Request,
+        harness_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
         harness = _get_harness(harness_id)
         info = getattr(harness, "admin_sandbox_info", None)
         if not callable(info):
             raise HTTPException(status_code=404, detail="Sandbox admin is unavailable")
-        return dict(info(session_id=session_id))
+        context = _sandbox_context(request, harness, session_id)
+        return dict(_sandbox_admin_call(info, session_id=session_id, context=context))
 
     @router.get("/harnesses/{harness_id}/sandboxes/{session_id}/files")
-    async def harness_sandbox_files(harness_id: str, session_id: str) -> list[dict[str, Any]]:
+    async def harness_sandbox_files(
+        request: Request,
+        harness_id: str,
+        session_id: str,
+    ) -> list[dict[str, Any]]:
         harness = _get_harness(harness_id)
         lister = getattr(harness, "admin_list_sandbox_files", None)
-        return list(lister(session_id=session_id) if callable(lister) else [])
+        if not callable(lister):
+            return []
+        context = _sandbox_context(request, harness, session_id)
+        return list(_sandbox_admin_call(lister, session_id=session_id, context=context))
 
     @router.post("/harnesses/{harness_id}/sandboxes/{session_id}/snapshot")
-    async def harness_sandbox_snapshot(harness_id: str, session_id: str) -> dict[str, Any]:
+    async def harness_sandbox_snapshot(
+        request: Request,
+        harness_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
         harness = _get_harness(harness_id)
         snapshot = getattr(harness, "admin_snapshot_sandbox", None)
         if not callable(snapshot):
             raise HTTPException(status_code=404, detail="Sandbox snapshot is unavailable")
-        return dict(snapshot(session_id=session_id))
+        context = _sandbox_context(request, harness, session_id)
+        return dict(_sandbox_admin_call(snapshot, session_id=session_id, context=context))
 
     @router.post("/harnesses/{harness_id}/sandboxes/{session_id}/reset")
-    async def harness_sandbox_reset(harness_id: str, session_id: str) -> dict[str, Any]:
+    async def harness_sandbox_reset(
+        request: Request,
+        harness_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
         harness = _get_harness(harness_id)
         reset = getattr(harness, "admin_reset_sandbox", None)
         if not callable(reset):
             raise HTTPException(status_code=404, detail="Sandbox reset is unavailable")
-        return dict(reset(session_id=session_id))
+        context = _sandbox_context(request, harness, session_id)
+        return dict(_sandbox_admin_call(reset, session_id=session_id, context=context))
 
     @router.get("/harnesses/{harness_id}/sandboxes/{session_id}/artifacts/{artifact_path:path}")
     async def harness_sandbox_artifact(
+        request: Request,
         harness_id: str,
         session_id: str,
         artifact_path: str,
     ) -> FileResponse:
-        del session_id
         harness = _get_harness(harness_id)
         resolver = getattr(harness, "admin_sandbox_artifact_path", None)
-        path = resolver(artifact_path) if callable(resolver) else None
+        context = _sandbox_context(request, harness, session_id)
+        path = (
+            _sandbox_admin_call(
+                resolver,
+                artifact_path=artifact_path,
+                session_id=session_id,
+                context=context,
+            )
+            if callable(resolver)
+            else None
+        )
         if path is None:
             raise HTTPException(status_code=404, detail="Artifact not found")
         return FileResponse(path)

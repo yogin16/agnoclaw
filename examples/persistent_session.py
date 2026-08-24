@@ -9,6 +9,7 @@ Demonstrates:
 """
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 
 MODEL = detect_model()

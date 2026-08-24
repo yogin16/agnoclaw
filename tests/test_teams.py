@@ -1,11 +1,14 @@
 """Tests for pre-built team factories."""
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 from agnoclaw.backends import RuntimeBackend
-from agnoclaw.config import HarnessConfig
+from agnoclaw.config import HarnessConfig, RuntimeProfile
+from agnoclaw.runtime import HarnessError
 from agnoclaw.tools.backends import CommandResult
 
 
@@ -29,7 +32,12 @@ class FakeWorkspaceAdapter:
     def multi_edit_file(self, path: str, edits: list[dict[str, str]]) -> str:
         return f"team-adapter-multi:{path}:{len(edits)}"
 
-    def glob_files(self, pattern: str, base_dir: str | None = None, path: str | None = None) -> str:
+    def glob_files(
+        self,
+        pattern: str,
+        base_dir: str | None = None,
+        path: str | None = None,
+    ) -> str:
         return f"team-adapter-glob:{pattern}:{base_dir}:{path}"
 
     def grep_files(
@@ -41,7 +49,10 @@ class FakeWorkspaceAdapter:
         context_lines: int = 0,
         max_results: int = 50,
     ) -> str:
-        return f"team-adapter-grep:{pattern}:{path}:{glob}:{case_insensitive}:{context_lines}:{max_results}"
+        return (
+            f"team-adapter-grep:{pattern}:{path}:{glob}:"
+            f"{case_insensitive}:{context_lines}:{max_results}"
+        )
 
     def list_dir(self, path: str | None = None) -> str:
         return f"team-adapter-list:{path}"
@@ -50,12 +61,12 @@ class FakeWorkspaceAdapter:
 class FakeCommandExecutor:
     def __init__(self, workspace_dir: str | Path | None = None):
         self.workspace_dir = (
-            str(Path(workspace_dir).expanduser().resolve())
-            if workspace_dir is not None
-            else None
+            str(Path(workspace_dir).expanduser().resolve()) if workspace_dir is not None else None
         )
 
-    def run(self, *, command: str, workdir: str | None, timeout_seconds: int | None) -> CommandResult:
+    def run(
+        self, *, command: str, workdir: str | None, timeout_seconds: int | None
+    ) -> CommandResult:
         return CommandResult(stdout=f"team-executor-run:{command}:{workdir}:{timeout_seconds}")
 
     def start(self, *, command: str, workdir: str | None, description: str | None = None):
@@ -71,6 +82,22 @@ class FakeCommandExecutor:
 @pytest.fixture
 def cfg():
     return HarnessConfig()
+
+
+@pytest.mark.parametrize("profile", list(RuntimeProfile)[:-1])
+@pytest.mark.parametrize("factory_name", ["research_team", "code_team", "data_team"])
+def test_raw_team_presets_fail_closed_for_explicit_profiles(profile, factory_name):
+    from agnoclaw import teams
+
+    factory = getattr(teams, factory_name)
+    with pytest.raises(HarnessError) as caught:
+        factory(config=HarnessConfig(profile=profile))
+
+    assert caught.value.code == "TEAM_LIFECYCLE_UNSUPPORTED"
+    assert caught.value.details == {
+        "profile": profile.value,
+        "replacement": "declared_child_runs",
+    }
 
 
 def test_research_team_returns_team(cfg):
@@ -89,6 +116,7 @@ def test_research_team_returns_team(cfg):
 def test_research_team_uses_coordinate_mode(cfg):
     """research_team uses coordinate mode."""
     from agno.team import TeamMode
+
     from agnoclaw.teams import research_team
 
     team = research_team(model_id="anthropic:claude-sonnet-4-6", config=cfg)
@@ -123,8 +151,23 @@ def test_research_team_learning_enabled(cfg):
         model_id="anthropic:claude-sonnet-4-6",
         config=cfg,
         enable_learning=True,
+        learning_knowledge=SimpleNamespace(vector_db=MagicMock()),
     )
     assert team.learning is not None
+
+
+def test_research_team_learning_requires_vector_knowledge(cfg):
+    from agnoclaw.runtime import HarnessError
+    from agnoclaw.teams import research_team
+
+    with pytest.raises(HarnessError) as exc:
+        research_team(
+            model_id="anthropic:claude-sonnet-4-6",
+            config=cfg,
+            enable_learning=True,
+        )
+
+    assert exc.value.code == "LEARNING_KNOWLEDGE_REQUIRED"
 
 
 def test_code_team_returns_team(cfg):
@@ -160,6 +203,7 @@ def test_code_team_learning_enabled(cfg):
         model_id="anthropic:claude-sonnet-4-6",
         config=cfg,
         enable_learning=True,
+        learning_knowledge=SimpleNamespace(vector_db=MagicMock()),
     )
     assert team.learning is not None
 

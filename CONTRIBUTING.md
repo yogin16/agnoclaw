@@ -1,21 +1,28 @@
 # Contributing to agnoclaw
 
+Participation is governed by the [community code of conduct](CODE_OF_CONDUCT.md).
+Security reports follow [SECURITY.md](SECURITY.md), not the public issue tracker.
+
 ## Quick start
 
 ```bash
-git clone https://github.com/agnoclaw/agnoclaw
+git clone https://github.com/yogin16/agnoclaw
 cd agnoclaw
-uv sync --dev
-uv run pytest tests/ -q
+uv sync --extra dev
+uv run pytest tests/ -q -m "not integration"
 ```
 
 ## Development workflow
 
 1. **Branch** from `main`: `git checkout -b feature/my-feature`
 2. **Write tests first** — all new functionality needs tests
-3. **Run tests locally**: `uv run pytest tests/ -q`
-4. **Lint**: `uv run ruff check src/ tests/ && uv run ruff format src/ tests/`
-5. **Open a PR** — CI runs automatically
+3. **Run tests locally**: `uv run pytest tests/ -q -m "not integration"`
+4. **Run static and documentation gates**:
+   `uv run ruff check src/ tests/ scripts/`,
+   `uv run mypy src/agnoclaw/ --ignore-missing-imports`, and
+   `uv run pytest tests/test_documentation.py -q`
+5. **Open a PR** — CI runs the Python/Agno matrix, PostgreSQL contracts, package
+   budgets, and clean wheel/sdist installs
 
 ## Code style
 
@@ -27,7 +34,7 @@ uv run pytest tests/ -q
 
 Run everything in one shot:
 ```bash
-uv run ruff check --fix src/ tests/ && uv run ruff format src/ tests/
+uv run ruff check --fix src/ tests/ scripts/ && uv run ruff format src/ tests/ scripts/
 ```
 
 ## Tests

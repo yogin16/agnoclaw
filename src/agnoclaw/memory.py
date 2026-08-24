@@ -50,20 +50,21 @@ LearningMachine API Notes:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any
 
 
 def build_memory_manager(
     model_id: str = "claude-haiku-4-5-20251001",
     provider: str = "anthropic",
     db=None,
-    extra_instructions: Optional[str] = None,
+    extra_instructions: str | None = None,
 ):
     """
     Build an Agno MemoryManager for structured per-user cross-session memory.
 
     .. deprecated::
-        Use ``build_learning_machine(enable_user_memory=True)`` instead.
+        Use ``build_learning_machine(enable_user_memory=True,
+        enable_institutional_learning=False)`` instead for personal memory only.
         LearningMachine's user_memory and user_profile stores are a strict
         superset of MemoryManager with better extraction prompts and the
         Curator for memory maintenance.
@@ -78,9 +79,11 @@ def build_memory_manager(
         Configured MemoryManager instance.
     """
     import warnings
+
     warnings.warn(
         "build_memory_manager() is deprecated. Use build_learning_machine("
-        "enable_user_memory=True) instead — LearningMachine's user_memory "
+        "enable_user_memory=True, enable_institutional_learning=False) instead — "
+        "LearningMachine's user_memory "
         "store is a strict superset with better prompts and memory maintenance.",
         DeprecationWarning,
         stacklevel=2,
@@ -90,6 +93,7 @@ def build_memory_manager(
 
     from .agent import _resolve_model
     from .config import get_config
+
     model = _resolve_model(model_id, provider, get_config())
 
     instructions = """
@@ -107,7 +111,10 @@ Do NOT capture:
     if extra_instructions:
         instructions += f"\n\nAdditional instructions:\n{extra_instructions}"
 
-    kwargs = {"model": model, "additional_instructions": instructions}
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "additional_instructions": instructions,
+    }
     if db is not None:
         kwargs["db"] = db
 
@@ -118,10 +125,14 @@ def build_learning_machine(
     db=None,
     model_id: str = "claude-haiku-4-5-20251001",
     provider: str = "anthropic",
-    namespace: Optional[str] = None,
+    namespace: str | None = None,
     mode: str = "agentic",
     enable_user_memory: bool = False,
     enable_session_context: bool = False,
+    enable_institutional_learning: bool = True,
+    knowledge=None,
+    policy=None,
+    scope=None,
 ):
     """
     Build an Agno LearningMachine — the unified memory system.
@@ -134,7 +145,7 @@ def build_learning_machine(
     Each store is configured individually with its own LearningMode.
     There is NO global mode parameter — modes are set per-store.
 
-    Institutional stores (always enabled):
+    Institutional stores (enabled by default; require vector-backed Knowledge):
     - learned_knowledge — reusable insights discovered through experience
     - entity_memory     — facts about named entities (projects, tools, APIs)
     - decision_log      — record of consequential decisions and their rationale
@@ -166,29 +177,64 @@ def build_learning_machine(
                            Replaces the deprecated MemoryManager.
         enable_session_context: Include session_context store (higher noise,
                                 useful for long-running agents).
+        enable_institutional_learning: Enable Entity Memory, Learned Knowledge,
+                                      and Decision Log.
+        knowledge: Agno Knowledge with a configured vector_db. Required when
+                   institutional learning is enabled.
 
     Returns:
         Configured LearningMachine instance.
 
     Example:
         # Institutional memory only (cross-user knowledge)
-        lm = build_learning_machine(db=my_db)
+        lm = build_learning_machine(db=my_db, knowledge=vector_knowledge)
 
         # Full memory: institutional + per-user
-        lm = build_learning_machine(db=my_db, enable_user_memory=True)
+        lm = build_learning_machine(
+            db=my_db,
+            knowledge=vector_knowledge,
+            enable_user_memory=True,
+        )
 
         # Via AgentHarness (recommended)
         agent = AgentHarness(
             enable_learning=True,
             enable_user_memory=True,
             learning_namespace="code-review",
+            learning_knowledge=vector_knowledge,
         )
     """
+    if policy is not None:
+        if scope is None:
+            from .runtime.errors import HarnessError
+
+            raise HarnessError(
+                code="LEARNING_SCOPE_REQUIRED",
+                category="learning",
+                message="An explicit LearningPolicy requires a resolved LearningScope.",
+                retryable=False,
+            )
+        knowledge = policy.knowledge
+    elif enable_institutional_learning and (
+        knowledge is None or getattr(knowledge, "vector_db", None) is None
+    ):
+        from .runtime.errors import HarnessError
+
+        raise HarnessError(
+            code="LEARNING_KNOWLEDGE_REQUIRED",
+            category="learning",
+            message=("Institutional learning requires Agno Knowledge with a configured vector_db."),
+            retryable=False,
+            details={"parameter": "knowledge"},
+        )
+
     from agno.learn import LearningMachine, LearningMode
     from agno.learn.config import (
         DecisionLogConfig,
         EntityMemoryConfig,
         LearnedKnowledgeConfig,
+        UserMemoryConfig,
+        UserProfileConfig,
     )
     from agno.models.utils import get_model
 
@@ -203,14 +249,19 @@ def build_learning_machine(
     }
     learning_mode = mode_map.get(mode)
     if learning_mode is None:
-        import logging as _logging
-        _logging.getLogger("agnoclaw.memory").warning(
-            "Unknown learning mode '%s', falling back to 'agentic'. "
-            "Valid modes: %s",
-            mode, ", ".join(sorted(mode_map.keys())),
+        from .runtime.errors import HarnessError
+
+        raise HarnessError(
+            code="LEARNING_MODE_UNSUPPORTED",
+            category="learning",
+            message=(
+                f"Unsupported learning mode {mode!r}. Expected one of: "
+                f"{', '.join(sorted(mode_map))}."
+            ),
+            retryable=False,
+            details={"mode": mode, "supported_modes": sorted(mode_map)},
         )
-        learning_mode = LearningMode.AGENTIC
-    _namespace = namespace or "global"
+    _namespace = scope.storage_namespace if policy is not None else namespace or "global"
 
     if db is None:
         from pathlib import Path
@@ -219,42 +270,159 @@ def build_learning_machine(
 
         cfg = get_config()
         db_path = Path(cfg.storage.sqlite_path).expanduser()
+        if str(db_path) != ":memory:":
+            from .migration_fence import assert_migration_store_writable
+
+            assert_migration_store_writable(
+                db_path,
+                code="LEARNING_STORE_FENCED",
+                category="learning",
+                store_name="SQLite learning/session",
+            )
         db_path.parent.mkdir(parents=True, exist_ok=True)
         db = SqliteDb(db_file=str(db_path))
 
     model_ref = _resolve_model(model_id, provider, get_config())
     model = get_model(model_ref)
 
-    # ── Per-store configs ──────────────────────────────────────────────────
-    # entity_memory: tracks named entities with configurable mode
-    entity_config = EntityMemoryConfig(
-        db=db,
-        model=model,
-        mode=learning_mode,
-        namespace=_namespace,
-        enable_agent_tools=True,
-    )
+    if policy is not None:
+        from .learning import LearningMode as HarnessLearningMode
 
-    # learned_knowledge: always AGENTIC — knowledge capture is selective by nature
-    # Note: LearnedKnowledgeConfig doesn't take db= (uses LearningMachine's db)
-    learned_config = LearnedKnowledgeConfig(
-        model=model,
-        mode=LearningMode.AGENTIC,
-        namespace=_namespace,
-        enable_agent_tools=True,
-    )
+        def _policy_mode(store_policy):
+            return mode_map[store_policy.mode.value]
 
-    # decision_log: tracks WHY decisions were made, configurable mode
-    decision_config = DecisionLogConfig(
-        db=db,
-        model=model,
-        mode=learning_mode,
-        enable_agent_tools=True,
-    )
+        user_profile_config: Any = False
+        if policy.user_profile is not None:
+            user_profile_config = UserProfileConfig(
+                db=db,
+                model=model,
+                mode=_policy_mode(policy.user_profile),
+                max_updates_per_run=policy.user_profile.max_updates_per_run,
+                enable_agent_tools=(policy.user_profile.mode is not HarnessLearningMode.ALWAYS),
+            )
+
+        user_memory_config: Any = False
+        if policy.user_memory is not None:
+            user_memory_config = UserMemoryConfig(
+                db=db,
+                model=model,
+                mode=_policy_mode(policy.user_memory),
+                max_updates_per_run=policy.user_memory.max_updates_per_run,
+                enable_agent_tools=(policy.user_memory.mode is not HarnessLearningMode.ALWAYS),
+            )
+
+        session_context_config: Any = False
+        if policy.session_context is not None:
+            from agno.learn.config import SessionContextConfig
+
+            session_context_config = SessionContextConfig(
+                db=db,
+                model=model,
+                mode=_policy_mode(policy.session_context),
+                max_updates_per_run=policy.session_context.max_updates_per_run,
+                enable_planning=True,
+            )
+
+        # Institutional stores are recall-only on the direct Agno path. Their
+        # candidate writes are owned by LearningGateway; the proposing model cannot
+        # promote itself by mutating shared memory here.
+        policy_entity_config: Any = False
+        if policy.entity_memory is not None:
+            policy_entity_config = EntityMemoryConfig(
+                db=db,
+                model=model,
+                mode=LearningMode.AGENTIC,
+                namespace=_namespace,
+                max_updates_per_run=policy.entity_memory.max_updates_per_run,
+                enable_agent_tools=False,
+            )
+
+        policy_learned_config: Any = False
+        if policy.learned_knowledge is not None:
+            policy_learned_config = LearnedKnowledgeConfig(
+                knowledge=knowledge,
+                model=model,
+                mode=LearningMode.AGENTIC,
+                namespace=_namespace,
+                max_updates_per_run=policy.learned_knowledge.max_updates_per_run,
+                enable_agent_tools=True,
+                agent_can_save=False,
+                agent_can_search=True,
+            )
+
+        policy_decision_config: Any = False
+        if policy.decision_log is not None:
+            policy_decision_config = DecisionLogConfig(
+                db=db,
+                model=model,
+                mode=LearningMode.AGENTIC,
+                max_updates_per_run=policy.decision_log.max_updates_per_run,
+                enable_agent_tools=True,
+                agent_can_save=False,
+                agent_can_search=True,
+            )
+
+        budgets = [
+            store.max_updates_per_run
+            for store in (
+                policy.user_profile,
+                policy.user_memory,
+                policy.session_context,
+                policy.entity_memory,
+                policy.learned_knowledge,
+                policy.decision_log,
+            )
+            if store is not None
+        ]
+        return LearningMachine(
+            db=db,
+            model=model,
+            knowledge=knowledge,
+            namespace=_namespace,
+            max_updates_per_run=max(budgets, default=1),
+            user_profile=user_profile_config,
+            user_memory=user_memory_config,
+            session_context=session_context_config,
+            entity_memory=policy_entity_config,
+            learned_knowledge=policy_learned_config,
+            decision_log=policy_decision_config,
+        )
+
+    # ── Legacy per-store configs ───────────────────────────────────────────
+    entity_config: Any = False
+    learned_config: Any = False
+    decision_config: Any = False
+    if enable_institutional_learning:
+        # entity_memory: tracks named entities with configurable mode
+        entity_config = EntityMemoryConfig(
+            db=db,
+            model=model,
+            mode=learning_mode,
+            namespace=_namespace,
+            enable_agent_tools=True,
+        )
+
+        # Learned Knowledge is meaningful only with vector-backed Knowledge.
+        learned_config = LearnedKnowledgeConfig(
+            knowledge=knowledge,
+            model=model,
+            mode=LearningMode.AGENTIC,
+            namespace=_namespace,
+            enable_agent_tools=True,
+        )
+
+        # decision_log: tracks WHY decisions were made, configurable mode
+        decision_config = DecisionLogConfig(
+            db=db,
+            model=model,
+            mode=learning_mode,
+            enable_agent_tools=True,
+        )
 
     kwargs = dict(
         db=db,
         model=model,
+        knowledge=knowledge,
         namespace=_namespace,
         # Per-user stores — enabled when enable_user_memory=True
         user_profile=enable_user_memory,

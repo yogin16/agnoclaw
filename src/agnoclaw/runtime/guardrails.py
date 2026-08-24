@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+import socket
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from ipaddress import ip_address
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -13,7 +14,9 @@ from urllib.parse import urlparse
 from .hooks import ToolCallRequest
 
 _PATH_ARG_KEYS = frozenset({"path", "base_dir", "working_dir", "directory", "dir", "cwd"})
-_NETWORK_TOOL_NAMES = frozenset({"web_search", "web_fetch"})
+_NETWORK_TOOL_NAMES = frozenset(
+    {"web_search", "web_fetch", "mcp_connect", "search_mcp_tools", "call_mcp_tool"}
+)
 _BROWSER_TOOL_NAMES = frozenset(
     {
         "browser_navigate",
@@ -69,9 +72,7 @@ class RuntimeGuardrails:
 
         explicit_allowed = tuple(path_allowed_roots or ())
         self.path_allowed_roots = (
-            self._normalize_roots(explicit_allowed)
-            if explicit_allowed
-            else (self.workspace_dir,)
+            self._normalize_roots(explicit_allowed) if explicit_allowed else (self.workspace_dir,)
         )
         self.path_blocked_roots = self._normalize_roots(path_blocked_roots or ())
 
@@ -89,6 +90,58 @@ class RuntimeGuardrails:
         violations.extend(self._check_network_constraints(request))
         return tuple(violations)
 
+    def validate_network_url(
+        self,
+        url: str,
+        *,
+        tool_name: str = "network_request",
+        arg_key: str = "url",
+    ) -> tuple[GuardrailViolation, ...]:
+        """Validate one actual outbound request URL, including DNS resolution."""
+        if not self.enabled:
+            return ()
+        if not self.network_enabled:
+            return (
+                GuardrailViolation(
+                    code="NETWORK_DISABLED",
+                    message=f"Tool '{tool_name}' is blocked because network is disabled",
+                    details={"tool_name": tool_name},
+                ),
+            )
+        return tuple(self._validate_url(url=url, tool_name=tool_name, arg_key=arg_key))
+
+    def resolve_network_host(self, host: str, port: int) -> tuple[str, ...]:
+        """Resolve a host to canonical safe addresses for connection pinning."""
+        normalized = host.lower().strip().rstrip(".")
+        literal = self._parse_ip(normalized)
+        addresses: tuple[str, ...]
+        if literal is not None:
+            addresses = (str(literal),)
+        else:
+            try:
+                resolved = socket.getaddrinfo(
+                    normalized,
+                    port,
+                    type=socket.SOCK_STREAM,
+                )
+            except OSError as exc:
+                raise ValueError(f"DNS resolution failed for {normalized!r}") from exc
+            resolved_addresses: list[str] = []
+            for item in resolved:
+                address = item[4][0]
+                if isinstance(address, str):
+                    resolved_addresses.append(address.split("%", 1)[0])
+            addresses = tuple(dict.fromkeys(resolved_addresses))
+        if not addresses:
+            raise ValueError(f"DNS resolution returned no addresses for {normalized!r}")
+        if self.network_block_private_hosts:
+            unsafe = [address for address in addresses if self._is_unsafe_ip(ip_address(address))]
+            if unsafe:
+                raise ValueError(
+                    f"host {normalized!r} resolves to a blocked address: {unsafe[0]}"
+                )
+        return addresses
+
     def _check_path_constraints(self, request: ToolCallRequest) -> list[GuardrailViolation]:
         violations: list[GuardrailViolation] = []
         for arg_key, raw_path in self._extract_path_candidates(request.arguments):
@@ -100,8 +153,7 @@ class RuntimeGuardrails:
                     GuardrailViolation(
                         code="PATH_BLOCKED_ROOT",
                         message=(
-                            f"Tool '{request.tool_name}' path is under blocked "
-                            f"root: {blocked_root}"
+                            f"Tool '{request.tool_name}' path is under blocked root: {blocked_root}"
                         ),
                         details={
                             "tool_name": request.tool_name,
@@ -146,8 +198,9 @@ class RuntimeGuardrails:
                     details={"tool_name": tool_name},
                 )
             )
+            return violations
 
-        if tool_name == "web_fetch":
+        if tool_name in {"web_fetch", "mcp_connect"}:
             url = arguments.get("url")
             if isinstance(url, str):
                 violations.extend(self._validate_url(url=url, tool_name=tool_name, arg_key="url"))
@@ -161,8 +214,7 @@ class RuntimeGuardrails:
             command = arguments.get("command")
             if isinstance(command, str):
                 command_has_network = bool(
-                    _BASH_NETWORK_COMMAND_RE.search(command)
-                    or _URL_RE.search(command)
+                    _BASH_NETWORK_COMMAND_RE.search(command) or _URL_RE.search(command)
                 )
                 if command_has_network and not self.network_enabled:
                     violations.append(
@@ -187,11 +239,29 @@ class RuntimeGuardrails:
 
     def _validate_url(self, *, url: str, tool_name: str, arg_key: str) -> list[GuardrailViolation]:
         violations: list[GuardrailViolation] = []
-        parsed = urlparse(url.strip())
+        try:
+            parsed = urlparse(url.strip())
+            port = parsed.port
+        except ValueError:
+            return [
+                GuardrailViolation(
+                    code="NETWORK_INVALID_URL",
+                    message="URL is malformed",
+                    details={"tool_name": tool_name, "arg_key": arg_key, "url": url},
+                )
+            ]
         scheme = (parsed.scheme or "").lower()
         host = (parsed.hostname or "").lower()
 
-        if self.network_enforce_https and scheme and scheme != "https":
+        if scheme not in {"http", "https"}:
+            violations.append(
+                GuardrailViolation(
+                    code="NETWORK_SCHEME_BLOCKED",
+                    message=f"URL scheme '{scheme or '(missing)'}' is not allowed",
+                    details={"tool_name": tool_name, "arg_key": arg_key, "url": url},
+                )
+            )
+        elif self.network_enforce_https and scheme != "https":
             violations.append(
                 GuardrailViolation(
                     code="NETWORK_HTTPS_REQUIRED",
@@ -209,6 +279,15 @@ class RuntimeGuardrails:
                 )
             )
             return violations
+
+        if parsed.username is not None or parsed.password is not None:
+            violations.append(
+                GuardrailViolation(
+                    code="NETWORK_URL_CREDENTIALS_FORBIDDEN",
+                    message="Credentials in outbound URLs are forbidden",
+                    details={"tool_name": tool_name, "arg_key": arg_key, "url": url},
+                )
+            )
 
         if self.network_blocked_hosts and self._host_in_set(host, self.network_blocked_hosts):
             violations.append(
@@ -228,14 +307,46 @@ class RuntimeGuardrails:
                 )
             )
 
+        host_dispatch_blocked = any(
+            violation.code
+            in {
+                "NETWORK_SCHEME_BLOCKED",
+                "NETWORK_HTTPS_REQUIRED",
+                "NETWORK_HOST_BLOCKED",
+                "NETWORK_HOST_NOT_ALLOWED",
+                "NETWORK_URL_CREDENTIALS_FORBIDDEN",
+            }
+            for violation in violations
+        )
         if self.network_block_private_hosts and self._is_private_host(host):
             violations.append(
                 GuardrailViolation(
                     code="NETWORK_PRIVATE_HOST_BLOCKED",
                     message=f"Private/loopback host '{host}' is blocked",
-                    details={"tool_name": tool_name, "arg_key": arg_key, "url": url, "host": host},
+                    details={
+                        "tool_name": tool_name,
+                        "arg_key": arg_key,
+                        "url": url,
+                        "host": host,
+                    },
                 )
             )
+        elif self.network_block_private_hosts and not host_dispatch_blocked:
+            try:
+                self.resolve_network_host(host, port or (443 if scheme == "https" else 80))
+            except ValueError as exc:
+                violations.append(
+                    GuardrailViolation(
+                        code="NETWORK_PRIVATE_HOST_BLOCKED",
+                        message=str(exc),
+                        details={
+                            "tool_name": tool_name,
+                            "arg_key": arg_key,
+                            "url": url,
+                            "host": host,
+                        },
+                    )
+                )
         return violations
 
     def _extract_path_candidates(self, arguments: dict[str, Any]) -> list[tuple[str, str]]:
@@ -262,9 +373,7 @@ class RuntimeGuardrails:
     @staticmethod
     def _normalize_roots(roots: Iterable[str]) -> tuple[Path, ...]:
         return tuple(
-            Path(root).expanduser().resolve(strict=False)
-            for root in roots
-            if str(root).strip()
+            Path(root).expanduser().resolve(strict=False) for root in roots if str(root).strip()
         )
 
     @staticmethod
@@ -299,18 +408,31 @@ class RuntimeGuardrails:
         return False
 
     @staticmethod
-    def _is_private_host(host: str) -> bool:
+    def _parse_ip(host: str) -> IPv4Address | IPv6Address | None:
+        try:
+            return ip_address(host)
+        except ValueError:
+            pass
+        try:
+            return ip_address(socket.inet_ntoa(socket.inet_aton(host)))
+        except OSError:
+            return None
+
+    @classmethod
+    def _is_private_host(cls, host: str) -> bool:
         normalized = host.lower().strip(".")
         if normalized in {"localhost"} or normalized.endswith(".local"):
             return True
-        try:
-            ip = ip_address(normalized)
-        except ValueError:
-            return False
+        parsed = cls._parse_ip(normalized)
+        return parsed is not None and cls._is_unsafe_ip(parsed)
+
+    @staticmethod
+    def _is_unsafe_ip(ip: IPv4Address | IPv6Address) -> bool:
         return (
             ip.is_private
             or ip.is_loopback
             or ip.is_link_local
             or ip.is_reserved
             or ip.is_multicast
+            or ip.is_unspecified
         )

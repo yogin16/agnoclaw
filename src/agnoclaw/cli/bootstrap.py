@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def main(argv: Sequence[str] | None = None) -> int:

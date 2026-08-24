@@ -1,1229 +1,249 @@
 # agnoclaw
 
-**A hackable, model-agnostic agent harness built on Agno.**
+**A small, embeddable, model-agnostic agent harness built on Agno.**
 
-Distills the best ideas from Claude Code's system prompt architecture, OpenClaw's UX patterns (heartbeat, workspace, SKILL.md), and LangChain DeepAgents' middleware insights — running them on Agno's production-ready, model-agnostic engine. Built to be owned, forked, and extended.
+`agnoclaw` combines Agno's model portability with an opinionated workspace, Agent
+Skills, policy and permission hooks, a transactional run lifecycle, scoped artifacts,
+and governed learning. It is a Python library first: no required gateway, editor, or
+hosted control plane.
 
----
+> **0.12 release-candidate status:** security, lifecycle, effects, artifacts, approvals,
+> governed-learning, and durable-scheduler foundations are implemented and tested.
+> Schema-v12 SQLite/PostgreSQL scheduling has deterministic occurrences, leased/fenced
+> attempts, lifecycle reattachment, retries, misfires, overlap policy, and learning
+> consent. Artifact-first context, governed spill, declared capabilities, deferred MCP 2.0, and read-only Agno context
+> queries work; raw extensions are rejected by `start()`. Authenticated AgentOS remote
+> lifecycle parity is implemented; JWT/proxy certification and live-provider proof remain
+> open. Improvement evidence, exact pre-model recovery, fresh-process subjects, and a strict no-network Docker evaluation profile
+> work; VM/provider-egress certification and arbitrary mid-model/tool-stack
+> continuation remain open. Follow the [live implementation record](docs/releases/v0.12.0-progress.md) for evidence and limitations.
 
-## Why agnoclaw?
+## Install
 
-| | Claude Code harness | OpenClaw | agnoclaw |
-|---|---|---|---|
-| **Model support** | Anthropic only | Any | Any (30+ via Agno) |
-| **Embeddable as library** | No (CLI app) | No (standalone app) | Yes (`pip install agnoclaw`) |
-| **Hackable agent loop** | No | No | Yes (Agno pre/post hooks, guardrails) |
-| **Multi-agent** | Task tool only | No | Native (coordinate, route, broadcast) |
-| **SKILL.md system** | Yes | Yes | Yes (compatible with both) |
-| **Heartbeat + Cron** | No | Yes | Yes (interval strings + cron expressions) |
-| **Workspace** | CLAUDE.md only | Full workspace | Full workspace |
-| **Self-improving** | No | Community skill | Bundled `self-improving-agent` skill |
-| **Atomic multi-edit** | Yes (MultiEdit) | No | Yes (`multi_edit_file`) |
-| **Service install** | No | Yes (launchd/systemd) | Yes (`install-service`) |
-| **Python-native** | No (TypeScript) | No | Yes |
-| **Textual TUI** | No | No | Yes (streaming, notifications, skill picker) |
-| **Async REPL** | No | No | Yes (heartbeat alerts while typing) |
-| **Production patterns** | N/A | N/A | HITL, streaming, tracing, eval |
-
-**TL;DR:** Claude Code is a consumer product. OpenClaw is a standalone app. agnoclaw is a library — embed it in anything, hack it for everything.
-
-`HarnessAgent` is available as a backward-compatible alias for `AgentHarness`.
-
----
-
-## Installation
+Python 3.11–3.14 is supported. The core is provider-neutral; install only the extras you use.
 
 ```bash
-# Core library only (for embedding — zero CLI/TUI deps)
-pip install agnoclaw
-
-# With CLI (async REPL, heartbeat notifications)
-pip install "agnoclaw[cli]"
-
-# With full Textual TUI
-pip install "agnoclaw[tui]"
-
-# Personal-assistant setup (TUI + cron)
-pip install "agnoclaw[full]"
-
-# With local Ollama support (no API key needed)
-pip install "agnoclaw[local]"
-
-# With Postgres support
-pip install "agnoclaw[postgres]"
-
-# With all model providers
-pip install "agnoclaw[all-models]"
-
-# With uv (recommended)
-uv add agnoclaw
-uv add "agnoclaw[tui]"   # for TUI
+pip install agnoclaw                    # core; strings or an AgnoModelFactory
+pip install "agnoclaw[anthropic]"       # recommended Claude setup
+pip install "agnoclaw[local]"           # local Ollama
+pip install "agnoclaw[cli]"             # CLI and async REPL
+pip install "agnoclaw[tui]"             # Textual TUI
+pip install "agnoclaw[postgres]"        # PostgreSQL runtime stores
+pip install "agnoclaw[mcp]"             # MCP 2.0 deferred tool ingress
+pip install "agnoclaw[server]"          # AgentOS + remote lifecycle HTTP edge
+pip install "agnoclaw[full]"            # Claude + web + scheduler + TUI
 ```
 
----
+## Run an agent
 
-## Quick Start
+The default model is Claude, so this example requires `ANTHROPIC_API_KEY` and the `anthropic` extra.
 
 ```python
 from agnoclaw import AgentHarness
 
-agent = AgentHarness()
-agent.print_response("Summarize the files in this directory", stream=True)
+harness = AgentHarness()
+result = harness.run("Summarize the files in this directory")
+print(result.content)
 ```
 
-### With a different model — `"provider:model_id"` format
+Use any Agno-supported model with `"provider:model_id"`:
 
 ```python
-agent = AgentHarness("anthropic:claude-sonnet-4-6")
-agent = AgentHarness("openai:gpt-4o")
-agent = AgentHarness("google:gemini-2.0-flash")
-agent = AgentHarness("groq:llama-3.3-70b-versatile")
-agent = AgentHarness("ollama:qwen3:8b")   # local, no API key
+harness = AgentHarness("openai:gpt-4o")
+harness = AgentHarness("google:gemini-2.0-flash")
+harness = AgentHarness("ollama:qwen3:8b")  # local; Ollama must be running
 ```
 
-The model string `"provider:model_id"` is parsed natively by Agno — no separate `provider=` needed. Legacy `model_id=` + `provider=` kwargs still work.
+## Choose runtime semantics
 
-### Try it now (zero config)
+The 0.12 preview exposes `quick`, `durable`, and `service` profiles; the no-argument
+default remains `legacy` only for migration compatibility. Start new short-running
+work with `HarnessConfig.quick()` or `AgentHarness(profile="quick")`. Durable/service
+construction fails early unless its required runtime and artifact stores are explicit;
+service additionally requires PostgreSQL runtime and Agno storage. Profile defaults,
+prerequisites, and current certification limits are in the
+[configuration reference](docs/configuration.md#runtime-profiles).
+
+For streaming compatibility:
 
 ```python
-from agnoclaw import AgentHarness
-
-# Works out of the box with any Agno-supported model
-agent = AgentHarness("ollama:qwen3:8b")  # local, no API key needed
-agent.print_response("What files are in this directory?")
+async for event in harness.arun(
+    "Analyze this repository",
+    stream=True,
+    stream_events=True,
+):
+    print(event)
 ```
 
-### With a skill
+Read the [getting-started tutorial](docs/getting-started.md) for provider setup, trusted execution context, sessions, cleanup, and expected failure behavior.
+
+## Control a run
+
+`start()` returns the preview lifecycle facade without waiting for completion:
 
 ```python
-agent.print_response(
-    "Research the state of fusion energy in 2026",
-    skill="deep-research",
+run = await harness.start(
+    "Investigate the incident",
+    session_id="incident-42",
+    idempotency_key="incident-42:v1",
+)
+async for event in run.events():
+    print(event.sequence, event.event_type)
+result = await run.wait()
+await harness.aclose(policy="drain")
+```
+
+The lifecycle persists intent, state, terminal results, and content-minimized normalized trajectory through a `RuntimeStore`; ambiguous outcomes are never blindly retried. Recovery continues from settled pre-model/result/evidence boundaries; exact-owner startup and reconciliation scans do not promise general mid-model restart. See [run lifecycle](docs/runtime-lifecycle.md),
+[operations and recovery](docs/operations-and-recovery.md), and [artifacts](docs/artifacts.md).
+
+With a durable artifact store, `start(..., persist_output=True)` uses bounded provider
+streaming and `run.output()` replays authorized text segments by cursor. Authenticated
+remote lifecycle starts default this option to true. The final `wait()` result remains
+authoritative; output replay does not pretend an interrupted provider call is safe to
+resume.
+
+## Embed with trusted identity
+
+Resolve identity in the host, then pass one immutable context to the harness:
+
+```python
+from agnoclaw import AgentHarness, ExecutionContext
+
+harness = AgentHarness(
+    workspace_dir="/srv/agent/workspace",
+    permission_mode="default",
+    permission_require_approver=True,
+)
+context = ExecutionContext.create(
+    tenant_id="acme",
+    user_id="user-42",
+    session_id="case-7",
+    workspace_id="support",
+    roles=["analyst"],
+    scopes=["agents.run"],
+)
+result = await harness.arun("Continue the case", context=context)
+```
+
+The effect-safe model/capability slice can overlap through isolated Agno Agents. Local
+built-ins get fresh run-owned tools but remain typed single-flight with custom/streaming paths. Read the
+[embedding guide](docs/embedding/README.md) before service deployment.
+
+## Use Agno learning safely
+
+Learning is intent- and scope-driven. Personal/session stores can write directly with
+explicit consent; institutional observations become governed candidates first.
+
+```python
+from agnoclaw import AgentHarness, LearningProfile
+
+harness = AgentHarness(
+    learning=LearningProfile.personal_and_session(
+        user_profile="always",
+        user_memory="agentic",
+        session_context="always",
+        max_updates_per_run=5,
+    )
+)
+result = await harness.arun(
+    "Remember that I prefer concise incident summaries",
+    context=context,
+    learning_consent=True,
 )
 ```
 
-### Use a SkillHub / community skill
+Scoped read/replace/forget administration is post-verified. Candidate capture,
+evaluation, promotion/rollback, unknown-effect discovery, and evidence-bound
+reconciliation plus an owner-scoped leased/fenced/checkpointed maintenance worker are implemented on SQLite and PostgreSQL.
+Automatic promotion remains off until custom backend observers,
+production worker certification, deletion proof, and model-backed no-learning benefit pass. Start with
+[learning](docs/learning.md), [administration](docs/learning-administration.md), and [governed candidates](docs/learning-candidates.md).
 
-Skills from [ClawHub](https://clawhub.dev) or any AgentSkills-compatible repo
-work out of the box — just drop the skill directory in your skills folder:
+## Skills, workspace, tools, and backends
 
-```bash
-# Install a community skill (e.g. from SkillHub)
-git clone https://github.com/clawhub/skills-collection /tmp/skills-collection
-cp -r /tmp/skills-collection/summarize-pr ~/.agnoclaw/skills/summarize-pr
-```
-
-```python
-from agnoclaw import AgentHarness
-
-agent = AgentHarness()
-agent.print_response(
-    "Summarize PR #42 in the agno-agi/agno repo",
-    skill="summarize-pr",
-)
-```
-
-Or register a skills directory programmatically:
-
-```python
-agent = AgentHarness()
-agent.skills.add_directory("/path/to/clawhub-skills", trust="community")
-agent.print_response("Run the summarize-pr skill", skill="summarize-pr")
-```
-
-### Multi-agent team
+- Workspace instructions and memory are plain Markdown with explicit size limits and
+  precedence. See [workspace files](docs/workspace.md).
+- Agent Skills are loaded progressively and carry trust/tool restrictions. See the
+  [SKILL.md reference](docs/skills.md).
+- Built-in shell, file, skill, and browser execution share one injectable runtime
+  backend. See [runtime backends](docs/embedding/workspace-backends.md).
+- Capabilities use immutable descriptors and an operation-gated executor. Specs passed
+  through `AgentHarness(capabilities=[...])` receive version-pinned Agno binding,
+  policy, durable approval-before-effect, active-lease fencing, and governed replay.
+  Raw `tools=` are normalized as opaque, remain serialized only on named-legacy
+  `run/arun`, and are rejected by `start()` and explicit-profile convenience calls
+  until converted to explicit specs. See
+  [capabilities](docs/capabilities.md).
 
 ```python
-from agnoclaw.teams import research_team, code_team
-
-team = research_team()
-team.print_response("Compare the top AI agent frameworks in 2026", stream=True)
+result = await harness.arun("Review the authentication module", skill="code-review")
+print(result.content)
 ```
-
-### Local inference with Ollama (no API key)
-
-```python
-agent = AgentHarness("ollama:qwen3:8b")
-agent.print_response("Explain async/await in Python", stream=True)
-```
-
-### Async + streaming events
-
-```python
-import asyncio
-from agno.run.agent import RunEvent
-
-async def main():
-    agent = AgentHarness()
-    async for event in agent.arun("Analyze this codebase", stream=True, stream_events=True):
-        if event.event == RunEvent.run_content:
-            print(event.content, end="", flush=True)
-
-asyncio.run(main())
-```
-
-### v0.8 features (context providers, elevated, packs, sandbox, plan signals, AgentOS, lifecycle hooks, scheduler persistence)
-
-```python
-# Context provider (extends Agno's ContextProvider ABC)
-from agno.context.provider import ContextProvider
-from agno.context.provider import Answer, Status
-from agnoclaw import AgentHarness
-
-class MyProvider(ContextProvider):
-    def __init__(self):
-        super().__init__(id="my_provider", name="My Provider")
-
-    def query(self, question: str, *, run_context=None) -> Answer:
-        return Answer(answer=f"result for {question}")
-
-    async def aquery(self, question: str, *, run_context=None) -> Answer:
-        return self.query(question, run_context=run_context)
-
-    def status(self) -> Status:
-        return Status(available=True, details="ready")
-
-    async def astatus(self) -> Status:
-        return self.status()
-
-    def instructions(self) -> str:
-        return "Use my_query to search my data."
-
-harness = await AgentHarness.create(
-    context_providers=[MyProvider()],
-)
-
-# Elevated commands
-harness.set_elevated_mode("full")
-result = harness.run_elevated_command("sudo systemctl status", reason="Check service")
-
-# Sandbox modes
-harness = AgentHarness(sandbox_mode="read_only")
-
-# Plan signals
-harness.enter_plan_mode()
-harness.ask_user_question("Which DB?", options=["PG", "SQLite"])
-harness.signal_plan_completion("Use PG.", plan_path="plan.md")
-
-# Pack system
-from agnoclaw import inspect_pack, load_pack
-manifest = inspect_pack("./my-pack")     # no code executed
-pack = load_pack("./my-pack", trusted=True)
-
-# Lifecycle hooks
-harness.add_lifecycle_hook("run.started", lambda e, ctx: print(e.event_type))
-
-# AgentOS export
-from agnoclaw.runtime import create_agentos_app
-app = create_agentos_app([harness], scheduler=True, approvals=True)
-
-# Scheduler persistence
-from agnoclaw.runtime import JsonSchedulerBackend, SchedulerJob
-backend = JsonSchedulerBackend("~/.agnoclaw/schedules.json")
-backend.upsert_job(SchedulerJob(name="daily", schedule="0 8 * * *", prompt="Report"))
-
-# SDK ergonomics
-run = await harness.session(session_id="s1").send("Hello")
-async for event in run.events(): print(event)
-```
-
-### v0.9 features (per-run dependencies + active RunContext for custom dispatch)
-
-Set caller scope once per run as `dependencies`; every tool and every custom
-dispatch adapter reads it from one agno-native contract (the run's `RunContext`),
-and the values never reach the model (unless you opt in with
-`add_dependencies_to_context=True`). Per-run values merge over the
-construction-time defaults and are scoped to that run only — leak-free across
-concurrent and sequential runs on one harness.
-
-```python
-from agno.run.base import RunContext
-from agno.tools import tool
-from agnoclaw import AgentHarness, get_current_dependencies
-
-@tool
-def whoami(run_context: RunContext) -> str:           # Agno injects run_context
-    return str((run_context.dependencies or {}).get("tenant_id"))
-
-harness = AgentHarness(tools=[whoami], dependencies={"env": "prod"})
-
-# Per-run scope — merged over construction defaults, restored after the run.
-harness.run(
-    "Who am I?",
-    dependencies={"tenant_id": "acme", "user_id": "u-123"},
-    session_state={"cart": []},          # also per-run, merged + scoped
-)
-
-# A custom dispatch adapter (no run_context parameter) reads the SAME scope:
-def my_adapter():
-    deps = get_current_dependencies()    # active during a tool dispatch
-    return deps["tenant_id"]
-
-# Harness-level session-state read/update (proxies Agno):
-harness.update_session_state({"seen": True}, session_id="s1")
-state = harness.get_session_state(session_id="s1")
-```
-
-See `examples/per_run_dependencies.py` for a runnable end-to-end demo.
-
-### v0.10 features (per-run tool argument binding — partial application)
-
-Bind specific tool arguments for a single run: the bound args are **removed from
-the schema the model sees** AND **supplied at dispatch** (caller-wins; the model
-never sees or sets them). Conceptually `functools.partial(tool, **bound)` for a
-tool, scoped to one run — the pre-bound values can be chosen per run (resolved
-from the active skill, the request scope, etc.). Composes with
-`tool_schema_overrides` (re-type the remaining visible args) and a skill's
-`allowed_tools`; restored after the run (success, exception, streaming), so a
-later run without the binding sees the full signature.
-
-```python
-from agno.tools import tool
-from agnoclaw import AgentHarness
-
-@tool
-def save_artifact(name: str, kind: str, schema: str, content: str) -> str:
-    ...
-
-harness = AgentHarness(tools=[save_artifact])
-
-# This run: the model only sees `name` and `content`; kind/schema are pre-bound
-# and injected at dispatch.
-harness.run(
-    "Create and save a note.",
-    tool_arg_bindings={"save_artifact": {"kind": "note", "schema": "v1"}},
-)
-```
-
-A skill can also declare static bindings via `tool-arg-bindings` frontmatter;
-per-run values passed to `run`/`arun` win. See `examples/tool_arg_bindings.py`.
-
-See [`cookbook/`](cookbook/) for complete runnable examples of each feature.
-
----
-
-## Tools
-
-agnoclaw ships a Claude Code-compatible tool set. Key tools:
-
-| Tool | Method | Notes |
-|---|---|---|
-| `Read` | `read_file()` | Line offset/limit support |
-| `Write` | `write_file()` | Creates parent dirs |
-| `Edit` | `edit_file()` | Unique string replacement |
-| `MultiEdit` | `multi_edit_file()` | Atomic multi-replacement — validates all before applying |
-| `Glob` | `glob_files()` | Pattern matching, sorted by mtime |
-| `Grep` | `grep_files()` | Regex search with context lines |
-| `LS` | `list_dir()` | Directory listing with sizes |
-| `Bash` | `bash()` | Shell execution with timeout |
-| `WebSearch` | `web_search()` | Auto-detects best backend: Tavily → Exa → Brave → DDGS |
-| `WebFetch` | `web_fetch()` | URL fetch + HTML-to-text extraction |
-| `TodoWrite/Read` | `create_todo()` / `list_todos()` | Task management |
-| `Task` | `spawn_subagent()` | Subagent spawning |
-
-For the unified Claude Code + OpenClaw gap status (implemented/remaining roadmap), see [`docs/harness-gap-analysis.md`](docs/harness-gap-analysis.md).
-
----
-
-## Sandboxed Backends
-
-`agnoclaw` now exposes one coherent runtime override: `backend=...`.
-
-The harness still owns prompts, sessions, hooks, policy, permissions, and guardrails. The backend owns the execution plane behind:
-
-- `bash` / `bash_start` / `bash_output` / `bash_kill`
-- `read_file` / `write_file` / `edit_file` / `multi_edit_file` / `glob_files` / `grep_files` / `list_dir`
-- skill inline commands, dependency probes, and installs
-- browser tools, when enabled
-
-The same backend object is propagated into built-in subagents and team presets so nested runs stay on one runtime plane.
-
-```python
-from agnoclaw import AgentHarness, RuntimeBackend
-
-
-class MySandboxBackend(RuntimeBackend):
-    def __init__(self, sandbox):
-        super().__init__(
-            command_executor=SandboxExecutor(sandbox),
-            workspace_adapter=SandboxWorkspace(sandbox),
-            browser_backend=SandboxBrowser(sandbox),
-        )
-
-agent = AgentHarness(
-    workspace_dir="/srv/workspace",
-    backend=MySandboxBackend(sandbox),
-)
-```
-
-Host mode remains the default: if you do not pass `backend=...`, `agnoclaw` uses local host implementations for shell, files, skills, and browser.
-
-Optional first-party `llm-sandbox` integration is available as `agnoclaw[llm-sandbox]`.
-
-```python
-from agnoclaw import AgentHarness
-from agnoclaw.integrations import LLMSandboxBackend
-
-backend = LLMSandboxBackend(
-    sync_paths=["workspace/inputs"],
-)
-
-agent = AgentHarness(
-    workspace_dir="/srv/workspace",
-    backend=backend,
-)
-
-# Pull back only the files you want from the sandbox.
-backend.sync_from_runtime("workspace/outputs")
-```
-
-`LLMSandboxBackend` is Docker-first, keeps the same absolute workspace paths inside the sandbox, and does not silently copy the whole workspace. Consumers decide what to `sync_to_runtime()` and `sync_from_runtime()`. Browser tools still require a separate browser backend.
-
-More detail: [`docs/embedding/workspace-backends.md`](docs/embedding/workspace-backends.md)
-
----
 
 ## CLI
 
 ```bash
-# First-run onboarding wizard (persona, user identity, default model)
 agnoclaw init
-
-# Interactive chat (async REPL with heartbeat notifications)
 agnoclaw chat
-
-# Legacy blocking REPL
-agnoclaw chat --sync
-
-# Full Textual TUI (requires agnoclaw[tui])
+agnoclaw run "Review src/" --skill code-review
 agnoclaw tui
-
-# One-shot task
-agnoclaw run "Find and fix the bug in src/auth.py"
-
-# With model override
-agnoclaw run "Summarize the README" --model gpt-4o --provider openai
-
-# With Ollama (local, no API key)
-agnoclaw run "Summarize the README" --model qwen3:8b --provider ollama
-
-# With skill
-agnoclaw run "Research quantum computing trends" --skill deep-research
-
-# List available skills
-agnoclaw skill list
-
-# Inspect a skill
-agnoclaw skill inspect deep-research
-
-# Install a skill from a local directory
-agnoclaw skill install path/to/my-skill/
-
-# Initialize workspace (non-interactive)
-agnoclaw workspace init
-
-# Show workspace files
-agnoclaw workspace show
-
-# Start heartbeat daemon (runs until Ctrl+C)
 agnoclaw heartbeat start
-
-# Start with custom interval
-agnoclaw heartbeat start --interval 15
-
-# Trigger one heartbeat check immediately
-agnoclaw heartbeat trigger
-
-# Install as a persistent service (starts on login, survives terminal close)
-# macOS → launchd LaunchAgent; Linux → systemd user service
-agnoclaw heartbeat install-service
-
-# Uninstall the service
-agnoclaw heartbeat install-service --uninstall
-
-# Schedule management (persistent, SQLite-backed)
-agnoclaw schedule list                         # list all scheduled jobs
-agnoclaw schedule add daily-report             # add a job
-  --schedule '0 8 * * *' --prompt 'Generate report' --skill report
-agnoclaw schedule show daily-report            # show job details
-agnoclaw schedule enable daily-report          # enable a job
-agnoclaw schedule disable daily-report         # disable a job
-agnoclaw schedule trigger daily-report         # trigger a job immediately
-agnoclaw schedule runs daily-report            # view run history
-agnoclaw schedule remove daily-report          # delete a job
-
-# Pack management
-agnoclaw pack list                             # list installed packs
-agnoclaw pack inspect path/to/pack             # inspect pack manifest
-agnoclaw pack install path/to/pack             # install a pack
-agnoclaw pack trust my-pack                    # trust a pack for code execution
-agnoclaw pack remove my-pack                   # remove a pack
-
-# Elevated commands (session modes)
-# /elevated on|ask|full|off — set session-wide elevated mode for bash calls
-# Use inside the REPL or TUI via the /elevated directive
+agnoclaw migrate 0.12 service --help
+agnoclaw schedule worker --runtime-db ~/.agnoclaw/runtime.db
 ```
 
----
+Install the relevant extra first. The [CLI reference](docs/cli.md) records command groups,
+automation limits, and current durability boundaries; the [configuration
+reference](docs/configuration.md) covers TOML, environment variables, and safe service defaults.
+Use [durable scheduling](docs/durable-scheduling.md) for unattended jobs; JSON remains
+compatibility-only. The PostgreSQL migration lifecycle needs `cli,postgres,scheduler`; production certification remains open.
 
-## Workspace
+## Why this shape
 
-The workspace is your agent's home directory. Default: `~/.agnoclaw/workspace/`
+- **Tiny public grammar:** `run`, `arun`, `start`, `get_run`, `session`, and typed run
+  controls instead of a second orchestration framework.
+- **Short and long work, one kernel:** quick calls avoid unnecessary machinery while
+  controllable work gains identity, intent, state, events, effects, and artifacts.
+- **Truth before retries:** external effects have durable intent and explicit unknown
+  outcomes; exactly-once external execution is never implied.
+- **Learning is a governed data plane:** consent, scope, provenance, candidates,
+  evaluation, reversible promotion, and deletion are separate concerns.
+- **Progressive power:** local defaults stay approachable; service guarantees are
+  enabled only with the stores, policy, and evidence they require.
 
-```
-~/.agnoclaw/workspace/
-├── AGENTS.md       ← behavioral guidelines
-├── SOUL.md         ← persona and tone
-├── IDENTITY.md     ← capabilities, limitations, specializations
-├── USER.md         ← user preferences (create this yourself)
-├── MEMORY.md       ← long-term memory (agent-maintained, first 200 lines loaded)
-├── TOOLS.md        ← tool policy (allowed commands, restrictions)
-├── HEARTBEAT.md    ← heartbeat checklist
-├── BOOT.md         ← startup sequence (run on session start)
-├── skills/         ← workspace-level skill overrides (highest priority)
-└── memory/         ← daily session logs (YYYY-MM-DD.md)
-```
+The [architecture](docs/architecture.md) and [declared child-run contract](docs/child-runs.md) cover host, model-visible
+`DeclaredChildTemplate`, and authenticated remote delegation. Competitive decisions
+are in [World-class strategy](docs/world-class-harness.md), the [Agno release audit](docs/agno-release-practices.md),
+and the [Lilian Weng research audit](docs/lilian-weng-harness-audit.md).
 
-All workspace files are plain Markdown — grep-able, git-backup-friendly, fully transparent.
+## Compatibility and quality
 
-Populate them with `agnoclaw init` (interactive wizard) or write them directly.
+The current development lock is Agno 2.9.0; Agno 2.6.4 is the legacy lane and Agno
+3.0.0a1 is a quarantined preview. Schema-v12 is current; retained cross-Python/preview
+evidence predates its durable-scheduler tables and must rerun. Real-service, chaos,
+hosted-CI, soak, migration, and release-candidate gates remain separately tracked—unit
+count alone is not a production claim.
 
-### Example SOUL.md
+- [Compatibility matrix](docs/compatibility.md)
+- [Evaluation and release gates](docs/evaluation.md)
+- [Migration to 0.12](docs/migration-0.12.md)
+- [Changelog](CHANGELOG.md)
 
-```markdown
-# Soul
+## Documentation
 
-You are a direct, technically precise assistant.
-You prefer Python. You work in the ML/AI space.
-Never use emojis. Keep responses concise.
-```
+Use the [documentation index](docs/README.md) for tutorials, how-to guides, reference,
+explanations, operations, research, and release planning. `HarnessAgent`
+remains a backward-compatible alias for `AgentHarness`.
 
-### Example USER.md
-
-```markdown
-# User
-
-Name: Alice
-Timezone: US/Pacific
-Preferred language: Python (not JavaScript)
-Communication style: Direct, no fluff
-Current focus: Building ML infrastructure
-```
-
-### Example HEARTBEAT.md
-
-```markdown
-# Heartbeat Checklist
-
-- Check for unreviewed GitHub PRs
-- Alert if disk usage > 80%
-- Remind about daily standup if it's before 10am
-
-If nothing needs attention, reply HEARTBEAT_OK.
-```
-
----
-
-## Skills
-
-Skills extend the agent with domain-specific instructions. Compatible with the [AgentSkills standard](https://agentskills.io) and the Claude Code / OpenClaw SKILL.md format.
-
-### Built-in skills
-
-| Skill | Description |
-|---|---|
-| `deep-research` | Multi-source research with structured findings |
-| `code-review` | P0/P1/P2/P3 priority code review |
-| `git-workflow` | Safe git operations with guardrails |
-| `daily-standup` | Generate standup from git history and todos |
-| `memory-manage` | Read/update/summarize long-term memory |
-| `self-improving-agent` | Record corrections/errors/feature-requests in `.learnings/`; promote stable patterns to workspace files |
-
-### Using skills
-
-```python
-# Via API
-agent.print_response("Review src/auth.py", skill="code-review")
-
-# Via CLI
-agnoclaw run "Review src/auth.py" --skill code-review
-
-# Via chat slash command
-/skill code-review
-Review the authentication module.
-```
-
-### Writing a skill
-
-Create `~/.agnoclaw/workspace/skills/my-skill/SKILL.md`:
-
-```markdown
----
-name: my-skill
-description: What this skill does and when to use it
-user-invocable: true
-allowed-tools: bash, web_search
-argument-hint: "[optional arg hint]"
----
-
-# My Skill
-
-Instructions for the agent when this skill is active.
-
-Use $ARGUMENTS to access what the user passed.
-Use !`git status` to inject dynamic context.
-```
-
-Skill precedence (highest → lowest):
-1. `~/.agnoclaw/workspace/skills/` — workspace overrides
-2. `~/.agnoclaw/skills/` — user-level skills
-3. Built-in skills (shipped with agnoclaw)
-
-### Skill security
-
-Skills are classified by **trust level** based on their source:
-
-| Level | Source | Inline exec (`!`cmd``) | Install specs |
-|---|---|---|---|
-| **builtin** | Shipped with agnoclaw | Allowed | Auto-approved |
-| **local** | Workspace or `~/.agnoclaw/skills/` | Allowed | User approval required |
-| **community** | External (ClawHub, git clone) | Blocked | User approval + validation |
-
-Package names in install specs are validated against shell metacharacters, URL-based
-installs, and path traversal before any command runs. See `docs/skills.md` for details.
-
----
-
-## Heartbeat and Cron
-
-The heartbeat runs the agent on a schedule to surface items needing attention.
-Cron jobs extend this with precise expression-based scheduling — inspired by
-OpenClaw's CronManager.
-
-Heartbeat runs on the **main agent's session** (full workspace context). Cron jobs
-can run in the main session or in an **isolated session** (fresh, no prior context).
-
-```python
-import asyncio
-from agnoclaw import AgentHarness
-from agnoclaw.heartbeat import HeartbeatDaemon, CronJob
-
-agent = AgentHarness()
-
-def on_alert(message: str):
-    # Send to Slack, email, desktop notification, etc.
-    print(f"ALERT: {message}")
-
-daemon = HeartbeatDaemon(agent, on_alert=on_alert)
-
-# Add a cron job: daily standup at 9am Mon-Fri (isolated session)
-daemon.add_cron_job(CronJob(
-    name="daily-standup",
-    schedule="0 9 * * 1-5",         # cron expression
-    prompt="Run the daily standup.",
-    skill="daily-standup",
-    isolated=True,                   # fresh session, no conversation history
-))
-
-# Or use interval syntax: "30m", "1h", "2h30m"
-daemon.add_cron_job(CronJob(
-    name="disk-check",
-    schedule="1h",
-    prompt="Check if disk usage exceeds 80% and alert if so.",
-))
-
-asyncio.run(daemon.run_forever())  # blocks until Ctrl+C
-```
-
-For always-on operation (survives terminal close), install as a system service:
+## Development
 
 ```bash
-# macOS → launchd LaunchAgent; Linux → systemd user service
-agnoclaw heartbeat install-service --interval 30
+uv sync --extra dev
+uv run ruff check src/ tests/ scripts/
 ```
-
-Configuration (`.agnoclaw.toml` or env vars):
-
-```toml
-[heartbeat]
-enabled = true
-interval_minutes = 30
-active_hours_start = "08:00"
-active_hours_end = "22:00"
-model = "claude-haiku-4-5-20251001"  # cheaper model for heartbeat
-ok_threshold_chars = 300
-```
-
----
-
-## Configuration
-
-Priority order (highest → lowest):
-
-1. Environment variables (`AGNOCLAW_*`)
-2. `~/.agnoclaw/config.toml` (user-level)
-3. `.agnoclaw.toml` in current directory (project-level)
-4. Defaults
-
-### Example `.agnoclaw.toml`
-
-See [`.agnoclaw.toml.example`](.agnoclaw.toml.example) for the full annotated template with all options documented.
-
-Quick start — copy and customize:
-
-```bash
-cp .agnoclaw.toml.example .agnoclaw.toml
-# or for user-level config:
-cp .agnoclaw.toml.example ~/.agnoclaw/config.toml
-```
-
-Minimal config (most fields have sensible defaults):
-
-```toml
-default_model = "claude-sonnet-4-6"
-default_provider = "anthropic"
-
-[storage]
-backend = "sqlite"
-
-[heartbeat]
-enabled = false
-```
-
-### Key env vars
-
-```bash
-# Model
-AGNOCLAW_DEFAULT_MODEL=claude-sonnet-4-6
-AGNOCLAW_DEFAULT_PROVIDER=anthropic
-
-# Storage
-AGNOCLAW_STORAGE__BACKEND=postgres
-AGNOCLAW_STORAGE__POSTGRES_URL=postgresql://user:pass@localhost/agnoclaw
-
-# Learning + context
-AGNOCLAW_ENABLE_LEARNING=true
-AGNOCLAW_LEARNING_MODE=agentic
-AGNOCLAW_ENABLE_COMPRESSION=true
-AGNOCLAW_ENABLE_SESSION_SUMMARY=true
-
-# Heartbeat
-AGNOCLAW_HB_ENABLED=true
-AGNOCLAW_HB_INTERVAL_MINUTES=30
-AGNOCLAW_HB_MODEL=claude-haiku-4-5-20251001
-
-# Runtime governance
-AGNOCLAW_PERMISSION_MODE=default
-AGNOCLAW_GUARDRAILS_ENABLED=true
-
-# TUI
-AGNOCLAW_THEME=textual-dark
-
-# Debug
-AGNOCLAW_DEBUG=true
-```
-
----
-
-## Advanced: Custom tools and extensions
-
-```python
-from agno.tools import tool
-from agnoclaw import AgentHarness
-
-@tool(description="Query our internal API")
-def query_internal_api(endpoint: str, params: dict = {}) -> str:
-    """Query the internal analytics API."""
-    # your implementation
-    return "{...}"
-
-agent = AgentHarness(tools=[query_internal_api])
-```
-
-### Custom system prompt section
-
-```python
-from agnoclaw import AgentHarness
-from agnoclaw.prompts import SystemPromptBuilder
-
-agent = AgentHarness()
-agent._prompt_builder.add_section("""
-# Company Context
-
-You are assisting engineers at Acme Corp.
-Internal Jira: jira.acme.internal
-Internal docs: confluence.acme.internal
-Follow the Acme style guide for all code changes.
-""")
-```
-
-### Using Agno's HITL approval
-
-```python
-from agno.tools import tool
-from agnoclaw import AgentHarness
-
-@tool(requires_confirmation=True)
-def deploy_to_production(service: str, version: str) -> str:
-    """Deploy a service to production — requires human approval."""
-    # deployment logic
-    return f"Deployed {service}:{version}"
-
-agent = AgentHarness(tools=[deploy_to_production])
-response = agent.run("Deploy the auth service version 2.1.0 to production")
-
-# Check if paused for approval
-if response.active_requirements:
-    for req in response.active_requirements:
-        print(f"Approve: {req.tool_execution.tool_name}({req.tool_execution.tool_args})")
-        if input("y/n: ") == "y":
-            req.confirm()
-        else:
-            req.reject()
-
-    # Resume after approval (use _agent directly for Agno continue_run)
-    final = agent._agent.continue_run(
-        run_id=response.run_id,
-        requirements=response.requirements,
-    )
-```
-
----
-
-## Multi-agent patterns
-
-### Research → Code pipeline
-
-```python
-from agnoclaw.teams import research_team, code_team
-
-# Phase 1: Research the solution space
-research = research_team()
-findings = research.run("What's the best approach for rate limiting in FastAPI in 2026?")
-
-# Phase 2: Implement the chosen approach
-code = code_team()
-code.print_response(
-    f"Implement rate limiting in FastAPI based on these findings:\n{findings.content}",
-    stream=True,
-)
-```
-
-### Custom team
-
-```python
-from agno.agent import Agent
-from agno.team import Team, TeamMode
-from agno.models.anthropic import Claude
-from agnoclaw.tools import FilesToolkit, WebToolkit
-
-security_reviewer = Agent(
-    name="SecurityReviewer",
-    role="Review code for OWASP Top 10 vulnerabilities and security anti-patterns",
-    model=Claude(id="claude-sonnet-4-6"),
-    tools=[FilesToolkit()],
-)
-
-perf_reviewer = Agent(
-    name="PerfReviewer",
-    role="Review code for performance issues: N+1 queries, memory leaks, unnecessary O(n²)",
-    model=Claude(id="claude-sonnet-4-6"),
-    tools=[FilesToolkit()],
-)
-
-review_team = Team(
-    name="Review Team",
-    mode=TeamMode.broadcast,  # both review in parallel
-    members=[security_reviewer, perf_reviewer],
-    model=Claude(id="claude-sonnet-4-6"),
-)
-
-review_team.print_response("Review src/database.py", stream=True)
-```
-
----
-
-## Multi-session project tracking (ProgressToolkit)
-
-For complex projects that span multiple sessions or context windows:
-
-```python
-import json
-from agnoclaw.tools.tasks import ProgressToolkit
-
-toolkit = ProgressToolkit(project_dir=".")
-
-# Define requirements upfront (all start as failing)
-toolkit.write_features(json.dumps([
-    {"id": "auth-01", "description": "Users can register"},
-    {"id": "api-01",  "description": "GET /users/{id} returns profile"},
-]))
-
-# Mark features passing as you implement them
-toolkit.update_feature_status("auth-01", "passing")
-
-# Save progress before a session ends / context compacts
-toolkit.write_progress(
-    summary="Auth complete. Starting API layer.",
-    next_steps="1. Implement GET /users/{id}\n2. Write tests",
-    context="JWT secret in JWT_SECRET env var",
-)
-
-# Resume at the start of the next session
-print(toolkit.read_progress())
-print(toolkit.read_features())
-```
-
----
-
-## Context management for long-running sessions
-
-AgentHarness includes built-in support for managing context in long-running or
-multi-session agents. These features use Agno's native context management layer.
-
-### Tool result compression
-
-For sessions with many tool calls (file reads, bash output, web fetches), tool
-results can dominate the context window. Enable compression to automatically
-summarize older tool outputs:
-
-```python
-agent = AgentHarness(
-    enable_compression=True,
-    compress_token_limit=4000,  # compress when tool results exceed this
-)
-```
-
-### Session summaries (cross-session continuity)
-
-Session summaries capture the key decisions and state at the end of each run.
-On the next run, the summary is injected into context so the agent picks up
-where it left off:
-
-```python
-agent = AgentHarness(enable_session_summary=True)
-
-# First session
-agent.run("Implement user auth with JWT")
-
-# Later session — the agent automatically gets the previous summary
-agent.run("Continue: add refresh tokens")
-```
-
-### Memory hierarchy
-
-| Layer | What | Scope | Storage |
-|-------|------|-------|---------|
-| **Workspace files** | MEMORY.md, AGENTS.md, SOUL.md | Per-workspace | Markdown files |
-| **LearningMachine** (per-user) | User profile + observations | Per-user | SQL |
-| **LearningMachine** (institutional) | Patterns, entities, decisions | Cross-user | SQL |
-
-All SQL-backed memory goes through Agno's LearningMachine — a unified system
-that handles both per-user facts and institutional knowledge in a single pass.
-
-```python
-# Full memory stack
-agent = AgentHarness(
-    user_id="alice",
-    enable_user_memory=True,       # per-user profile + observations
-    enable_learning=True,          # institutional knowledge
-    learning_mode="agentic",       # agent decides when to learn
-    enable_compression=True,       # keep context window manageable
-    enable_session_summary=True,   # continuity across sessions
-)
-```
-
-### Workspace bootstrap limits
-
-Workspace files are capped to prevent context bloat:
-
-- **MEMORY.md**: first 200 lines only (keep it as an index)
-- **Per file**: 20,000 chars max
-- **Total**: 150,000 chars max across all workspace files
-
-### Environment variables
-
-```bash
-AGNOCLAW_ENABLE_COMPRESSION=true
-AGNOCLAW_COMPRESS_TOKEN_LIMIT=4000
-AGNOCLAW_ENABLE_SESSION_SUMMARY=true
-AGNOCLAW_ENABLE_LEARNING=true
-AGNOCLAW_LEARNING_MODE=agentic
-```
-
----
-
-## Architecture
-
-```
-agnoclaw/
-├── src/agnoclaw/
-│   ├── agent.py           # AgentHarness — main class (HarnessAgent = alias)
-│   ├── workspace.py       # Workspace (~/.agnoclaw/workspace/)
-│   ├── memory.py          # Memory management utilities
-│   ├── config.py          # Settings (TOML + env vars)
-│   ├── teams.py           # Pre-built team configurations
-│   ├── prompts/
-│   │   ├── sections.py    # Prompt sections (identity, tone, tasks, tools, security, git)
-│   │   └── system.py      # System prompt assembler
-│   ├── tools/
-│   │   ├── bash.py        # Shell execution
-│   │   ├── files.py       # Read/Write/Edit/MultiEdit/Glob/Grep/LS
-│   │   ├── web.py         # WebSearch/WebFetch
-│   │   └── tasks.py       # TodoToolkit + ProgressToolkit + SubagentTool
-│   ├── skills/
-│   │   ├── loader.py      # SKILL.md parser (AgentSkills + OpenClaw frontmatter)
-│   │   └── registry.py    # Discovery + selective injection + gate checks
-│   ├── heartbeat/
-│   │   └── daemon.py      # HeartbeatDaemon + CronJob (interval + cron expressions)
-│   ├── runtime/           # v0.2+ runtime contracts
-│   │   ├── hooks.py       # PreRunHook, PostRunHook, LifecycleHook
-│   │   ├── policy.py      # PolicyEngine, PolicyDecision
-│   │   ├── events.py      # EventSink (observability)
-│   │   ├── guardrails.py  # Input/output guardrails
-│   │   ├── permissions.py # Permission modes + elevated commands
-│   │   ├── scheduler.py   # SchedulerBackend, JsonSchedulerBackend
-│   │   ├── agentos.py     # AgentOS export adapter
-│   │   ├── context.py     # ExecutionContext
-│   │   └── errors.py      # Runtime error types
-│   ├── packs.py           # Pack system (manifest, load, install, trust)
-│   ├── remote.py          # RemoteHarnessClient
-│   ├── cli/
-│   │   ├── main.py        # Click CLI (init, chat, run, tui, skill, heartbeat, workspace)
-│   │   └── async_repl.py  # Async REPL with heartbeat notifications
-│   └── tui/               # v0.3 Textual TUI (requires agnoclaw[tui])
-│       ├── app.py         # AgnoClawApp — main Textual application
-│       ├── driver.py      # AgentDriver — async streaming + heartbeat bridge
-│       ├── events.py      # Custom Textual Messages
-│       ├── screens.py     # Modal screens (skill picker, help)
-│       └── widgets/       # ChatLog, InputBar, NotificationPanel, StatusBar, HeaderBar
-├── skills/                # Built-in skills
-│   ├── deep-research/
-│   ├── code-review/
-│   ├── git-workflow/
-│   ├── daily-standup/
-│   ├── memory-manage/
-│   └── self-improving-agent/  # Capture corrections/errors → .learnings/
-├── docs/
-│   └── harness-gap-analysis.md # Unified Claude Code + OpenClaw harness gap status
-├── examples/              # 27 runnable examples
-│   ├── ollama_local.py    # Local inference (no API key)
-│   ├── openclaw_style.py  # Full OpenClaw-style setup
-│   ├── openclaw_skills.py # Skill hub creation and usage
-│   ├── progress_tracking.py   # ProgressToolkit lifecycle
-│   ├── cron_jobs.py           # CronJob scheduler + service install
-│   ├── self_improving_agent.py # .learnings/ capture + promotion pattern
-│   ├── claude_code_tools.py   # CC gap analysis + MultiEdit demo
-│   └── ...
-└── cookbook/              # v0.8 feature cookbook (10 examples)
-    ├── 01_context_providers.py     # Duck-typed providers + async setup
-    ├── 02_agentos_export.py        # AgentOS FastAPI app export
-    ├── 03_elevated_commands.py     # Elevated execution modes
-    ├── 04_plan_signals.py          # Structured plan UX signals
-    ├── 05_sandbox_modes.py         # Session sandbox modes
-    ├── 06_pack_system.py           # Pack manifest, load, install, trust
-    ├── 07_lifecycle_hooks.py       # Sync/async lifecycle hooks
-    ├── 08_remote_client.py         # RemoteHarnessClient
-    ├── 09_sdk_ergonomics.py        # create() + session().send()
-    └── 10_scheduler_persistence.py # JsonSchedulerBackend + CRUD
-```
-
----
-
-## v0.2 Runtime Contracts
-
-AgentHarness v0.2 adds a runtime governance layer between your code and the LLM.
-Every `run()` / `arun()` call passes through this pipeline:
-
-```
-User message
-  → PreRunHooks (transform input)
-  → PolicyEngine.before_run (allow/deny/redact)
-  → PolicyEngine.before_skill_load (gate skills)
-  → PolicyEngine.before_prompt_send (inspect/redact prompts)
-  → Model call (Agno Agent)
-  → PostRunHooks (transform output)
-  → EventSink (audit trail)
-```
-
-### EventSink (observability)
-
-```python
-from agnoclaw.runtime import EventSink
-
-class MyEventSink(EventSink):
-    async def emit(self, event):
-        # Send to your logging/tracing/analytics system
-        print(f"[{event['event_type']}] {event.get('payload', {})}")
-
-agent = AgentHarness(event_sink=MyEventSink())
-```
-
-### PolicyEngine (governance)
-
-```python
-from agnoclaw.runtime import PolicyEngine, PolicyDecision
-
-class CompliancePolicy(PolicyEngine):
-    def before_run(self, run_input, context):
-        if "DELETE FROM" in run_input.message.upper():
-            return PolicyDecision.deny("SQL DELETE statements are blocked")
-        return PolicyDecision.allow()
-
-agent = AgentHarness(policy_engine=CompliancePolicy())
-```
-
-### Hooks (middleware)
-
-```python
-def log_inputs(run_input, context):
-    print(f"User: {run_input.message[:100]}")
-    return run_input  # pass through (or return modified)
-
-def log_outputs(run_input, result, context):
-    print(f"Output: {result.content[:100]}")
-    return result
-
-agent = AgentHarness(
-    pre_run_hooks=[log_inputs],
-    post_run_hooks=[log_outputs],
-)
-```
-
-### Permission modes
-
-```python
-# Bypass all checks (development)
-agent = AgentHarness(permission_mode="bypass")
-
-# Require approval for edits (staging)
-agent = AgentHarness(permission_mode="accept_edits")
-
-# Plan-only mode (no writes, no shell)
-agent = AgentHarness(permission_mode="plan")
-```
-
----
-
-## Usage Patterns
-
-### 1. Personal assistant (OpenClaw-style, local)
-
-Use agnoclaw as a personal agent that runs on your machine, connects to
-messaging, monitors your workspace, and has cron-scheduled tasks:
-
-```python
-import asyncio
-from agnoclaw import AgentHarness
-from agnoclaw.heartbeat import HeartbeatDaemon, CronJob
-
-agent = AgentHarness(
-    "anthropic:claude-sonnet-4-6",
-    enable_learning=True,
-    enable_user_memory=True,
-    user_id="me",
-)
-
-daemon = HeartbeatDaemon(agent, on_alert=send_to_slack)
-daemon.add_cron_job(CronJob(
-    name="daily-standup",
-    schedule="0 9 * * 1-5",
-    prompt="Run daily standup.",
-    skill="daily-standup",
-    isolated=True,
-))
-asyncio.run(daemon.run_forever())
-```
-
-For WhatsApp/Telegram/Slack integration, build a thin webhook handler that
-calls `agent.arun(message)` and sends the response back. The messaging
-layer is a platform concern — agnoclaw is the agent backend.
-
-```bash
-# Install as always-on service
-agnoclaw heartbeat install-service
-```
-
-### 2. Embed in a SaaS product
-
-Use agnoclaw as the AI backend in your existing product. The messaging
-layer (WebSocket, REST API, etc.) is your platform code — agnoclaw provides
-the agent harness:
-
-```python
-from agnoclaw import AgentHarness
-from agnoclaw.runtime import PolicyEngine, PolicyDecision, EventSink
-
-class TenantPolicy(PolicyEngine):
-    def before_run(self, run_input, context):
-        if context.tenant_id not in allowed_tenants:
-            return PolicyDecision.deny("Tenant not authorized")
-        return PolicyDecision.allow()
-
-# One harness per tenant (or shared with tenant_id in context)
-agent = AgentHarness(
-    "anthropic:claude-sonnet-4-6",
-    policy_engine=TenantPolicy(),
-    event_sink=MyAnalyticsSink(),
-    tenant_id="acme-corp",
-    enable_learning=True,
-    learning_namespace="acme",
-)
-
-# Your API endpoint calls this:
-result = await agent.arun(user_message, user_id=user_id, session_id=session_id)
-```
-
-### 3. TUI mode (personal assistant)
-
-The Textual TUI provides a full-featured terminal interface with streaming,
-heartbeat notifications, skill picker, and a debug log viewer:
-
-```bash
-pip install "agnoclaw[tui]"
-agnoclaw tui
-```
-
-Features: live token streaming with Markdown rendering, notification panel
-(heartbeat/cron alerts), slash commands (`/skill`, `/clear`, `/help`),
-Ctrl+N toggle notifications, Ctrl+S skill picker, Ctrl+L debug log.
-
-### 4. CLI-only (no messaging layer)
-
-The CLI works standalone — it IS the messaging layer. Use this for
-development, debugging, and personal productivity:
-
-```bash
-agnoclaw chat                                    # async REPL (default)
-agnoclaw chat --sync                             # legacy blocking REPL
-agnoclaw run "Fix the bug in src/auth.py"        # one-shot
-agnoclaw run "Review src/" --skill code-review   # with skill
-```
-
----
-
-## Testing
-
-```bash
-# Unit tests (no API key needed, ~0.8s)
-uv run pytest tests/ -m "not integration" -q
-
-# Integration tests with Ollama (local, no API key)
-uv run pytest tests/test_integration.py -v
-
-# Integration tests with a larger local model
-AGNOCLAW_TEST_MODEL=qwen3:8b uv run pytest tests/test_integration.py -v
-
-# Integration tests with Anthropic
-AGNOCLAW_TEST_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-... pytest tests/test_integration.py
-```
-
----
+See [CONTRIBUTING.md](CONTRIBUTING.md), [support](SUPPORT.md), [security](SECURITY.md),
+and [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 
-MIT — fork it, hack it, ship it.
-
----
-
-*Built with [Agno](https://github.com/agno-agi/agno). Inspired by Claude Code, OpenClaw, and LangChain DeepAgents.*
+MIT — fork it, inspect it, and embed it.

@@ -76,9 +76,7 @@ class ChatLog(VerticalScroll):
     def start_agent_response(self) -> None:
         """Mount the agent label and a streaming widget."""
         self.mount(Static("Agent", classes="agent-label", id=self._next_id("al")))
-        self._streaming_widget = Static(
-            "...", classes="streaming-text", id=self._next_id("st")
-        )
+        self._streaming_widget = Static("...", classes="streaming-text", id=self._next_id("st"))
         self.mount(self._streaming_widget)
         self._streaming_text.clear()
         self._is_streaming = True

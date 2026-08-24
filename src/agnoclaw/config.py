@@ -1,11 +1,13 @@
 """
 Configuration system for agnoclaw.
 
-Settings are loaded in priority order (highest → lowest):
+File-backed settings are loaded in priority order (highest → lowest):
   1. Environment variables (AGNOCLAW_* prefix)
-  2. ~/.agnoclaw/config.toml  (user-level)
-  3. .agnoclaw.toml in cwd   (project-level)
+  2. .agnoclaw.toml in cwd   (project-level)
+  3. ~/.agnoclaw/config.toml  (user-level)
   4. Defaults defined here
+
+Explicit values passed to HarnessConfig(...) remain above ambient environment values.
 
 Usage:
     from agnoclaw.config import get_config
@@ -16,11 +18,12 @@ Usage:
 from __future__ import annotations
 
 import tomllib
+from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -59,11 +62,136 @@ class StorageConfig(BaseSettings):
     memory_table: str = "agnoclaw_memories"
 
 
+class RuntimeProfile(StrEnum):
+    """Runtime semantics selected independently from session continuity."""
+
+    QUICK = "quick"
+    DURABLE = "durable"
+    SERVICE = "service"
+    LEGACY = "legacy"
+
+
 class HarnessConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="AGNOCLAW_",
         env_nested_delimiter="__",
     )
+
+    _PROFILE_DEFAULTS: ClassVar[dict[RuntimeProfile, dict[str, Any]]] = {
+        RuntimeProfile.QUICK: {
+            "storage": {"backend": "sqlite", "sqlite_path": ":memory:"},
+            "permission_mode": "default",
+            "permission_require_approver": True,
+            "permission_durable_approvals": True,
+            "policy_fail_open": False,
+            "event_sink_mode": "fail_closed",
+            "enable_plugins": False,
+            "enable_learning": False,
+            "enable_session_context": False,
+            "enable_compression": False,
+            "enable_session_summary": False,
+        },
+        RuntimeProfile.DURABLE: {
+            "storage": {"backend": "sqlite"},
+            "permission_mode": "default",
+            "permission_require_approver": True,
+            "permission_durable_approvals": True,
+            "policy_fail_open": False,
+            "event_sink_mode": "fail_closed",
+            "enable_plugins": False,
+        },
+        RuntimeProfile.SERVICE: {
+            "storage": {"backend": "postgres"},
+            "permission_mode": "default",
+            "permission_require_approver": True,
+            "permission_durable_approvals": True,
+            "policy_fail_open": False,
+            "event_sink_mode": "fail_closed",
+            "enable_plugins": False,
+        },
+        RuntimeProfile.LEGACY: {},
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_selected_profile_defaults(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        try:
+            profile = RuntimeProfile(value.get("profile", RuntimeProfile.LEGACY))
+        except ValueError:
+            return value
+        return _deep_merge(cls._PROFILE_DEFAULTS[profile], value)
+
+    profile: RuntimeProfile = RuntimeProfile.LEGACY
+    """Runtime guarantee bundle. The compatibility default remains ``legacy``
+    during the 0.12 preview; explicit profiles receive fail-closed defaults."""
+
+    sandbox_mode: Literal["workspace_write", "read_only", "full"] | None = None
+    """Optional default sandbox posture. ``None`` preserves the selected backend's mode."""
+
+    @classmethod
+    def _profile_config(cls, profile: RuntimeProfile, overrides: dict[str, Any]) -> Self:
+        requested = overrides.pop("profile", profile)
+        if RuntimeProfile(requested) is not profile:
+            raise ValueError(
+                f"profile preset {profile.value!r} cannot be overridden with {requested!r}"
+            )
+        values = _deep_merge(cls._PROFILE_DEFAULTS[profile], overrides)
+        values["profile"] = profile
+        return cls(**values)
+
+    @classmethod
+    def quick(cls, **overrides: Any) -> Self:
+        """Ephemeral, low-overhead execution with safe explicit-profile defaults."""
+        return cls._profile_config(RuntimeProfile.QUICK, dict(overrides))
+
+    @classmethod
+    def durable(cls, **overrides: Any) -> Self:
+        """SQLite-oriented resumable execution; stores are supplied to AgentHarness."""
+        return cls._profile_config(RuntimeProfile.DURABLE, dict(overrides))
+
+    @classmethod
+    def service(cls, **overrides: Any) -> Self:
+        """Multi-worker PostgreSQL execution with fail-closed service defaults."""
+        return cls._profile_config(RuntimeProfile.SERVICE, dict(overrides))
+
+    @classmethod
+    def legacy(cls, **overrides: Any) -> Self:
+        """Isolated compatibility preset for the pre-0.12 execution posture."""
+        return cls._profile_config(RuntimeProfile.LEGACY, dict(overrides))
+
+    @classmethod
+    def local_safe(
+        cls,
+        *,
+        profile: RuntimeProfile | Literal["quick", "durable"] = RuntimeProfile.QUICK,
+        **overrides: Any,
+    ) -> Self:
+        """Strengthen a local quick/durable profile without creating a fourth profile."""
+        resolved = RuntimeProfile(profile)
+        if resolved not in {RuntimeProfile.QUICK, RuntimeProfile.DURABLE}:
+            raise ValueError("local_safe supports only the quick and durable profiles")
+        safe = {
+            "sandbox_mode": "workspace_write",
+            "permission_mode": "default",
+            "permission_require_approver": True,
+            "permission_durable_approvals": True,
+            "policy_fail_open": False,
+            "guardrails_enabled": True,
+            "path_guardrails_enabled": True,
+            "network_block_private_hosts": True,
+            "network_block_in_bash": True,
+            "enable_plugins": False,
+        }
+        return cls._profile_config(resolved, _deep_merge(safe, dict(overrides)))
+
+    def with_profile(self, profile: RuntimeProfile | str) -> Self:
+        """Apply one profile while retaining fields explicitly supplied by the host."""
+        resolved = RuntimeProfile(profile)
+        explicit = _explicit_settings_values(self)
+        explicit.pop("profile", None)
+        return type(self)._profile_config(resolved, explicit)
 
     # Model
     default_model: str = "claude-sonnet-4-6"
@@ -88,6 +216,65 @@ class HarnessConfig(BaseSettings):
     # Session
     session_history_runs: int = 10
     """How many prior runs to inject into context."""
+
+    runtime_max_concurrency: int = Field(default=16, ge=1, le=10_000)
+    """Maximum simultaneously executing lifecycle runs per harness process.
+    Same-session runs are additionally serialized by an exact session lane."""
+
+    runtime_max_waiting: int = Field(default=1024, ge=1, le=100_000)
+    """Maximum process-local lifecycle admissions waiting for a session lane or
+    execution slot. Excess work settles with a typed retryable overload error."""
+
+    runtime_max_waiting_per_tenant: int = Field(default=256, ge=1, le=100_000)
+    """Maximum queued lifecycle admissions attributable to one exact tenant."""
+
+    runtime_max_waiting_per_session: int = Field(default=32, ge=1, le=100_000)
+    """Maximum queued lifecycle admissions attributable to one exact session lane."""
+
+    runtime_admission_timeout_seconds: float | None = Field(default=30.0, gt=0, le=3600)
+    """Maximum process-local wait to begin lifecycle execution. ``None`` disables
+    the time bound while retaining ``runtime_max_waiting`` as a hard queue bound."""
+
+    @model_validator(mode="after")
+    def _validate_runtime_waiting_hierarchy(self) -> HarnessConfig:
+        if self.runtime_max_waiting_per_tenant > self.runtime_max_waiting:
+            raise ValueError("runtime_max_waiting_per_tenant cannot exceed runtime_max_waiting")
+        if self.runtime_max_waiting_per_session > self.runtime_max_waiting_per_tenant:
+            raise ValueError(
+                "runtime_max_waiting_per_session cannot exceed "
+                "runtime_max_waiting_per_tenant"
+            )
+        return self
+
+    runtime_close_policy: Literal["drain", "detach", "cancel"] = "drain"
+    """Default ownership decision for active lifecycle runs during close/aclose."""
+
+    runtime_close_timeout_seconds: float | None = Field(default=None, gt=0)
+    """Optional wait bound for drain/cancel. A timed-out close leaves the
+    shutdown supervisor active so resources close only after runs settle."""
+
+    runtime_operation_result_cache_size: int = Field(default=128, ge=0, le=10_000)
+    """Maximum in-process results retained for exact operation replay. Durable
+    cross-process result loading requires an ArtifactStore/result loader."""
+
+    runtime_lease_seconds: int = Field(default=30, ge=3, le=86_400)
+    """Store-issued run/session ownership lease duration for lifecycle workers."""
+
+    runtime_lease_renew_interval_seconds: float = Field(default=10.0, gt=0, le=28_800)
+    """Heartbeat interval for execution ownership. Must be shorter than the lease."""
+
+    permission_durable_approvals: bool = True
+    """Persist registered-capability approval waits, decisions, and exact grants."""
+
+    permission_approval_ttl_seconds: int = Field(default=900, ge=1, le=604_800)
+    """Maximum lifetime of one exact capability approval request."""
+
+    permission_approval_poll_interval_seconds: float = Field(
+        default=0.25,
+        gt=0,
+        le=5,
+    )
+    """Authoritative-store polling interval while a live run awaits approval."""
 
     # Tools
     enable_bash: bool = True
@@ -117,6 +304,11 @@ class HarnessConfig(BaseSettings):
     - hitl:    human must approve each learning before it is stored
     """
 
+    enable_session_context: bool = False
+    """Enable Agno Session Context for durable goals, plans, progress, and blockers.
+    This is independent from institutional learning and is opt-in because it adds
+    extraction cost and can retain noisy transient state."""
+
     # Compression (context window management)
     enable_compression: bool = False
     """Enable tool result compression to keep context window manageable.
@@ -128,6 +320,15 @@ class HarnessConfig(BaseSettings):
     """Token limit that triggers compression. When the accumulated tool results
     exceed this limit, compression runs. None uses Agno's default count-based
     trigger (compress_tool_results_limit=3)."""
+
+    max_context_tokens: int | None = Field(default=None, gt=0)
+    """Explicit model-context budget used by deterministic harness accounting."""
+
+    auto_compact_context: bool = False
+    """Artifact-first compaction at the 90% budget boundary; opt-in until drift certification."""
+
+    max_inline_output_chars: int | None = Field(default=None, ge=1024, le=1_000_000)
+    """Spill larger governed capability results to the ArtifactStore before model reuse."""
 
     # Session summaries
     enable_session_summary: bool = False
@@ -147,7 +348,7 @@ class HarnessConfig(BaseSettings):
 
     # MCP
     mcp_servers: list[dict] = Field(default_factory=list)
-    """MCP server configurations. Each entry: {name, command?, url?, env?}."""
+    """MCP v2 servers: {name, command|url, transport?, env?, headers?}."""
 
     # Media
     enable_media_tools: bool = False
@@ -261,14 +462,31 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+def _explicit_settings_values(settings: BaseSettings) -> dict[str, Any]:
+    """Return only values supplied by settings sources, including nested sources."""
+    values: dict[str, Any] = {}
+    for field_name in type(settings).model_fields:
+        value = getattr(settings, field_name)
+        if isinstance(value, BaseSettings):
+            nested = _explicit_settings_values(value)
+            if nested:
+                values[field_name] = nested
+        elif field_name in settings.model_fields_set:
+            values[field_name] = value
+    return values
+
+
 @lru_cache(maxsize=1)
 def get_config() -> HarnessConfig:
     """Load and cache the merged configuration."""
-    # TOML files (project-level overrides user-level)
+    # TOML files (project-level overrides user-level).
     user_toml = _load_toml_config(Path.home() / ".agnoclaw" / "config.toml")
     project_toml = _load_toml_config(Path.cwd() / ".agnoclaw.toml")
 
-    # Merge: user → project → env vars (env wins)
+    # A source-only instance tells us exactly which root or nested fields came from
+    # environment variables. Overlay only those fields so unrelated defaults cannot
+    # erase TOML values.
     merged = _deep_merge(user_toml, project_toml)
+    merged = _deep_merge(merged, _explicit_settings_values(HarnessConfig()))
 
     return HarnessConfig(**merged)

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import agnoclaw.runtime.agentos as agentos_runtime
 from agnoclaw.agent import AgentHarness
 from agnoclaw.config import HarnessConfig
 from agnoclaw.runtime import (
@@ -14,6 +16,7 @@ from agnoclaw.runtime import (
     AgentOSHarnessAgent,
     AgentOSPermissionApprover,
     ExecutionContext,
+    HarnessError,
     InMemoryEventSink,
     PermissionRequest,
     create_agentos_app,
@@ -21,7 +24,7 @@ from agnoclaw.runtime import (
 from agnoclaw.runtime.agentos import _attach_agentos_approval_bridge
 
 
-def _make_harness(tmp_path):
+def _make_harness(tmp_path, **harness_kwargs):
     mock_agent = MagicMock()
 
     def _agent_ctor(*args, **kwargs):
@@ -34,6 +37,7 @@ def _make_harness(tmp_path):
             harness = AgentHarness(
                 workspace_dir=tmp_path,
                 config=HarnessConfig(),
+                **harness_kwargs,
             )
     return harness, mock_agent
 
@@ -103,23 +107,63 @@ def test_agentos_adapter_maps_claims_to_execution_context():
     assert context.trace_id == "trace-77"
 
 
+def test_agentos_adapter_rejects_body_identity_conflicting_with_claims():
+    adapter = AgentOSContextAdapter()
+
+    with pytest.raises(HarnessError) as exc:
+        adapter.to_execution_context(
+            {"sub": "claimed-user", "sid": "claimed-session"},
+            workspace_id="/tmp/ws",
+            user_id="body-user",
+            session_id="body-session",
+        )
+
+    assert exc.value.code == "IDENTITY_CLAIM_CONFLICT"
+    assert exc.value.details == {"field": "user_id"}
+
+
+def test_agentos_adapter_claims_remain_authoritative_when_values_match():
+    adapter = AgentOSContextAdapter()
+
+    context = adapter.to_execution_context(
+        {"sub": "claimed-user", "sid": "claimed-session"},
+        workspace_id="/tmp/ws",
+        user_id="claimed-user",
+        session_id="claimed-session",
+    )
+
+    assert context.user_id == "claimed-user"
+    assert context.session_id == "claimed-session"
+
+
 def test_agentos_harness_agent_properties_and_db_access(tmp_path):
+    database = object()
     harness = SimpleNamespace(
         agent_id="agent-1",
         name="Agent One",
         workspace=SimpleNamespace(path=tmp_path),
-        _agent=SimpleNamespace(db="db-1"),
+        storage=database,
     )
     agent = AgentOSHarnessAgent(harness)
 
     assert agent.id == "agent-1"
     assert agent.name == "Agent One"
     assert agent.description == "agnoclaw AgentHarness runtime adapter"
-    assert agent.db == "db-1"
+    assert agent.db is database
 
-    agent.db = "db-2"
+    agent.db = database
 
-    assert harness._agent.db == "db-2"
+    with pytest.raises(HarnessError) as rebind:
+        agent.db = object()
+
+    assert rebind.value.code == "AGENTOS_STORAGE_REBIND_UNSUPPORTED"
+
+
+def test_agentos_adapter_never_reaches_through_private_agno_agent() -> None:
+    source = Path(agentos_runtime.__file__).read_text(encoding="utf-8")
+
+    assert 'getattr(self.harness, "_agent"' not in source
+    assert "harness._agent." not in source
 
 
 @pytest.mark.asyncio
@@ -201,7 +245,7 @@ async def test_agentos_harness_agent_routes_through_harness_arun(tmp_path):
         "hello",
         session_id="sess-1",
         user_id="user-1",
-        metadata={"agentos_claims": {"tenant_id": "tenant-1"}},
+        metadata={"agentos_claims": {"tenant_id": "forged-tenant"}},
         schedule_id="sched-1",
     )
 
@@ -210,7 +254,8 @@ async def test_agentos_harness_agent_routes_through_harness_arun(tmp_path):
     assert call_kwargs["run_id"].startswith("run_")
     assert call_kwargs["session_id"] == "sess-1"
     assert call_kwargs["user_id"] == "user-1"
-    assert call_kwargs["metadata"]["_agnoclaw_context"]["tenant_id"] == "tenant-1"
+    assert call_kwargs["metadata"]["_agnoclaw_context"]["tenant_id"] is None
+    assert "agentos_claims" not in call_kwargs["metadata"]["_agnoclaw_context"]["metadata"]
     assert call_kwargs["metadata"]["_agnoclaw_context"]["metadata"]["agentos"]["scheduler"] == {
         "schedule_id": "sched-1"
     }
@@ -222,8 +267,17 @@ def test_create_agentos_app_registers_harness_admin_routes(tmp_path):
 
     app = create_agentos_app([harness], include_agnoclaw_admin=True, telemetry=False)
 
-    paths = {getattr(route, "path", "") for route in app.routes}
+    paths = set(app.openapi()["paths"])
     assert "/agents/{agent_id}/runs" in paths
+    assert "/agnoclaw/v1/harnesses/{harness_id}/runs" in paths
+    assert "/agnoclaw/v1/harnesses/{harness_id}/runs/{run_id}" in paths
+    assert "/agnoclaw/v1/harnesses/{harness_id}/runs/{run_id}/children" in paths
+    assert "/agnoclaw/v1/harnesses/{harness_id}/runs/{run_id}/child-results" in paths
+    assert "/agnoclaw/v1/harnesses/{harness_id}/runs/{run_id}/result" in paths
+    assert "/agnoclaw/v1/harnesses/{harness_id}/runs/{run_id}/events" in paths
+    assert "/agnoclaw/v1/harnesses/{harness_id}/runs/{run_id}/output" in paths
+    assert "/agnoclaw/v1/harnesses/{harness_id}/runs/{run_id}/cancel" in paths
+    assert "/agnoclaw/v1/harnesses/{harness_id}/runs/{run_id}/commands" in paths
     assert "/agnoclaw/harnesses" in paths
     assert "/agnoclaw/harnesses/{harness_id}/events/{run_id}" in paths
     assert "/agnoclaw/harnesses/{harness_id}/sandboxes/{session_id}" in paths
@@ -235,19 +289,19 @@ def test_create_agentos_app_registers_harness_admin_routes(tmp_path):
     assert "/agnoclaw/policies" in paths
     assert "/agnoclaw/permissions" in paths
     assert app.state.agnoclaw_harnesses["agnoclaw"] is harness
-    agnoclaw_route = next(
-        route for route in app.routes if getattr(route, "path", "") == "/agnoclaw/harnesses"
-    )
-    assert len(agnoclaw_route.dependencies) == 2
+    assert app.state.agnoclaw_lifecycle_enabled is True
 
 
 def test_harness_admin_helpers_report_runtime_and_sandbox(tmp_path):
-    harness, _ = _make_harness(tmp_path)
+    harness, _ = _make_harness(tmp_path, session_id="sess-1")
     (harness.sandbox_dir / "artifact.txt").write_text("hello", encoding="utf-8")
 
     runtime = harness.admin_runtime_info()
     sandbox = harness.admin_snapshot_sandbox(session_id="sess-1")
-    artifact = harness.admin_sandbox_artifact_path("artifact.txt")
+    artifact = harness.admin_sandbox_artifact_path(
+        "artifact.txt",
+        session_id="sess-1",
+    )
 
     assert runtime["workspace_id"] == str(harness.workspace.path)
     assert runtime["agentos"]["approvals_enabled"] is False
@@ -255,6 +309,15 @@ def test_harness_admin_helpers_report_runtime_and_sandbox(tmp_path):
     assert sandbox["file_count"] == 1
     assert sandbox["files"][0]["path"] == "artifact.txt"
     assert artifact == harness.sandbox_dir / "artifact.txt"
+
+
+def test_harness_admin_helpers_reject_cross_session_access(tmp_path):
+    harness, _ = _make_harness(tmp_path, session_id="sess-1")
+
+    with pytest.raises(Exception) as exc:
+        harness.admin_snapshot_sandbox(session_id="sess-2")
+
+    assert getattr(exc.value, "code", None) == "SANDBOX_SESSION_FORBIDDEN"
 
 
 def test_harness_admin_events_filter_by_run_id(tmp_path):

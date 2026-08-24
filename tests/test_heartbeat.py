@@ -1,6 +1,7 @@
 """Tests for the heartbeat daemon."""
 
-from datetime import time
+import asyncio
+from datetime import UTC, datetime, time, timedelta
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,22 +11,26 @@ import pytest
 
 def test_heartbeat_daemon_imports():
     from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
     assert HeartbeatDaemon is not None
 
 
 def test_heartbeat_ok_token():
     from agnoclaw.heartbeat.daemon import HEARTBEAT_OK_TOKEN
+
     assert HEARTBEAT_OK_TOKEN == "HEARTBEAT_OK"
 
 
 def test_heartbeat_prompt_exists():
     from agnoclaw.heartbeat.daemon import HEARTBEAT_PROMPT
+
     assert isinstance(HEARTBEAT_PROMPT, str)
     assert len(HEARTBEAT_PROMPT) > 10
 
 
 def test_heartbeat_prompt_mentions_ok():
     from agnoclaw.heartbeat.daemon import HEARTBEAT_OK_TOKEN, HEARTBEAT_PROMPT
+
     assert HEARTBEAT_OK_TOKEN in HEARTBEAT_PROMPT
 
 
@@ -38,16 +43,86 @@ def test_heartbeat_daemon_init():
     mock_agent.workspace.is_empty_heartbeat = MagicMock(return_value=False)
     mock_agent.workspace.heartbeat_md = MagicMock(return_value="checklist")
 
-    cfg = HarnessConfig(heartbeat=HeartbeatConfig(
-        enabled=True,
-        interval_minutes=30,
-        active_hours_start="08:00",
-        active_hours_end="22:00",
-    ))
+    cfg = HarnessConfig(
+        heartbeat=HeartbeatConfig(
+            enabled=True,
+            interval_minutes=30,
+            active_hours_start="08:00",
+            active_hours_end="22:00",
+        )
+    )
 
     daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
     assert daemon is not None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_only_mode_does_not_start_heartbeat_loop():
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend
+    from agnoclaw.runtime.store import SQLiteRuntimeStore
+
+    agent = MagicMock()
+    agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(
+        agent,
+        scheduler_backend=RuntimeSchedulerBackend(SQLiteRuntimeStore(":memory:")),
+        heartbeat_enabled=False,
+    )
+
+    daemon.start()
+    try:
+        assert daemon._task is None
+        assert len(daemon._cron_tasks) == 1
+        assert daemon._cron_tasks[0].get_name() == "agnoclaw-durable-scheduler"
+    finally:
+        daemon.stop()
+        await asyncio.sleep(0)
     assert daemon._running is False
+
+
+@pytest.mark.asyncio
+async def test_durable_scheduler_worker_poll_loop_processes_due_job(tmp_path):
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend, SchedulerJob
+    from agnoclaw.runtime.store import SQLiteRuntimeStore
+
+    backend = RuntimeSchedulerBackend(SQLiteRuntimeStore(tmp_path / "runtime.db"))
+    backend.upsert_job(
+        SchedulerJob(
+            name="worker-e2e",
+            schedule="1h",
+            prompt="process through worker loop",
+            next_run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        )
+    )
+    runtime_run = MagicMock(run_id="runtime-worker-e2e")
+    runtime_run.wait = AsyncMock(return_value=MagicMock(content="worker complete"))
+    agent = MagicMock()
+    agent.workspace = MagicMock()
+    agent.start = AsyncMock(return_value=runtime_run)
+    daemon = HeartbeatDaemon(
+        agent,
+        scheduler_backend=backend,
+        scheduler_poll_interval_seconds=0.01,
+        heartbeat_enabled=False,
+    )
+
+    daemon.start()
+    try:
+        for _ in range(200):
+            records = backend.list_runs(job_name="worker-e2e")
+            if records and records[0].status == "completed":
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("durable scheduler worker did not process the due job")
+    finally:
+        await daemon.astop()
+
+    agent.start.assert_awaited_once()
+    assert records[0].runtime_run_id == "runtime-worker-e2e"
+    assert records[0].output == "worker complete"
 
 
 def test_heartbeat_is_active_hours_within_range():
@@ -56,10 +131,12 @@ def test_heartbeat_is_active_hours_within_range():
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
-    cfg = HarnessConfig(heartbeat=HeartbeatConfig(
-        active_hours_start="08:00",
-        active_hours_end="22:00",
-    ))
+    cfg = HarnessConfig(
+        heartbeat=HeartbeatConfig(
+            active_hours_start="08:00",
+            active_hours_end="22:00",
+        )
+    )
 
     daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
 
@@ -77,10 +154,12 @@ def test_heartbeat_is_active_hours_outside_range():
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
-    cfg = HarnessConfig(heartbeat=HeartbeatConfig(
-        active_hours_start="08:00",
-        active_hours_end="22:00",
-    ))
+    cfg = HarnessConfig(
+        heartbeat=HeartbeatConfig(
+            active_hours_start="08:00",
+            active_hours_end="22:00",
+        )
+    )
 
     daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
 
@@ -98,10 +177,12 @@ def test_heartbeat_is_active_hours_at_start():
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
-    cfg = HarnessConfig(heartbeat=HeartbeatConfig(
-        active_hours_start="08:00",
-        active_hours_end="22:00",
-    ))
+    cfg = HarnessConfig(
+        heartbeat=HeartbeatConfig(
+            active_hours_start="08:00",
+            active_hours_end="22:00",
+        )
+    )
 
     daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
 
@@ -175,11 +256,13 @@ async def test_heartbeat_run_heartbeat_skips_outside_active_hours():
     mock_agent.workspace.heartbeat_md = MagicMock(return_value="check this")
     mock_agent.arun = AsyncMock()
 
-    cfg = HarnessConfig(heartbeat=HeartbeatConfig(
-        enabled=True,
-        active_hours_start="08:00",
-        active_hours_end="22:00",
-    ))
+    cfg = HarnessConfig(
+        heartbeat=HeartbeatConfig(
+            enabled=True,
+            active_hours_start="08:00",
+            active_hours_end="22:00",
+        )
+    )
     daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
 
     # Make _is_active_hours return False
@@ -388,9 +471,7 @@ def test_scheduler_backend_filters_and_missing_records():
 
     backend = InMemorySchedulerBackend()
     backend.upsert_job(SchedulerJob(name="enabled", schedule="1h", prompt="go"))
-    backend.upsert_job(
-        SchedulerJob(name="disabled", schedule="1h", prompt="stop", enabled=False)
-    )
+    backend.upsert_job(SchedulerJob(name="disabled", schedule="1h", prompt="stop", enabled=False))
 
     first = backend.record_run_start("enabled", run_id="run-1", metadata={"a": 1})
     second = backend.record_run_start("disabled", run_id="run-2")
@@ -420,23 +501,109 @@ def test_json_scheduler_backend_delete_and_enable_persist(tmp_path):
     assert backend.delete_job("toggle") is False
 
 
+def test_json_scheduler_backend_rejects_every_mutation_when_fenced(tmp_path):
+    from agnoclaw.runtime import JsonSchedulerBackend, SchedulerJob, scheduler_fence_path
+    from agnoclaw.runtime.errors import HarnessError
+
+    path = tmp_path / "schedules.json"
+    backend = JsonSchedulerBackend(path)
+    backend.upsert_job(SchedulerJob(name="fenced", schedule="1h", prompt="go"))
+    scheduler_fence_path(path).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(HarnessError, match="fenced") as raised:
+        backend.upsert_job(SchedulerJob(name="blocked", schedule="1h", prompt="stop"))
+
+    assert raised.value.code == "SCHEDULER_STORE_FENCED"
+    assert JsonSchedulerBackend(path).get_job("blocked") is None
+
+
 @pytest.mark.asyncio
 async def test_run_isolated_uses_async_arun():
-    """Isolated cron execution should use AgentHarness.arun() to avoid blocking the event loop."""
+    """A legacy isolated cron run remains async and closes its owned harness."""
+    from agnoclaw.config import RuntimeProfile
     from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
 
     parent_agent = MagicMock()
     parent_agent.workspace = MagicMock()
     daemon = HeartbeatDaemon(agent=parent_agent)
 
-    mock_harness = MagicMock()
+    mock_harness = MagicMock(profile=RuntimeProfile.LEGACY)
     mock_harness.arun = AsyncMock(return_value=MagicMock(content="ok"))
+    mock_harness.aclose = AsyncMock()
 
     job = CronJob(name="iso", schedule="1h", prompt="Ping", skill="test-skill")
     with patch("agnoclaw.agent.AgentHarness", return_value=mock_harness):
-        await daemon._run_isolated(job, "Ping now")
+        run, result = await daemon._run_isolated(job, "Ping now")
 
+    assert run.run_id is None
+    assert result.content == "ok"
     mock_harness.arun.assert_awaited_once_with("Ping now", skill="test-skill", metadata=None)
+    mock_harness.aclose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_run_isolated_closes_owned_harness_after_failure():
+    from agnoclaw.config import RuntimeProfile
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+
+    parent_agent = MagicMock()
+    parent_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=parent_agent)
+    mock_harness = MagicMock(profile=RuntimeProfile.LEGACY)
+    mock_harness.arun = AsyncMock(side_effect=RuntimeError("secret provider detail"))
+    mock_harness.aclose = AsyncMock()
+
+    with patch("agnoclaw.agent.AgentHarness", return_value=mock_harness):
+        with pytest.raises(RuntimeError, match="secret provider detail"):
+            await daemon._run_isolated(CronJob("iso", "1h", "Ping"), "Ping")
+
+    mock_harness.aclose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_isolated_durable_cancellation_detaches_and_preserves_run_id():
+    from agnoclaw.config import RuntimeProfile
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+    from agnoclaw.runtime import HarnessRun, InMemorySchedulerBackend
+
+    waiter_started = asyncio.Event()
+    release_waiter = asyncio.Event()
+
+    async def wait_forever(_timeout):
+        waiter_started.set()
+        await release_waiter.wait()
+
+    runtime_run = HarnessRun(
+        run_id="run_isolated",
+        store=MagicMock(),
+        waiter=wait_forever,
+    )
+    isolated = MagicMock(profile=RuntimeProfile.DURABLE)
+    isolated.start = AsyncMock(return_value=runtime_run)
+    isolated.aclose = AsyncMock()
+    parent = MagicMock()
+    parent.workspace = MagicMock()
+    backend = InMemorySchedulerBackend()
+    daemon = HeartbeatDaemon(parent, scheduler_backend=backend)
+
+    with patch("agnoclaw.agent.AgentHarness", return_value=isolated):
+        task = asyncio.create_task(
+            daemon._run_cron_job(
+                CronJob(name="isolated", schedule="1h", prompt="work", isolated=True)
+            )
+        )
+        await waiter_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    record = backend.list_runs(job_name="isolated")[0]
+    assert record.status == "detached"
+    assert record.metadata["runtime_run_id"] == "run_isolated"
+    isolated.aclose.assert_awaited_once_with(policy="detach")
+
+    release_waiter.set()
+    await asyncio.sleep(0)
 
 
 # ── _filter_response tests ──────────────────────────────────────────────
@@ -580,6 +747,29 @@ async def test_stop_cancels_tasks():
     assert len(daemon._cron_tasks) == 0
 
 
+@pytest.mark.asyncio
+async def test_astop_waits_for_owned_tasks_to_quiesce():
+    """astop() joins heartbeat, cron, and durable execution tasks."""
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    mock_agent = MagicMock()
+    mock_agent.workspace = MagicMock()
+    daemon = HeartbeatDaemon(agent=mock_agent)
+
+    daemon.start()
+    heartbeat_task = daemon._task
+    execution_task = asyncio.create_task(asyncio.Event().wait())
+    daemon._scheduler_tasks["run-1"] = execution_task
+
+    await daemon.astop()
+
+    assert daemon._running is False
+    assert daemon._task is None
+    assert heartbeat_task is not None and heartbeat_task.done()
+    assert execution_task.done()
+    assert daemon._scheduler_tasks == {}
+
+
 # ── trigger_cron tests ──────────────────────────────────────────────────
 
 
@@ -661,6 +851,7 @@ async def test_run_heartbeat_handles_exception():
     daemon = HeartbeatDaemon(agent=mock_agent)
     result = await daemon._run_heartbeat()
     assert "[heartbeat error]" in result
+    assert "connection failed" not in result
 
 
 @pytest.mark.asyncio
@@ -677,6 +868,28 @@ async def test_run_heartbeat_no_heartbeat_content():
     daemon = HeartbeatDaemon(agent=mock_agent)
     result = await daemon._run_heartbeat()
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_run_heartbeat_uses_lifecycle_for_durable_profile():
+    from agnoclaw.config import RuntimeProfile
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+
+    response = MagicMock(content="HEARTBEAT_OK")
+    run = MagicMock(run_id="run_heartbeat")
+    run.wait = AsyncMock(return_value=response)
+    agent = MagicMock(profile=RuntimeProfile.DURABLE)
+    agent.workspace.is_empty_heartbeat.return_value = False
+    agent.workspace.heartbeat_md.return_value = "check items"
+    agent.start = AsyncMock(return_value=run)
+    agent.arun = AsyncMock()
+
+    result = await HeartbeatDaemon(agent=agent)._run_heartbeat()
+
+    assert result is None
+    agent.start.assert_awaited_once()
+    agent.arun.assert_not_awaited()
+    run.wait.assert_awaited_once_with()
 
 
 # ── _run_cron_job tests ─────────────────────────────────────────────────
@@ -726,6 +939,74 @@ async def test_run_cron_job_records_run_history():
 
 
 @pytest.mark.asyncio
+async def test_run_cron_job_links_durable_runtime_identity():
+    from agnoclaw.config import RuntimeProfile
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+    from agnoclaw.runtime import InMemorySchedulerBackend
+
+    response = MagicMock(content="done")
+    runtime_run = MagicMock(run_id="run_runtime")
+    runtime_run.wait = AsyncMock(return_value=response)
+    agent = MagicMock(profile=RuntimeProfile.DURABLE)
+    agent.workspace = MagicMock()
+    agent.start = AsyncMock(return_value=runtime_run)
+    agent.arun = AsyncMock()
+    backend = InMemorySchedulerBackend()
+
+    result = await HeartbeatDaemon(agent=agent, scheduler_backend=backend)._run_cron_job(
+        CronJob(name="durable", schedule="1h", prompt="work")
+    )
+    record = backend.list_runs(job_name="durable")[0]
+
+    assert result == "done"
+    assert record.status == "completed"
+    assert record.metadata["runtime_run_id"] == "run_runtime"
+    agent.start.assert_awaited_once()
+    agent.arun.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_cron_job_cancellation_detaches_durable_run():
+    from agnoclaw.config import RuntimeProfile
+    from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
+    from agnoclaw.runtime import HarnessRun, InMemorySchedulerBackend
+
+    waiter_started = asyncio.Event()
+    release_waiter = asyncio.Event()
+
+    async def wait_forever(_timeout):
+        waiter_started.set()
+        await release_waiter.wait()
+
+    runtime_run = HarnessRun(
+        run_id="run_continues",
+        store=MagicMock(),
+        waiter=wait_forever,
+    )
+    agent = MagicMock(profile=RuntimeProfile.DURABLE)
+    agent.workspace = MagicMock()
+    agent.start = AsyncMock(return_value=runtime_run)
+    backend = InMemorySchedulerBackend()
+    daemon = HeartbeatDaemon(agent=agent, scheduler_backend=backend)
+
+    task = asyncio.create_task(
+        daemon._run_cron_job(CronJob(name="durable", schedule="1h", prompt="work"))
+    )
+    await waiter_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    record = backend.list_runs(job_name="durable")[0]
+    assert record.status == "detached"
+    assert record.error == "SCHEDULER_EXECUTION_DETACHED"
+    assert record.metadata["runtime_run_id"] == "run_continues"
+
+    release_waiter.set()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
 async def test_run_cron_job_exception_returns_none():
     """Cron job that raises returns None (logged, not propagated)."""
     from agnoclaw.heartbeat.daemon import CronJob, HeartbeatDaemon
@@ -759,7 +1040,300 @@ async def test_run_cron_job_records_failed_run_history():
 
     assert result is None
     assert runs[0].status == "failed"
-    assert runs[0].error == "boom"
+    assert runs[0].error == "SCHEDULER_RUN_FAILED"
+    assert "boom" not in runs[0].error
+
+
+@pytest.mark.asyncio
+async def test_durable_scheduler_claim_uses_stable_lifecycle_identity(tmp_path):
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend, SchedulerJob
+    from agnoclaw.runtime.store import SQLiteRuntimeStore
+
+    store = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    backend = RuntimeSchedulerBackend(store)
+    backend.upsert_job(
+        SchedulerJob(
+            name="durable",
+            schedule="1h",
+            prompt="work",
+            isolated=True,
+            metadata={"learning_consent": True},
+            next_run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        )
+    )
+    response = MagicMock(content="done")
+    runtime_run = MagicMock(run_id="runtime-one")
+    runtime_run.wait = AsyncMock(return_value=response)
+    agent = MagicMock()
+    agent.workspace = MagicMock()
+    agent.start = AsyncMock(return_value=runtime_run)
+    daemon = HeartbeatDaemon(agent=agent, scheduler_backend=backend)
+    claim = backend.claim_due_runs(worker_id="worker-a")[0]
+
+    result = await daemon._run_claimed_job(claim)
+
+    assert result == "done"
+    kwargs = agent.start.await_args.kwargs
+    assert kwargs["idempotency_key"].startswith("scheduler:schedocc_")
+    assert kwargs["session_id"] == f"schedule:{claim.record.occurrence_id}"
+    assert kwargs["learning_consent"] is True
+    assert kwargs["metadata"]["scheduler"]["attempt"] == 1
+    record = backend.list_runs()[0]
+    assert record.status == "completed"
+    assert record.runtime_run_id == "runtime-one"
+
+
+@pytest.mark.asyncio
+async def test_durable_scheduler_reattaches_bound_run_without_restart(tmp_path):
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend, SchedulerJob
+    from agnoclaw.runtime.store import SQLiteRuntimeStore
+
+    store = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    backend = RuntimeSchedulerBackend(store)
+    backend.upsert_job(
+        SchedulerJob(
+            name="durable",
+            schedule="1h",
+            prompt="work",
+            next_run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        )
+    )
+    first = backend.claim_due_runs(worker_id="worker-a")[0]
+    first = backend.bind_runtime_run(first, runtime_run_id="runtime-existing")
+    backend.release_claim(first)
+    reclaimed = backend.claim_due_runs(worker_id="worker-b")[0]
+
+    response = MagicMock(content="restored")
+    runtime_run = MagicMock()
+    runtime_run.wait = AsyncMock(return_value=response)
+    agent = MagicMock()
+    agent.workspace = MagicMock()
+    agent.get_run.return_value = runtime_run
+    agent.start = AsyncMock()
+    agent.recover_run = AsyncMock()
+    daemon = HeartbeatDaemon(agent=agent, scheduler_backend=backend)
+
+    result = await daemon._run_claimed_job(reclaimed)
+
+    assert result == "restored"
+    agent.get_run.assert_called_once_with("runtime-existing")
+    agent.start.assert_not_awaited()
+    agent.recover_run.assert_not_awaited()
+    assert backend.list_runs()[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_durable_scheduler_recovers_incomplete_bound_run(tmp_path):
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime.errors import HarnessError
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend, SchedulerJob
+    from agnoclaw.runtime.store import SQLiteRuntimeStore
+
+    store = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    backend = RuntimeSchedulerBackend(store)
+    backend.upsert_job(
+        SchedulerJob(
+            name="durable",
+            schedule="1h",
+            prompt="work",
+            next_run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        )
+    )
+    first = backend.claim_due_runs(worker_id="worker-a")[0]
+    first = backend.bind_runtime_run(first, runtime_run_id="runtime-existing")
+    backend.release_claim(first)
+    reclaimed = backend.claim_due_runs(worker_id="worker-b")[0]
+
+    incomplete = HarnessError(
+        code="RUN_WAIT_INCOMPLETE",
+        category="lifecycle",
+        message="still queued",
+        retryable=True,
+    )
+    stale = MagicMock()
+    stale.wait = AsyncMock(side_effect=incomplete)
+    recovered = MagicMock()
+    recovered.wait = AsyncMock(return_value=MagicMock(content="recovered"))
+    agent = MagicMock()
+    agent.workspace = MagicMock()
+    agent.get_run.return_value = stale
+    agent.recover_run = AsyncMock(return_value=recovered)
+    daemon = HeartbeatDaemon(agent=agent, scheduler_backend=backend)
+
+    result = await daemon._run_claimed_job(reclaimed)
+
+    assert result == "recovered"
+    agent.recover_run.assert_awaited_once_with("runtime-existing")
+    assert backend.list_runs()[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_durable_scheduler_stop_detaches_without_cancelling_runtime(tmp_path):
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime import HarnessRun
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend, SchedulerJob
+    from agnoclaw.runtime.store import SQLiteRuntimeStore
+
+    store = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    backend = RuntimeSchedulerBackend(store)
+    backend.upsert_job(
+        SchedulerJob(
+            name="durable",
+            schedule="1h",
+            prompt="work",
+            next_run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        )
+    )
+    waiter_started = asyncio.Event()
+    release_waiter = asyncio.Event()
+
+    async def wait_forever(_timeout):
+        waiter_started.set()
+        await release_waiter.wait()
+
+    runtime_run = HarnessRun(run_id="runtime-continues", store=store, waiter=wait_forever)
+    agent = MagicMock()
+    agent.workspace = MagicMock()
+    agent.start = AsyncMock(return_value=runtime_run)
+    daemon = HeartbeatDaemon(agent=agent, scheduler_backend=backend)
+    claim = backend.claim_due_runs(worker_id="worker-a")[0]
+    task = asyncio.create_task(daemon._run_claimed_job(claim))
+    await waiter_started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    record = backend.list_runs()[0]
+    assert record.status == "detached"
+    assert record.runtime_run_id == "runtime-continues"
+    release_waiter.set()
+
+
+@pytest.mark.asyncio
+async def test_durable_scheduler_ambiguous_bind_keeps_same_attempt_reclaimable(tmp_path):
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend, SchedulerJob
+    from agnoclaw.runtime.store import RuntimeStoreConnectionLostError, SQLiteRuntimeStore
+
+    store = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    backend = RuntimeSchedulerBackend(store)
+    backend.upsert_job(
+        SchedulerJob(
+            name="durable",
+            schedule="1h",
+            prompt="work",
+            max_retries=2,
+            next_run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        )
+    )
+    claim = backend.claim_due_runs(worker_id="worker-a")[0]
+    run = MagicMock(run_id="runtime-created")
+    run.wait = AsyncMock()
+    agent = MagicMock()
+    agent.workspace = MagicMock()
+    agent.start = AsyncMock(return_value=run)
+    daemon = HeartbeatDaemon(agent=agent, scheduler_backend=backend)
+
+    original_bind = backend.bind_runtime_run
+    backend.bind_runtime_run = MagicMock(
+        side_effect=RuntimeStoreConnectionLostError(backend="sqlite")
+    )
+    assert await daemon._run_claimed_job(claim) is None
+
+    records = backend.list_runs()
+    assert len(records) == 1
+    assert records[0].attempt == 1
+    assert records[0].status == "pending"
+    backend.bind_runtime_run = original_bind
+    reclaimed = backend.claim_due_runs(worker_id="worker-b")[0]
+    assert reclaimed.run_id == claim.run_id
+    assert reclaimed.record.attempt == 1
+
+
+@pytest.mark.asyncio
+async def test_durable_scheduler_ambiguous_completion_does_not_retry(tmp_path):
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend, SchedulerJob
+    from agnoclaw.runtime.store import RuntimeStoreConnectionLostError, SQLiteRuntimeStore
+
+    store = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    backend = RuntimeSchedulerBackend(store)
+    backend.upsert_job(
+        SchedulerJob(
+            name="durable",
+            schedule="1h",
+            prompt="work",
+            max_retries=2,
+            next_run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        )
+    )
+    claim = backend.claim_due_runs(worker_id="worker-a")[0]
+    run = MagicMock(run_id="runtime-created")
+    run.wait = AsyncMock(return_value=MagicMock(content="completed"))
+    agent = MagicMock()
+    agent.workspace = MagicMock()
+    agent.start = AsyncMock(return_value=run)
+    daemon = HeartbeatDaemon(agent=agent, scheduler_backend=backend)
+    original_finish = backend.finish_claim
+    backend.finish_claim = MagicMock(side_effect=RuntimeStoreConnectionLostError(backend="sqlite"))
+
+    assert await daemon._run_claimed_job(claim) is None
+
+    backend.finish_claim = original_finish
+    records = backend.list_runs()
+    assert len(records) == 1
+    assert records[0].attempt == 1
+    assert records[0].status == "detached"
+
+
+@pytest.mark.asyncio
+async def test_durable_scheduler_only_retries_retryable_known_failures(tmp_path):
+    from agnoclaw.heartbeat.daemon import HeartbeatDaemon
+    from agnoclaw.runtime.errors import HarnessError
+    from agnoclaw.runtime.scheduler import RuntimeSchedulerBackend, SchedulerJob
+    from agnoclaw.runtime.store import SQLiteRuntimeStore
+
+    async def run_failure(name: str, *, retryable: bool) -> list:
+        store = SQLiteRuntimeStore(tmp_path / f"{name}.db")
+        backend = RuntimeSchedulerBackend(store)
+        backend.upsert_job(
+            SchedulerJob(
+                name=name,
+                schedule="1h",
+                prompt="work",
+                max_retries=1,
+                retry_delay_seconds=0,
+                retry_max_delay_seconds=0,
+                next_run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+            )
+        )
+        run = MagicMock(run_id=f"runtime-{name}")
+        run.wait = AsyncMock(
+            side_effect=HarnessError(
+                code="KNOWN_FAILURE",
+                category="provider",
+                message="safe",
+                retryable=retryable,
+            )
+        )
+        agent = MagicMock()
+        agent.workspace = MagicMock()
+        agent.start = AsyncMock(return_value=run)
+        daemon = HeartbeatDaemon(agent=agent, scheduler_backend=backend)
+        claim = backend.claim_due_runs(worker_id="worker-a")[0]
+        await daemon._run_claimed_job(claim)
+        return backend.list_runs()
+
+    retryable = await run_failure("retryable", retryable=True)
+    non_retryable = await run_failure("non-retryable", retryable=False)
+
+    assert {record.status for record in retryable} == {"failed", "retry_wait"}
+    assert len(retryable) == 2
+    assert len(non_retryable) == 1
+    assert non_retryable[0].status == "dead_lettered"
 
 
 # ── Active hours edge cases ─────────────────────────────────────────────
@@ -772,10 +1346,12 @@ def test_active_hours_overnight_range():
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
-    cfg = HarnessConfig(heartbeat=HeartbeatConfig(
-        active_hours_start="22:00",
-        active_hours_end="06:00",
-    ))
+    cfg = HarnessConfig(
+        heartbeat=HeartbeatConfig(
+            active_hours_start="22:00",
+            active_hours_end="06:00",
+        )
+    )
     daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
 
     # 23:00 should be active (after start, before midnight)
@@ -801,10 +1377,12 @@ def test_active_hours_parse_failure_returns_true():
 
     mock_agent = MagicMock()
     mock_agent.workspace = MagicMock()
-    cfg = HarnessConfig(heartbeat=HeartbeatConfig(
-        active_hours_start="not-a-time",
-        active_hours_end="also-bad",
-    ))
+    cfg = HarnessConfig(
+        heartbeat=HeartbeatConfig(
+            active_hours_start="not-a-time",
+            active_hours_end="also-bad",
+        )
+    )
     daemon = HeartbeatDaemon(agent=mock_agent, config=cfg)
     assert daemon._is_active_hours() is True
 

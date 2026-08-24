@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -22,11 +23,13 @@ def sample_notebook(tmp_path) -> Path:
         "metadata": {"kernelspec": {"language": "python"}},
         "cells": [
             {
+                "id": "markdown-1",
                 "cell_type": "markdown",
                 "metadata": {},
                 "source": ["# Test Notebook\n", "This is a test."],
             },
             {
+                "id": "code-1",
                 "cell_type": "code",
                 "metadata": {},
                 "source": ["print('hello world')"],
@@ -34,6 +37,7 @@ def sample_notebook(tmp_path) -> Path:
                 "execution_count": 1,
             },
             {
+                "id": "code-2",
                 "cell_type": "code",
                 "metadata": {},
                 "source": ["x = 42"],
@@ -113,7 +117,9 @@ def test_notebook_add_cell_at_position(notebook_toolkit, sample_notebook):
     assert len(data["cells"]) == 4
     # New cell should be at position 1
     new_cell = data["cells"][1]
-    source = "".join(new_cell["source"]) if isinstance(new_cell["source"], list) else new_cell["source"]
+    source = (
+        "".join(new_cell["source"]) if isinstance(new_cell["source"], list) else new_cell["source"]
+    )
     assert "Section 2" in source
 
 
@@ -263,8 +269,6 @@ def test_add_raw_invalid_json(tmp_path):
 
 
 # ── Fallback routing tests (mock _check_nbformat to False) ──────────────
-
-from unittest.mock import patch
 
 
 def test_notebook_read_uses_raw_fallback(notebook_toolkit, sample_notebook):

@@ -81,9 +81,7 @@ class VerboseEventSink:
         if not self._show_events:
             return
 
-        print(
-            f"[event] {event.occurred_at} {event.event_type} run_id={event.run_id}"
-        )
+        print(f"[event] {event.occurred_at} {event.event_type} run_id={event.run_id}")
         if self._show_event_payloads:
             payload = json.dumps(
                 event.payload,
@@ -307,11 +305,15 @@ def run_chat(
     workspace_dir.mkdir(parents=True, exist_ok=True)
     rubric_path = _ensure_rubric_copy(workspace_dir, source_rubric)
 
-    event_sink = VerboseEventSink(
-        show_events=show_events,
-        show_event_payloads=show_event_payloads,
-        events_file=events_file,
-    ) if (show_events or events_file is not None) else None
+    event_sink = (
+        VerboseEventSink(
+            show_events=show_events,
+            show_event_payloads=show_event_payloads,
+            events_file=events_file,
+        )
+        if (show_events or events_file is not None)
+        else None
+    )
 
     harness_kwargs: dict[str, Any] = {
         "model": model,
@@ -446,11 +448,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         model = detect_model()
 
-    events_file = (
-        Path(args.events_file).expanduser().resolve()
-        if args.events_file
-        else None
-    )
+    events_file = Path(args.events_file).expanduser().resolve() if args.events_file else None
 
     return run_chat(
         model=model,

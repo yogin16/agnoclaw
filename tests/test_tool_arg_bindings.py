@@ -8,10 +8,9 @@ import functools
 import logging
 import tempfile
 from types import SimpleNamespace
-
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from agno.tools import tool
 from agno.tools.function import Function
 
@@ -109,7 +108,9 @@ def test_apply_tool_scope_returns_none_when_nothing_to_scope():
     harness = _harness()
     assert harness._apply_tool_scope() is None
     assert harness._apply_tool_scope(arg_bindings={}) is None
-    assert harness._apply_tool_scope(arg_bindings={"save_thing": {}}) is not None  # tool present but empty values → scope created, no-op binding
+    assert (
+        harness._apply_tool_scope(arg_bindings={"save_thing": {}}) is not None
+    )  # tool present but empty values → scope created, no-op binding
 
 
 def test_binding_unknown_tool_is_ignored():

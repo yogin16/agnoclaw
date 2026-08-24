@@ -1,26 +1,4 @@
-"""
-Task and planning tools.
-
-TodoToolkit — no-op planning tool (context engineering, not execution).
-              Models that write todos reason more clearly about multi-step work.
-              Inspired by Claude Code's TodoWrite/TaskUpdate pattern and
-              LangChain DeepAgents' TodoListMiddleware.
-
-ProgressToolkit — multi-context-window project persistence.
-                  Writes progress.md (session continuity) and features.md
-                  (requirement checklist). Inspired by Claude Code's
-                  progress.md pattern and the initializer-then-coder pattern
-                  for complex multi-phase projects.
-
-SubagentTool — spawns an isolated sub-agent for a discrete subtask.
-               Protects main context window from bloat (research, analysis,
-               code generation). Inspired by Claude Code's Task tool and
-               LangChain DeepAgents' SubAgentMiddleware.
-
-SubagentDefinition — pre-registered named subagent with fixed description,
-                     prompt, tools, and model. Mirrors Claude Agent SDK's
-                     AgentDefinition pattern for declarative subagent config.
-"""
+"""Planning state, durable progress files, and isolated child-agent tools."""
 
 from __future__ import annotations
 
@@ -34,9 +12,11 @@ from uuid import uuid4
 from agno.tools import tool
 from agno.tools.toolkit import Toolkit
 
-from agnoclaw.runtime import PlanExitSignal, PlanQuestionSignal
+from agnoclaw.runtime import HarnessError, PlanExitSignal, PlanQuestionSignal
 
 if TYPE_CHECKING:
+    from agno.models.base import Model
+
     from agnoclaw.backends import RuntimeBackend
 
 from .backends import bind_session_sandbox
@@ -44,20 +24,29 @@ from .backends import bind_session_sandbox
 logger = logging.getLogger("agnoclaw.tools")
 
 
+def _legacy_subagent_config(config: Any = None) -> Any:
+    """Resolve and validate the named raw-subagent compatibility profile."""
+    from agnoclaw.config import RuntimeProfile, get_config
+
+    cfg = config or get_config()
+    profile = RuntimeProfile(cfg.profile)
+    if profile is not RuntimeProfile.LEGACY:
+        raise HarnessError(
+            code="RAW_SUBAGENT_LIFECYCLE_UNSUPPORTED",
+            category="lifecycle",
+            message=(
+                "Raw spawn_subagent execution has no durable child lineage. Use "
+                "DeclaredChildTemplate/declared child runs, or select "
+                "HarnessConfig.legacy() for the temporary compatibility surface."
+            ),
+            retryable=False,
+            details={"profile": profile.value, "replacement": "declared_child_runs"},
+        )
+    return cfg
+
+
 class TodoToolkit(Toolkit):
-    """
-    In-memory todo list for planning multi-step work.
-
-    This is a pure context-engineering mechanism — it does not execute tasks,
-    it helps the model think through them. Todos are stored in memory for the
-    session duration.
-
-    Rules embedded in the tool descriptions:
-    - Create todos when a task has 3+ distinct steps
-    - Mark tasks in_progress BEFORE starting them
-    - Mark tasks completed IMMEDIATELY after finishing (not in batches)
-    - Update status in real-time so the user sees progress
-    """
+    """In-memory planning state; tool descriptions define its usage protocol."""
 
     def __init__(self):
         super().__init__(name="todo")
@@ -301,33 +290,7 @@ class PlanSignalToolkit(Toolkit):
 
 
 class ProgressToolkit(Toolkit):
-    """
-    Multi-context-window project persistence toolkit.
-
-    Designed for complex, long-running projects that span multiple sessions
-    or require more context than a single window can hold. The agent uses
-    this to:
-
-    - Save progress before context compaction or session end so the NEXT
-      session picks up exactly where things left off (progress.md)
-    - Track feature-level requirements as a pass/fail checklist — all
-      features start failing and get marked passing as they're implemented
-      (features.md)
-
-    Typical workflow for a large project:
-      1. write_features — define all requirements upfront (all start failing)
-      2. Do work across multiple sessions / context windows
-      3. update_feature_status — mark each feature passing as it's completed
-      4. write_progress — save state before session ends / context compacts
-      5. read_progress — at the start of the next session to resume
-
-    Modeled after Claude Code's progress.md + initializer-then-coder pattern
-    and the OpenClaw pre-compaction memory flush.
-
-    Args:
-        project_dir: Directory where progress.md and features.md are written.
-                     Defaults to the current working directory.
-    """
+    """Persist progress and feature status across sessions and context windows."""
 
     def __init__(self, project_dir: str | Path = "."):
         super().__init__(name="progress")
@@ -521,8 +484,7 @@ _TYPE_INSTRUCTIONS = {
         "and present insights clearly."
     ),
     "general": (
-        "You are a capable assistant. Complete the assigned task thoroughly "
-        "and efficiently."
+        "You are a capable assistant. Complete the assigned task thoroughly and efficiently."
     ),
 }
 
@@ -535,18 +497,12 @@ def _build_subagent_tools(
     backend: RuntimeBackend | None = None,
 ) -> list:
     """Build tool instances for a subagent from tool name list."""
-    agent_tools = []
+    agent_tools: list[Any] = []
     names = tool_names or ["all"]
     resolved_workspace = (
-        Path(workspace_dir).expanduser().resolve()
-        if workspace_dir is not None
-        else None
+        Path(workspace_dir).expanduser().resolve() if workspace_dir is not None else None
     )
-    resolved_sandbox = (
-        Path(sandbox_dir).expanduser().resolve()
-        if sandbox_dir is not None
-        else None
-    )
+    resolved_sandbox = Path(sandbox_dir).expanduser().resolve() if sandbox_dir is not None else None
     resolved_backend = (
         backend.resolve(workspace_dir=resolved_workspace)
         if backend is not None and resolved_workspace is not None
@@ -554,9 +510,11 @@ def _build_subagent_tools(
     )
     resolved_command_executor = None
     resolved_workspace_adapter = None
+    tool_surface_dir: Path | None
     if resolved_backend is not None:
         from agnoclaw.tools.backends import normalize_sandbox_mode
 
+        assert resolved_workspace is not None
         effective_sandbox_mode = normalize_sandbox_mode(
             sandbox_mode if sandbox_mode is not None else resolved_backend.sandbox_mode
         )
@@ -567,20 +525,23 @@ def _build_subagent_tools(
             sandbox_dir=resolved_sandbox,
             sandbox_mode=effective_sandbox_mode,
         )
-        tool_surface_dir = Path(
-            getattr(
-                resolved_workspace_adapter,
-                "workspace_dir",
-                resolved_sandbox or resolved_workspace,
-            )
-        ).expanduser().resolve(strict=False)
+        adapter_workspace = getattr(
+            resolved_workspace_adapter,
+            "workspace_dir",
+            resolved_sandbox or resolved_workspace,
+        )
+        if adapter_workspace is None:
+            raise RuntimeError("Resolved subagent backend did not provide a workspace root.")
+        tool_surface_dir = Path(adapter_workspace).expanduser().resolve(strict=False)
     else:
         tool_surface_dir = resolved_sandbox or resolved_workspace
     if "all" in names or "web" in names:
         from agnoclaw.tools.web import WebToolkit
+
         agent_tools.append(WebToolkit())
     if "all" in names or "files" in names:
         from agnoclaw.tools.files import FilesToolkit
+
         agent_tools.append(
             FilesToolkit(
                 workspace_dir=tool_surface_dir,
@@ -589,6 +550,7 @@ def _build_subagent_tools(
         )
     if "all" in names or "bash" in names:
         from agnoclaw.tools.bash import make_bash_tool
+
         agent_tools.append(
             make_bash_tool(
                 workspace_dir=tool_surface_dir,
@@ -613,7 +575,7 @@ def _resolve_subagent_model(model_id: str, config=None):
 def _run_subagent(
     task: str,
     instructions: str,
-    model_id: str,
+    model_id: str | Model,
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
@@ -624,6 +586,8 @@ def _run_subagent(
     """Create and run an isolated subagent synchronously. Returns result string."""
     from agnoclaw.agent import AgentHarness, get_current_tool_runtime
 
+    cfg = _legacy_subagent_config(config)
+
     parent_runtime = get_current_tool_runtime()
     subagent_context = AgentHarness._build_subagent_execution_context(
         parent_runtime,
@@ -632,7 +596,7 @@ def _run_subagent(
 
     subagent = AgentHarness(
         model=model_id,
-        config=config,
+        config=cfg,
         workspace_dir=workspace_dir,
         sandbox_dir=sandbox_dir,
         include_default_tools=False,
@@ -644,25 +608,20 @@ def _run_subagent(
             backend=backend,
         ),
         instructions=instructions,
-        event_sink=(
-            parent_runtime.get("event_sink")
-            if isinstance(parent_runtime, dict)
-            else None
-        ),
+        event_sink=(parent_runtime.get("event_sink") if isinstance(parent_runtime, dict) else None),
         event_sink_mode=(
-            parent_runtime.get("event_sink_mode")
-            if isinstance(parent_runtime, dict)
-            else None
+            parent_runtime.get("event_sink_mode") if isinstance(parent_runtime, dict) else None
         ),
         session_metadata=(
-            parent_runtime.get("session_metadata")
-            if isinstance(parent_runtime, dict)
-            else None
+            parent_runtime.get("session_metadata") if isinstance(parent_runtime, dict) else None
         ),
         backend=backend,
     )
-    response = subagent.run(task, context=subagent_context)
-    content = response.content if response else "[no response]"
+    try:
+        response = subagent.run(task, context=subagent_context)
+    finally:
+        subagent.close()
+    content = getattr(response, "content", "[no response]") if response else "[no response]"
 
     # Truncate very long responses to protect parent context
     if isinstance(content, str) and len(content) > 8000:
@@ -674,7 +633,7 @@ def _run_subagent(
 async def _arun_subagent(
     task: str,
     instructions: str,
-    model_id: str,
+    model_id: str | Model,
     tool_names: list[str] | None = None,
     workspace_dir: str | Path | None = None,
     sandbox_dir: str | Path | None = None,
@@ -685,6 +644,8 @@ async def _arun_subagent(
     """Create and run an isolated subagent asynchronously. Returns result string."""
     from agnoclaw.agent import AgentHarness, get_current_tool_runtime
 
+    cfg = _legacy_subagent_config(config)
+
     parent_runtime = get_current_tool_runtime()
     subagent_context = AgentHarness._build_subagent_execution_context(
         parent_runtime,
@@ -693,7 +654,7 @@ async def _arun_subagent(
 
     subagent = AgentHarness(
         model=model_id,
-        config=config,
+        config=cfg,
         workspace_dir=workspace_dir,
         sandbox_dir=sandbox_dir,
         include_default_tools=False,
@@ -705,26 +666,21 @@ async def _arun_subagent(
             backend=backend,
         ),
         instructions=instructions,
-        event_sink=(
-            parent_runtime.get("event_sink")
-            if isinstance(parent_runtime, dict)
-            else None
-        ),
+        event_sink=(parent_runtime.get("event_sink") if isinstance(parent_runtime, dict) else None),
         event_sink_mode=(
-            parent_runtime.get("event_sink_mode")
-            if isinstance(parent_runtime, dict)
-            else None
+            parent_runtime.get("event_sink_mode") if isinstance(parent_runtime, dict) else None
         ),
         session_metadata=(
-            parent_runtime.get("session_metadata")
-            if isinstance(parent_runtime, dict)
-            else None
+            parent_runtime.get("session_metadata") if isinstance(parent_runtime, dict) else None
         ),
         backend=backend,
     )
 
-    response = await subagent.arun(task, context=subagent_context)
-    content = response.content if response else "[no response]"
+    try:
+        response = await subagent.arun(task, context=subagent_context)
+    finally:
+        await subagent.aclose()
+    content = getattr(response, "content", "[no response]") if response else "[no response]"
 
     if isinstance(content, str) and len(content) > 8000:
         content = content[:8000] + f"\n... [truncated, {len(content)} chars total]"
@@ -756,6 +712,7 @@ def make_subagent_tool(
         sandbox_mode: Session sandbox mode propagated to spawned files/bash tools.
         config: HarnessConfig propagated for model/provider and runtime settings.
     """
+    cfg = _legacy_subagent_config(config)
     _subagents = subagents or {}
     _default_model = default_model or "anthropic:claude-haiku-4-5-20251001"
 
@@ -798,6 +755,7 @@ def make_subagent_tool(
         Returns:
             The sub-agent's result/summary.
         """
+        tool_names: list[str] | None
         try:
             # Resolve named agent definition
             if agent_name and agent_name in _subagents:
@@ -823,7 +781,7 @@ def make_subagent_tool(
                 workspace_dir=workspace_dir,
                 sandbox_dir=sandbox_dir,
                 sandbox_mode=sandbox_mode,
-                config=config,
+                config=cfg,
                 backend=backend,
             )
 

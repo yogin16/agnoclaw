@@ -8,13 +8,13 @@ Demonstrates:
 - Per-run tool restrictions via skills
 """
 
-from agno.tools import tool, Toolkit
-
 from _utils import detect_model
+from agno.tools import Toolkit, tool
+
 from agnoclaw import AgentHarness
 
-
 # ── Custom @tool function ─────────────────────────────────────────────────
+
 
 @tool(name="word_count")
 def word_count(text: str) -> dict:
@@ -52,6 +52,7 @@ def hex_encode(text: str) -> str:
 
 
 # ── Custom Toolkit class ──────────────────────────────────────────────────
+
 
 class TextAnalysisToolkit(Toolkit):
     """A toolkit for text analysis operations."""
@@ -104,7 +105,6 @@ print(result.content)
 # ── Agent with only specific tools (no default tools) ─────────────────────
 # You can override defaults entirely for restricted agents
 
-from agnoclaw.tools import make_bash_tool
 
 minimal_agent = AgentHarness(
     name="MinimalAgent",

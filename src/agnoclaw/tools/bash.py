@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from agno.tools import tool
 from agno.tools.toolkit import Toolkit
@@ -19,7 +18,6 @@ from .backends import (
     CommandExecutor,
     LocalCommandExecutor,
 )
-
 
 logger = logging.getLogger("agnoclaw.tools.bash")
 
@@ -34,7 +32,7 @@ class BashToolkit(Toolkit):
     def __init__(
         self,
         timeout: int = 120,
-        workspace_dir: Optional[str | Path] = None,
+        workspace_dir: str | Path | None = None,
         max_background_tasks: int = 16,
         executor: CommandExecutor | None = None,
     ):
@@ -67,9 +65,9 @@ class BashToolkit(Toolkit):
     def bash(
         self,
         command: str,
-        description: Optional[str] = None,
-        working_dir: Optional[str] = None,
-        timeout_seconds: Optional[int] = None,
+        description: str | None = None,
+        working_dir: str | None = None,
+        timeout_seconds: int | None = None,
     ) -> str:
         """Run a bash command and return its output."""
         del description
@@ -105,8 +103,8 @@ class BashToolkit(Toolkit):
     def bash_start(
         self,
         command: str,
-        description: Optional[str] = None,
-        working_dir: Optional[str] = None,
+        description: str | None = None,
+        working_dir: str | None = None,
     ) -> str:
         """Start a background command and return task metadata."""
         try:
@@ -170,7 +168,7 @@ class BashToolkit(Toolkit):
 
 def make_bash_tool(
     timeout: int = 120,
-    workspace_dir: Optional[str | Path] = None,
+    workspace_dir: str | Path | None = None,
     executor: CommandExecutor | None = None,
 ):
     """

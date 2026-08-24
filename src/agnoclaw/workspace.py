@@ -36,8 +36,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
-from typing import Any, Optional
-
+from typing import Any
 
 # ── Context injection size limits ──────────────────────────────────────────
 # Matching Claude Code auto-memory and OpenClaw bootstrap conventions.
@@ -115,17 +114,17 @@ class Workspace:
 
     def __init__(
         self,
-        path: Optional[str | Path] = None,
-        global_dir: Optional[str | Path] = None,
-        project_dir: Optional[str | Path] = None,
+        path: str | Path | None = None,
+        global_dir: str | Path | None = None,
+        project_dir: str | Path | None = None,
     ):
         if path is None:
             path = Path.home() / ".agnoclaw" / "workspace"
         self.path = Path(path).expanduser().resolve()
 
         # Hierarchical parent chain
-        self._global_dir: Optional[Path] = None
-        self._project_dir: Optional[Path] = None
+        self._global_dir: Path | None = None
+        self._project_dir: Path | None = None
 
         if global_dir:
             gd = Path(global_dir).expanduser().resolve()
@@ -154,7 +153,7 @@ class Workspace:
         if not path.exists():
             path.write_text(content, encoding="utf-8")
 
-    def read_file(self, name: str) -> Optional[str]:
+    def read_file(self, name: str) -> str | None:
         """Read a workspace file by logical name or filename. Returns None if not found.
 
         Checks the hierarchical chain: workspace → project → global.
@@ -198,7 +197,9 @@ class Workspace:
         """Append a note to MEMORY.md."""
         memory_path = self.path / "MEMORY.md"
         existing = memory_path.read_text(encoding="utf-8") if memory_path.exists() else "# Memory\n"
-        memory_path.write_text(existing.rstrip() + "\n\n" + content.strip() + "\n", encoding="utf-8")
+        memory_path.write_text(
+            existing.rstrip() + "\n\n" + content.strip() + "\n", encoding="utf-8"
+        )
 
     def log_to_daily(self, content: str) -> None:
         """Write a log entry to today's daily memory file (memory/YYYY-MM-DD.md)."""
@@ -266,14 +267,15 @@ class Workspace:
                     )
         return specs
 
-    def heartbeat_md(self) -> Optional[str]:
+    def heartbeat_md(self) -> str | None:
         """Read HEARTBEAT.md. Returns None if empty or only headers."""
         content = self.read_file("heartbeat")
         if content is None:
             return None
         # Skip if only whitespace and markdown headers
         meaningful = [
-            line for line in content.splitlines()
+            line
+            for line in content.splitlines()
             if line.strip() and not line.strip().startswith("#")
         ]
         return content if meaningful else None
@@ -323,6 +325,7 @@ class Workspace:
     def write_session_summary(self, summary: str) -> None:
         """Write a session summary to today's daily log (used for context compaction)."""
         from datetime import datetime
+
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_to_daily(f"## Session Summary [{timestamp}]\n\n{summary}")
 

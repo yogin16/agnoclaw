@@ -26,9 +26,7 @@ class NotificationPanel(RichLog):
     """
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(
-            highlight=True, markup=True, wrap=True, auto_scroll=True, **kwargs
-        )
+        super().__init__(highlight=True, markup=True, wrap=True, auto_scroll=True, **kwargs)
         self._count = 0
 
     def on_mount(self) -> None:
@@ -51,9 +49,7 @@ class NotificationPanel(RichLog):
         self._count += 1
         ts = datetime.now().strftime("%H:%M")
         self.write(
-            Text.from_markup(
-                f"[cyan bold][{job_name}][/cyan bold] [dim]{ts}[/dim]"
-            ),
+            Text.from_markup(f"[cyan bold][{job_name}][/cyan bold] [dim]{ts}[/dim]"),
             scroll_end=True,
         )
         self.write(Text(text[:200]), scroll_end=True)

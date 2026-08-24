@@ -55,23 +55,52 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
-import frontmatter
+import yaml
 
 from .backends import LocalSkillRuntimeBackend, SkillRuntimeBackend
 
 logger = logging.getLogger("agnoclaw.skills")
 
 
+def _read_skill_document(path: Path) -> tuple[dict, str]:
+    """Read YAML frontmatter without the deprecated ``python-frontmatter`` shim.
+
+    A SKILL.md without a leading delimiter is valid and simply has no metadata.
+    Frontmatter must decode to a mapping so malformed or surprising YAML cannot leak
+    scalar/list values into the loader's trusted metadata path.
+    """
+    text = path.read_text(encoding="utf-8-sig")
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+
+    closing_index = next(
+        (index for index, line in enumerate(lines[1:], start=1) if line.strip() in {"---", "..."}),
+        None,
+    )
+    if closing_index is None:
+        raise ValueError("frontmatter is missing a closing '---' delimiter")
+
+    raw_metadata = "".join(lines[1:closing_index])
+    loaded = yaml.safe_load(raw_metadata) if raw_metadata.strip() else {}
+    if loaded is None:
+        metadata: dict = {}
+    elif isinstance(loaded, dict):
+        metadata = loaded
+    else:
+        raise ValueError("frontmatter must be a YAML mapping")
+    return metadata, "".join(lines[closing_index + 1 :])
+
+
 @dataclass
 class SkillInstaller:
     """A single installer spec from metadata.openclaw.install."""
 
-    type: str                           # "uv", "pip", "brew", "npm", "go"
-    package: str                        # package/formula name
+    type: str  # "uv", "pip", "brew", "npm", "go"
+    package: str  # package/formula name
     os: list[str] = field(default_factory=list)  # platform filter (empty = all)
-    version: Optional[str] = None      # optional version constraint
+    version: str | None = None  # optional version constraint
 
 
 @dataclass
@@ -93,23 +122,23 @@ class SkillMeta:
     # model sees and supplied at dispatch (restored afterward). Usually set at the
     # call site (values are run-scoped), but a skill may declare static bindings.
     tool_arg_bindings: dict[str, dict] = field(default_factory=dict)
-    model: Optional[str] = None
-    context: Optional[str] = None       # "fork" for isolated subagent
-    argument_hint: Optional[str] = None
-    homepage: Optional[str] = None
+    model: str | None = None
+    context: str | None = None  # "fork" for isolated subagent
+    argument_hint: str | None = None
+    homepage: str | None = None
     # OpenClaw gating
-    requires_bins: list[str] = field(default_factory=list)    # all must be on PATH
-    requires_any_bins: list[str] = field(default_factory=list) # at least one must exist
-    requires_env: list[str] = field(default_factory=list)      # all must be set
-    os_platforms: list[str] = field(default_factory=list)      # ["darwin", "linux", "win32"]
-    always: bool = False                # skip all gate checks
+    requires_bins: list[str] = field(default_factory=list)  # all must be on PATH
+    requires_any_bins: list[str] = field(default_factory=list)  # at least one must exist
+    requires_env: list[str] = field(default_factory=list)  # all must be set
+    os_platforms: list[str] = field(default_factory=list)  # ["darwin", "linux", "win32"]
+    always: bool = False  # skip all gate checks
     # OpenClaw install — runs before the skill is loaded if dependency is missing
     install: list[SkillInstaller] = field(default_factory=list)
     # Command dispatch (OpenClaw: bypass model, run tool directly)
-    command_dispatch: Optional[str] = None   # "tool"
-    command_tool: Optional[str] = None
+    command_dispatch: str | None = None  # "tool"
+    command_tool: str | None = None
     # Display
-    emoji: Optional[str] = None
+    emoji: str | None = None
 
 
 @dataclass
@@ -117,8 +146,8 @@ class Skill:
     """A fully loaded and parsed skill."""
 
     meta: SkillMeta
-    content: str   # The SKILL.md body (instructions)
-    path: Path     # Path to the SKILL.md file
+    content: str  # The SKILL.md body (instructions)
+    path: Path  # Path to the SKILL.md file
 
     @property
     def name(self) -> str:
@@ -173,6 +202,7 @@ class Skill:
             inline_backend = LocalSkillRuntimeBackend(working_dir=working_dir)
 
         if inline_backend is not None:
+
             def run_inline(m: re.Match) -> str:
                 cmd = m.group(1)
                 logger.debug("Skill '%s': executing inline command: %s", self.name, cmd)
@@ -193,13 +223,14 @@ class Skill:
             if inline_cmds:
                 logger.info(
                     "Skill '%s': %d inline command(s) skipped (allow_exec=False)",
-                    self.name, len(inline_cmds),
+                    self.name,
+                    len(inline_cmds),
                 )
 
         return content
 
 
-def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
+def load_skill_from_path(skill_md_path: Path) -> Skill | None:
     """
     Parse a SKILL.md file into a Skill object.
 
@@ -209,13 +240,12 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
         return None
 
     try:
-        post = frontmatter.load(str(skill_md_path))
+        metadata, raw_content = _read_skill_document(skill_md_path)
     except Exception as e:
         logger.warning("Failed to parse SKILL.md at %s: %s", skill_md_path, e)
         return None
 
-    metadata = post.metadata
-    content = post.content.strip()
+    content = raw_content.strip()
 
     # Derive name from directory if not in frontmatter
     name = metadata.get("name") or skill_md_path.parent.name
@@ -232,6 +262,7 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
     if isinstance(tool_schemas_raw, str):
         try:
             import json as _json
+
             tool_schemas_raw = _json.loads(tool_schemas_raw)
         except Exception:
             tool_schemas_raw = {}
@@ -243,16 +274,16 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
             else:
                 logger.warning(
                     "Skill '%s': ignoring non-object tool schema for %r",
-                    name, tool_name,
+                    name,
+                    tool_name,
                 )
 
     # Parse per-run tool argument bindings (tool name → {arg: value}).
-    tool_arg_bindings_raw = metadata.get(
-        "tool-arg-bindings", metadata.get("tool_arg_bindings", {})
-    )
+    tool_arg_bindings_raw = metadata.get("tool-arg-bindings", metadata.get("tool_arg_bindings", {}))
     if isinstance(tool_arg_bindings_raw, str):
         try:
             import json as _json
+
             tool_arg_bindings_raw = _json.loads(tool_arg_bindings_raw)
         except Exception:
             tool_arg_bindings_raw = {}
@@ -264,7 +295,8 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
             else:
                 logger.warning(
                     "Skill '%s': ignoring non-object tool arg binding for %r",
-                    name, tool_name,
+                    name,
+                    tool_name,
                 )
 
     # Parse OpenClaw gating metadata.
@@ -273,14 +305,12 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
     if isinstance(raw_meta, str):
         try:
             import json as _json
+
             raw_meta = _json.loads(raw_meta)
         except Exception:
             raw_meta = {}
     openclaw_meta = (
-        raw_meta.get("openclaw")
-        or raw_meta.get("clawdbot")
-        or raw_meta.get("clawdis")
-        or {}
+        raw_meta.get("openclaw") or raw_meta.get("clawdbot") or raw_meta.get("clawdis") or {}
     )
     requires = openclaw_meta.get("requires", {})
 
@@ -304,12 +334,14 @@ def load_skill_from_path(skill_md_path: Path) -> Optional[Skill]:
         installer_os = (
             [installer_os_raw] if isinstance(installer_os_raw, str) else list(installer_os_raw)
         )
-        install.append(SkillInstaller(
-            type=installer_type.lower(),
-            package=package,
-            os=installer_os,
-            version=entry.get("version"),
-        ))
+        install.append(
+            SkillInstaller(
+                type=installer_type.lower(),
+                package=package,
+                os=installer_os,
+                version=entry.get("version"),
+            )
+        )
 
     meta = SkillMeta(
         name=name,

@@ -31,6 +31,7 @@ def _check_ollama() -> bool:
         return True
     try:
         import httpx
+
         r = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
         return r.status_code == 200
     except Exception:
@@ -39,13 +40,14 @@ def _check_ollama() -> bool:
 
 # ── Part 1: Tool inventory ─────────────────────────────────────────────────────
 
+
 def demo_tool_inventory():
     """Show all tools registered in a default AgentHarness."""
     print("=== agnoclaw Default Tool Inventory ===")
     print()
 
-    from agnoclaw.tools import get_default_tools
     from agnoclaw.config import get_config
+    from agnoclaw.tools import get_default_tools
 
     cfg = get_config()
     tools = get_default_tools(cfg)
@@ -67,6 +69,7 @@ def demo_tool_inventory():
 
 
 # ── Part 2: MultiEdit demo ─────────────────────────────────────────────────────
+
 
 def demo_multi_edit(tmp: Path):
     """
@@ -90,10 +93,10 @@ def demo_multi_edit(tmp: Path):
 
     # Write example file
     (tmp / "config.py").write_text(
-        'DEBUG = False\n'
+        "DEBUG = False\n"
         'DATABASE_URL = "sqlite:///dev.db"\n'
-        'MAX_CONNECTIONS = 10\n'
-        'TIMEOUT_SECONDS = 30\n',
+        "MAX_CONNECTIONS = 10\n"
+        "TIMEOUT_SECONDS = 30\n",
         encoding="utf-8",
     )
 
@@ -104,11 +107,14 @@ def demo_multi_edit(tmp: Path):
     print()
 
     # Apply three edits atomically
-    result = toolkit.multi_edit_file(file_path, [
-        {"old_string": 'DEBUG = False',           "new_string": 'DEBUG = True'},
-        {"old_string": '"sqlite:///dev.db"',       "new_string": '"postgresql://localhost/prod"'},
-        {"old_string": 'MAX_CONNECTIONS = 10',     "new_string": 'MAX_CONNECTIONS = 100'},
-    ])
+    result = toolkit.multi_edit_file(
+        file_path,
+        [
+            {"old_string": "DEBUG = False", "new_string": "DEBUG = True"},
+            {"old_string": '"sqlite:///dev.db"', "new_string": '"postgresql://localhost/prod"'},
+            {"old_string": "MAX_CONNECTIONS = 10", "new_string": "MAX_CONNECTIONS = 100"},
+        ],
+    )
     print(f"  Result: {result}")
     print()
 
@@ -121,10 +127,13 @@ def demo_multi_edit(tmp: Path):
     # Demonstrate fail-fast validation
     print("  Fail-fast: if ANY edit is invalid, NONE are applied")
     original = (tmp / "config.py").read_text(encoding="utf-8")
-    result = toolkit.multi_edit_file(file_path, [
-        {"old_string": 'DEBUG = True',       "new_string": 'DEBUG = False'},   # valid
-        {"old_string": 'NOT_IN_FILE = True', "new_string": 'x = 1'},           # invalid
-    ])
+    result = toolkit.multi_edit_file(
+        file_path,
+        [
+            {"old_string": "DEBUG = True", "new_string": "DEBUG = False"},  # valid
+            {"old_string": "NOT_IN_FILE = True", "new_string": "x = 1"},  # invalid
+        ],
+    )
     after = (tmp / "config.py").read_text(encoding="utf-8")
     print(f"  Error result: {result[:80]}")
     print(f"  File unchanged: {original == after}")
@@ -132,6 +141,7 @@ def demo_multi_edit(tmp: Path):
 
 
 # ── Part 3: Existing file tools comparison ────────────────────────────────────
+
 
 def demo_file_tools(tmp: Path):
     """Quick tour of all file tools: Read, Write, Edit, MultiEdit, Glob, Grep, ListDir."""
@@ -144,23 +154,32 @@ def demo_file_tools(tmp: Path):
 
     # Write
     path = str(tmp / "example.py")
-    toolkit.write_file(path, "def greet(name):\n    return f'Hello, {name}!'\n\ndef farewell(name):\n    return f'Goodbye, {name}!'\n")
-    print(f"  write_file: created example.py")
+    toolkit.write_file(
+        path,
+        "def greet(name):\n"
+        "    return f'Hello, {name}!'\n\n"
+        "def farewell(name):\n"
+        "    return f'Goodbye, {name}!'\n",
+    )
+    print("  write_file: created example.py")
 
     # Read
     result = toolkit.read_file(path, limit=3)
-    print(f"  read_file (first 3 lines):\n    {result.replace(chr(10), chr(10)+'    ')}")
+    print(f"  read_file (first 3 lines):\n    {result.replace(chr(10), chr(10) + '    ')}")
 
     # Edit (single replacement)
     toolkit.edit_file(path, "'Hello, {name}!'", "'Hi there, {name}!'")
-    print(f"  edit_file: replaced greeting")
+    print("  edit_file: replaced greeting")
 
     # MultiEdit (multiple replacements)
-    toolkit.multi_edit_file(path, [
-        {"old_string": "'Hi there, {name}!'",  "new_string": "'Hello, {name}!'"},
-        {"old_string": "'Goodbye, {name}!'",   "new_string": "'See you, {name}!'"},
-    ])
-    print(f"  multi_edit_file: restored greeting, updated farewell")
+    toolkit.multi_edit_file(
+        path,
+        [
+            {"old_string": "'Hi there, {name}!'", "new_string": "'Hello, {name}!'"},
+            {"old_string": "'Goodbye, {name}!'", "new_string": "'See you, {name}!'"},
+        ],
+    )
+    print("  multi_edit_file: restored greeting, updated farewell")
 
     # Glob
     (tmp / "a.py").write_text("x=1")
@@ -171,17 +190,18 @@ def demo_file_tools(tmp: Path):
 
     # Grep
     result = toolkit.grep_files("def ", str(tmp), glob="*.py")
-    matches = [l for l in result.splitlines() if "def " in l]
+    matches = [line for line in result.splitlines() if "def " in line]
     print(f"  grep_files('def '): {len(matches)} function definitions found")
 
     # ListDir
     result = toolkit.list_dir(str(tmp))
-    lines = [l for l in result.splitlines() if l.startswith(("f ", "d "))]
+    lines = [line for line in result.splitlines() if line.startswith(("f ", "d "))]
     print(f"  list_dir: {len(lines)} entries")
     print()
 
 
 # ── Part 4: Gap analysis ───────────────────────────────────────────────────────
+
 
 def demo_gap_analysis():
     """
@@ -192,32 +212,35 @@ def demo_gap_analysis():
     print()
 
     implemented = [
-        ("Read",        "read_file()",       "File reading with line offset/limit"),
-        ("Write",       "write_file()",      "File writing (creates parent dirs)"),
-        ("Edit",        "edit_file()",       "Single string replacement (unique match required)"),
-        ("MultiEdit",   "multi_edit_file()", "Multiple replacements atomically — ADDED this session"),
-        ("Glob",        "glob_files()",      "File pattern matching (sorted by mtime)"),
-        ("Grep",        "grep_files()",      "Regex content search with context lines"),
-        ("LS/ListDir",  "list_dir()",        "Directory listing with sizes"),
-        ("Bash",        "bash()",            "Shell execution (timeout, description)"),
-        ("WebSearch",   "web_search()",      "Web search with domain filtering"),
-        ("WebFetch",    "web_fetch()",       "URL fetching with AI summarization"),
-        ("TodoWrite",   "create_todo()",     "Task creation (CRUD vs CC's atomic write)"),
-        ("TodoRead",    "list_todos()",      "Task listing"),
-        ("Task/Spawn",  "spawn_subagent()",  "Subagent spawning (simpler than CC's named agents)"),
-        ("BashStart",   "bash_start()",      "Start background bash task (BashToolkit)"),
-        ("BashOutput",  "bash_output()",     "Retrieve background bash output (BashToolkit)"),
-        ("KillShell",   "bash_kill()",       "Kill a backgrounded shell process (BashToolkit)"),
+        ("Read", "read_file()", "File reading with line offset/limit"),
+        ("Write", "write_file()", "File writing (creates parent dirs)"),
+        ("Edit", "edit_file()", "Single string replacement (unique match required)"),
+        ("MultiEdit", "multi_edit_file()", "Multiple replacements atomically — ADDED this session"),
+        ("Glob", "glob_files()", "File pattern matching (sorted by mtime)"),
+        ("Grep", "grep_files()", "Regex content search with context lines"),
+        ("LS/ListDir", "list_dir()", "Directory listing with sizes"),
+        ("Bash", "bash()", "Shell execution (timeout, description)"),
+        ("WebSearch", "web_search()", "Web search with domain filtering"),
+        ("WebFetch", "web_fetch()", "URL fetching with AI summarization"),
+        ("TodoWrite", "create_todo()", "Task creation (CRUD vs CC's atomic write)"),
+        ("TodoRead", "list_todos()", "Task listing"),
+        ("Task/Spawn", "spawn_subagent()", "Subagent spawning (simpler than CC's named agents)"),
+        ("BashStart", "bash_start()", "Start background bash task (BashToolkit)"),
+        ("BashOutput", "bash_output()", "Retrieve background bash output (BashToolkit)"),
+        ("KillShell", "bash_kill()", "Kill a backgrounded shell process (BashToolkit)"),
     ]
 
     missing = [
-        ("NotebookRead",   "Read Jupyter notebook cells — data science use case"),
-        ("NotebookEdit",   "Edit/insert/delete Jupyter cells with cell_id"),
-        ("AskUserQuestion","Structured multi-choice prompts — critical for plan mode UX"),
-        ("ExitPlanMode",   "Plan mode exit signal — agnoclaw uses text instruction only"),
-        ("Skill (tool)",   "Model-invoked skill tool — CC has a Skill tool; agnoclaw injects via prompt"),
-        ("TaskOutput",     "Retrieve output from background subagent by agent ID"),
-        ("TaskUpdate",     "Shared task list update for agent teams"),
+        ("NotebookRead", "Read Jupyter notebook cells — data science use case"),
+        ("NotebookEdit", "Edit/insert/delete Jupyter cells with cell_id"),
+        ("AskUserQuestion", "Structured multi-choice prompts — critical for plan mode UX"),
+        ("ExitPlanMode", "Plan mode exit signal — agnoclaw uses text instruction only"),
+        (
+            "Skill (tool)",
+            "Model-invoked skill tool — CC has a Skill tool; agnoclaw injects via prompt",
+        ),
+        ("TaskOutput", "Retrieve output from background subagent by agent ID"),
+        ("TaskUpdate", "Shared task list update for agent teams"),
     ]
 
     print("  IMPLEMENTED (agnoclaw equivalent):")
@@ -250,6 +273,7 @@ def demo_gap_analysis():
 
 
 # ── Part 5: Live agent using MultiEdit ───────────────────────────────────────
+
 
 def demo_agent_multi_edit(tmp: Path):
     """Show an agent using MultiEdit to refactor a file."""
@@ -293,6 +317,7 @@ Confirm the changes were applied."""
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
+
 
 def main():
     print("agnoclaw Tools Demo — Claude Code Comparison")

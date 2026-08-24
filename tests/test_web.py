@@ -1,11 +1,25 @@
 """Tests for the web toolkit — web_fetch and web_search backends."""
 
-from unittest.mock import patch, MagicMock
+import socket
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from agnoclaw.runtime.guardrails import RuntimeGuardrails
+from agnoclaw.runtime.network import PinnedNetworkBackend
 from agnoclaw.tools.web import WebToolkit, _html_to_text
 
-
 # ── web_fetch tests ─────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _resolve_test_hosts_to_public_address(monkeypatch):
+    monkeypatch.setattr(
+        "agnoclaw.runtime.guardrails.socket.getaddrinfo",
+        lambda _host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
+        ],
+    )
 
 
 def _make_mock_response(text="", content_type="text/html", status_code=200):
@@ -144,6 +158,67 @@ def test_web_fetch_general_exception():
         p.stop()
 
 
+def test_web_fetch_blocks_redirect_to_private_host():
+    toolkit = WebToolkit()
+    redirect = _make_mock_response("", "text/plain", 302)
+    redirect.headers["location"] = "http://169.254.169.254/latest/meta-data"
+    p, mock_client = _patch_httpx(redirect)
+    try:
+        result = toolkit.web_fetch("https://public.example/redirect")
+    finally:
+        p.stop()
+
+    assert "Network policy blocked" in result
+    assert mock_client.get.call_count == 1
+
+
+@pytest.mark.parametrize("host", ["127.1", "2130706433", "0x7f000001"])
+def test_web_fetch_blocks_legacy_loopback_spellings(host):
+    toolkit = WebToolkit()
+
+    result = toolkit.web_fetch(f"https://{host}/secret")
+
+    assert "Network policy blocked" in result
+
+
+def test_web_fetch_blocks_hostname_resolving_to_private_address(monkeypatch):
+    monkeypatch.setattr(
+        "agnoclaw.runtime.guardrails.socket.getaddrinfo",
+        lambda _host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.20.30.40", port))
+        ],
+    )
+    toolkit = WebToolkit()
+
+    result = toolkit.web_fetch("https://public-looking.example/secret")
+
+    assert "Network policy blocked" in result
+
+
+def test_pinned_network_backend_connects_to_policy_approved_ip(monkeypatch, tmp_path):
+    policy = RuntimeGuardrails(workspace_dir=tmp_path)
+    monkeypatch.setattr(
+        policy,
+        "resolve_network_host",
+        lambda host, port: ("93.184.216.34",),
+    )
+    backend = PinnedNetworkBackend(policy)
+    connection = MagicMock()
+    connect_tcp = MagicMock(return_value=connection)
+    monkeypatch.setattr(backend._backend, "connect_tcp", connect_tcp)
+
+    result = backend.connect_tcp("public-looking.example", 443, timeout=5.0)
+
+    assert result is connection
+    connect_tcp.assert_called_once_with(
+        host="93.184.216.34",
+        port=443,
+        timeout=5.0,
+        local_address=None,
+        socket_options=None,
+    )
+
+
 # ── web_search backend tests ───────────────────────────────────────────
 
 
@@ -152,7 +227,7 @@ def test_web_search_ddgs_backend():
     toolkit = WebToolkit()
 
     with patch.dict("os.environ", {}, clear=True):
-        with patch("duckduckgo_search.DDGS") as mock_ddgs:
+        with patch("ddgs.DDGS") as mock_ddgs:
             mock_instance = MagicMock()
             mock_ddgs.return_value.__enter__ = MagicMock(return_value=mock_instance)
             mock_ddgs.return_value.__exit__ = MagicMock(return_value=False)
@@ -170,7 +245,7 @@ def test_web_search_ddgs_no_results():
     """DDGS returns no results message."""
     toolkit = WebToolkit()
 
-    with patch("duckduckgo_search.DDGS") as mock_ddgs:
+    with patch("ddgs.DDGS") as mock_ddgs:
         mock_instance = MagicMock()
         mock_ddgs.return_value.__enter__ = MagicMock(return_value=mock_instance)
         mock_ddgs.return_value.__exit__ = MagicMock(return_value=False)
@@ -183,17 +258,17 @@ def test_web_search_ddgs_import_error():
     """DDGS ImportError returns helpful message."""
     toolkit = WebToolkit()
 
-    with patch("duckduckgo_search.DDGS", side_effect=ImportError):
+    with patch("ddgs.DDGS", side_effect=ImportError):
         result = toolkit._search_ddgs("test", 5)
     assert "[error]" in result
-    assert "duckduckgo-search" in result
+    assert "agnoclaw[web]" in result
 
 
 def test_web_search_ddgs_exception():
     """DDGS general exception returns error."""
     toolkit = WebToolkit()
 
-    with patch("duckduckgo_search.DDGS") as mock_ddgs:
+    with patch("ddgs.DDGS") as mock_ddgs:
         mock_ddgs.return_value.__enter__ = MagicMock(side_effect=RuntimeError("timeout"))
         mock_ddgs.return_value.__exit__ = MagicMock(return_value=False)
         result = toolkit._search_ddgs("test", 5)

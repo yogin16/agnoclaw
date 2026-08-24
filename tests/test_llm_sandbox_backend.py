@@ -88,9 +88,7 @@ class FakeLLMSandboxSession:
             if task["status"] == "running":
                 return _ConsoleOutput(stdout="status=running\n")
             if task["status"] == "exited":
-                return _ConsoleOutput(
-                    stdout=f"status=exited\nexit_code={task['exit_code']}\n"
-                )
+                return _ConsoleOutput(stdout=f"status=exited\nexit_code={task['exit_code']}\n")
             return _ConsoleOutput(stdout="status=terminated\n")
 
         if command.startswith("if kill -0 "):
@@ -273,8 +271,14 @@ def test_llm_sandbox_default_tools_route_relative_ops_to_session_sandbox(tmp_pat
 
     assert files.workspace_dir == sandbox.resolve()
     assert not (sandbox / "scratch.txt").exists()
-    assert session._runtime_path(str(sandbox / "scratch.txt")).read_text(encoding="utf-8") == "sandbox-only"
-    assert session._runtime_path(str(workspace / "workspace.txt")).read_text(encoding="utf-8") == "workspace-only"
+    assert (
+        session._runtime_path(str(sandbox / "scratch.txt")).read_text(encoding="utf-8")
+        == "sandbox-only"
+    )
+    assert (
+        session._runtime_path(str(workspace / "workspace.txt")).read_text(encoding="utf-8")
+        == "workspace-only"
+    )
 
     assert bash.entrypoint("pwd") == f"ran:pwd:{sandbox.resolve()}"
     assert (

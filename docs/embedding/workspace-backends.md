@@ -4,8 +4,11 @@
 
 - `AgentHarness(..., backend=...)`
 - `get_default_tools(..., backend=...)`
-- built-in team factories such as `code_team(..., backend=...)`
-- built-in `spawn_subagent`, which inherits the same backend automatically
+- named-legacy team factories such as `code_team(..., backend=...)`
+- named-legacy `spawn_subagent`, which inherits the same backend automatically
+
+Explicit profiles reject those raw orchestration surfaces; use declared child harnesses,
+each with its own reviewed backend, for lifecycle-governed delegation.
 
 ## Design intent
 

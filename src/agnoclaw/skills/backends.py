@@ -38,17 +38,13 @@ class SkillRuntimeBackend(Protocol):
         command: str,
         timeout_seconds: int = 10,
         working_dir: str | None = None,
-    ) -> str:
-        ...
+    ) -> str: ...
 
-    def has_binary(self, name: str) -> bool:
-        ...
+    def has_binary(self, name: str) -> bool: ...
 
-    def has_env_var(self, name: str) -> bool:
-        ...
+    def has_env_var(self, name: str) -> bool: ...
 
-    def has_python_distribution(self, name: str) -> bool:
-        ...
+    def has_python_distribution(self, name: str) -> bool: ...
 
     def run_install(
         self,
@@ -56,15 +52,13 @@ class SkillRuntimeBackend(Protocol):
         installer_type: str,
         package_spec: str,
         timeout_seconds: int = 120,
-    ) -> SkillInstallResult:
-        ...
+    ) -> SkillInstallResult: ...
 
 
 class SkillInstallApprover(Protocol):
     """Approval backend for skill dependency installs."""
 
-    def approve(self, skill: Skill, pending: list[tuple[SkillInstaller, str]]) -> bool:
-        ...
+    def approve(self, skill: Skill, pending: list[tuple[SkillInstaller, str]]) -> bool: ...
 
 
 def build_install_command(
@@ -117,9 +111,7 @@ class LocalSkillRuntimeBackend:
 
     def __init__(self, *, working_dir: str | Path | None = None) -> None:
         self.working_dir = (
-            str(Path(working_dir).expanduser().resolve())
-            if working_dir is not None
-            else None
+            str(Path(working_dir).expanduser().resolve()) if working_dir is not None else None
         )
 
     def run_inline_command(
@@ -216,9 +208,7 @@ class CommandExecutorSkillRuntimeBackend:
     ) -> None:
         self.command_executor = command_executor
         self.working_dir = (
-            str(Path(working_dir).expanduser().resolve())
-            if working_dir is not None
-            else None
+            str(Path(working_dir).expanduser().resolve()) if working_dir is not None else None
         )
         self.python_candidates = python_candidates
 
@@ -255,7 +245,7 @@ class CommandExecutorSkillRuntimeBackend:
         quoted_name = name.replace("\\", "\\\\").replace("'", "\\'")
         command = (
             f"{python_bin} -c "
-            f"\"import importlib.metadata, sys; "
+            f'"import importlib.metadata, sys; '
             f"sys.exit(0 if importlib.metadata.distribution('{quoted_name}') else 1)\""
         )
         return self._run_probe(command)

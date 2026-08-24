@@ -13,9 +13,9 @@ The example:
 """
 
 import asyncio
-from pathlib import Path
 
 from _utils import detect_model
+
 from agnoclaw import AgentHarness
 from agnoclaw.heartbeat import HeartbeatDaemon
 from agnoclaw.workspace import Workspace
@@ -25,14 +25,17 @@ async def main():
     # Set up workspace with a demo HEARTBEAT.md
     ws = Workspace()
     ws.initialize()
-    ws.write_file("heartbeat", """# Heartbeat Checklist
+    ws.write_file(
+        "heartbeat",
+        """# Heartbeat Checklist
 
 - Check if any git repositories have uncommitted changes
 - Verify that the tmp/ directory doesn't have files older than 24 hours
 - Check system disk usage (alert if > 80%)
 
 If nothing needs attention, reply HEARTBEAT_OK.
-""")
+""",
+    )
 
     print(f"Workspace: {ws.path}")
     print("HEARTBEAT.md written with demo checklist")
@@ -47,13 +50,14 @@ If nothing needs attention, reply HEARTBEAT_OK.
 
     # Alert handler
     def on_alert(message: str):
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print("HEARTBEAT ALERT:")
         print(message)
-        print('='*50)
+        print("=" * 50)
 
     # Create daemon with 1-minute interval for demo
     from agnoclaw.config import get_config
+
     cfg = get_config()
     cfg.heartbeat.interval_minutes = 1
     cfg.heartbeat.enabled = True

@@ -72,6 +72,8 @@ class SystemPromptBuilder:
         *,
         skill_content: str | None = None,
         include_datetime: bool = True,
+        runtime_datetime: datetime | None = None,
+        include_sandbox: bool = True,
         extra_context: str | None = None,
         include_learning: bool = False,
         include_plan_mode: bool = False,
@@ -84,6 +86,8 @@ class SystemPromptBuilder:
         Args:
             skill_content: Active skill's SKILL.md content (selective injection).
             include_datetime: Inject current date/time into context.
+            runtime_datetime: Optional frozen clock used by durable run recovery.
+            include_sandbox: Include the process-local sandbox location when applicable.
             extra_context: Additional instructions (enterprise config, project CLAUDE.md).
             include_learning: Include the Learning section (only when LearningMachine is active).
             include_plan_mode: Include plan mode instructions.
@@ -136,12 +140,23 @@ class SystemPromptBuilder:
 
         # 15: Runtime reminders
         if include_datetime:
-            parts.append(self.build_runtime_block(session_id=session_id))
+            parts.append(
+                self.build_runtime_block(
+                    session_id=session_id,
+                    runtime_datetime=runtime_datetime,
+                    include_sandbox=include_sandbox,
+                )
+            )
 
         return "\n\n---\n\n".join(parts)
 
     def build_runtime_block(
-        self, *, session_id: str | None = None, include_time: bool = False
+        self,
+        *,
+        session_id: str | None = None,
+        include_time: bool = False,
+        runtime_datetime: datetime | None = None,
+        include_sandbox: bool = True,
     ) -> str:
         """Build the volatile "# Runtime" section on its own.
 
@@ -161,15 +176,16 @@ class SystemPromptBuilder:
         trailing system block — pass ``include_time=True``: there it
         costs no cache hits and keeps the model time-aware.
         """
+        clock = runtime_datetime if runtime_datetime is not None else datetime.now()
         if include_time:
-            stamp = f"Current date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            stamp = f"Current date and time: {clock.strftime('%Y-%m-%d %H:%M')}"
         else:
-            stamp = f"Current date: {datetime.now().strftime('%Y-%m-%d')}"
+            stamp = f"Current date: {clock.strftime('%Y-%m-%d')}"
         runtime_lines = [
             stamp,
             f"Workspace: {self.workspace_dir}",
         ]
-        if self.sandbox_dir is not None:
+        if include_sandbox and self.sandbox_dir is not None:
             runtime_lines.append(f"Session sandbox: {self.sandbox_dir}")
             if self.sandbox_mode:
                 runtime_lines.append(f"Sandbox mode: {self.sandbox_mode}")

@@ -29,6 +29,7 @@ except ImportError as e:
 
 if TYPE_CHECKING:
     from agnoclaw.agent import AgentHarness
+    from agnoclaw.heartbeat import HeartbeatDaemon
 
 logger = logging.getLogger("agnoclaw.cli.async_repl")
 
@@ -58,7 +59,7 @@ class AsyncREPL:
         self._session = PromptSession()
         self._notification_queue: asyncio.Queue[str] = asyncio.Queue()
         self._queued_skill: str | None = None
-        self._daemon = None
+        self._daemon: HeartbeatDaemon | None = None
 
     async def run(self) -> None:
         """Main REPL loop — runs until /quit or Ctrl+C."""
@@ -118,9 +119,7 @@ class AsyncREPL:
                     if "--skill" in user_input:
                         parts = user_input.split("--skill", 1)
                         user_input = parts[0].strip()
-                        active_skill = (
-                            parts[1].strip().split()[0] if parts[1].strip() else None
-                        )
+                        active_skill = parts[1].strip().split()[0] if parts[1].strip() else None
                     elif self._queued_skill:
                         active_skill = self._queued_skill
                         self._queued_skill = None
@@ -128,23 +127,40 @@ class AsyncREPL:
                     await self._stream_response(user_input, skill=active_skill)
         finally:
             notif_task.cancel()
+            await asyncio.gather(notif_task, return_exceptions=True)
             if self._daemon:
-                self._daemon.stop()
+                await self._daemon.astop()
 
-    async def _stream_response(
-        self, message: str, *, skill: str | None = None
-    ) -> None:
-        """Stream agent response token-by-token."""
+    async def _stream_response(self, message: str, *, skill: str | None = None) -> None:
+        """Stream through the profile-selected first-party execution route."""
+        from agnoclaw.runtime.first_party import first_party_stream
+        from agnoclaw.runtime.presentation import RunPresentationDetached
+
         self._console.print("\n[bold green][agent][/bold green]")
         active_tool_labels: dict[str, str] = {}
+        run = None
+        detached = False
+        displayed: list[str] = []
 
         try:
-            response = await self._agent.arun(message, stream=True, skill=skill)
+            run, response = await first_party_stream(
+                self._agent,
+                message,
+                skill=skill,
+            )
 
             # Stream events
             async for event in response:
+                if isinstance(event, RunPresentationDetached):
+                    detached = True
+                    self._console.print(
+                        "\n[dim]Live display detached; the run is still executing. "
+                        "Waiting for its authoritative result...[/dim]"
+                    )
+                    continue
                 content = self._agent._extract_event_content(event)
                 if content:
+                    displayed.append(content)
                     print(content, end="", flush=True)
 
                 # Show tool call indicators
@@ -159,9 +175,7 @@ class AsyncREPL:
                     )
                     if tool_call_id:
                         active_tool_labels[str(tool_call_id)] = label
-                    self._console.print(
-                        f"\n  [dim]→ {label}...[/dim]", end=""
-                    )
+                    self._console.print(f"\n  [dim]→ {label}...[/dim]", end="")
                 elif event_type == "tool.call.completed":
                     summary = self._agent._stream_event_summary(event)
                     tool_call_id = summary.get("tool_call_id")
@@ -169,9 +183,20 @@ class AsyncREPL:
                         active_tool_labels.pop(str(tool_call_id), None)
                     self._console.print(" [dim]done[/dim]")
 
+            if run.run_id is not None:
+                result = await run.wait()
+                final = str(getattr(result, "content", result) or "")
+                if detached or final != "".join(displayed):
+                    self._console.print(f"\n[bold green][final][/bold green]\n{final}")
             print()  # newline after stream
         except KeyboardInterrupt:
+            if run is not None and run.run_id is not None:
+                await run.cancel()
             self._console.print("\n[dim](interrupted)[/dim]")
+        except asyncio.CancelledError:
+            if run is not None and run.run_id is not None:
+                await run.cancel()
+            raise
         except Exception as e:
             self._console.print(f"\n[red][error][/red] {e}")
             if self._debug:
@@ -198,8 +223,9 @@ class AsyncREPL:
             """Push alert to notification queue for async printing."""
             self._notification_queue.put_nowait(msg)
 
-        self._daemon = HeartbeatDaemon(self._agent, on_alert=on_alert, config=cfg)
-        self._daemon.start()
+        daemon = HeartbeatDaemon(self._agent, on_alert=on_alert, config=cfg)
+        self._daemon = daemon
+        daemon.start()
         logger.info(
             "Heartbeat started (interval=%dm)",
             cfg.heartbeat.interval_minutes,
