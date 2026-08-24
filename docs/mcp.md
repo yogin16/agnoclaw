@@ -85,7 +85,9 @@ url = "https://mcp.example.com/mcp"
 transport = "streamable_http"
 ```
 
-`transport = "sse"` exists only for an explicitly selected legacy server. New remote
+Remote URLs default to Streamable HTTP. For compatibility, an omitted transport on a
+URL whose path ends in `/sse` infers legacy SSE, including direct
+`MCPToolkit(url=".../sse")` construction. An explicit transport always wins. New remote
 deployments should use Streamable HTTP. Redirects are disabled on the owned Streamable
 HTTP client.
 
@@ -206,9 +208,10 @@ content.
 
 ## What is intentionally not claimed yet
 
-The current preview implements tools, stdio, Streamable HTTP, explicit legacy SSE,
-pagination, structured content, schema drift protection, conservative effects, and
-async ownership. It does not yet expose MCP resources, prompts, subscriptions,
+The current preview implements tools, stdio, Streamable HTTP, legacy SSE through
+explicit selection or `/sse` compatibility inference, pagination, structured content,
+schema drift protection, conservative effects, and async ownership. It does not yet
+expose MCP resources, prompts, subscriptions,
 extension negotiation, MCP Apps, the Tasks extension, multi-round-trip user input, or
 full authorization. Real network stdio/HTTP reference-server, reconnect, expired-auth,
 malicious-server, and soak certification remain release gates.

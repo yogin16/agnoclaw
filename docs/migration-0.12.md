@@ -3,7 +3,7 @@
 Status: development preview; local SQLite/JSON cutover is implemented, final production
 release gates remain open
 
-Last updated: 2026-08-19
+Last updated: 2026-08-24
 
 The migration tool exposes `check`, `plan`, `apply`, `verify`, `cutover`, and `rollback`
 for certified local legacy shapes. The PostgreSQL/service path now has a public,
@@ -157,9 +157,10 @@ only `search_mcp_tools` and `call_mcp_tool`, and every call must carry the schem
 returned by search. Code that invoked a generated remote wrapper directly must migrate
 to the search/call pair or use the MCP SDK as an explicitly host-owned client.
 
-Remote `url` entries now default to Streamable HTTP. An older HTTP+SSE server requires
-`transport = "sse"` explicitly. Async applications must use `await toolkit.aconnect()`
-and `await toolkit.aclose()`; `connect()` no longer attempts to drive a running loop.
+Remote `url` entries default to Streamable HTTP. For compatibility, an omitted
+transport on a URL path ending in `/sse` infers legacy SSE; an explicit transport
+always wins. Async applications must use `await toolkit.aconnect()` and
+`await toolkit.aclose()`; `connect()` no longer attempts to drive a running loop.
 Configured endpoints pass the harness HTTPS/private-host/allowlist posture before tool
 construction. Add an explicit `network_allowed_hosts` entry for each service and verify
 the worker's real egress policy.
