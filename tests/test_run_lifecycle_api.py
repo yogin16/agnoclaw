@@ -14,11 +14,14 @@ from agnoclaw.commands import Pause, Resume, Steer
 from agnoclaw.runtime import (
     ExecutionContext,
     HarnessError,
+    LifecycleTransition,
     LocalArtifactStore,
     RunReconciliationRequiredError,
+    RunSnapshot,
     RunState,
     RuntimeLeaseLostError,
     RunWaitError,
+    TransitionKind,
 )
 from agnoclaw.runtime.store import (
     SQLiteRuntimeStore,
@@ -853,6 +856,193 @@ async def test_steering_before_worker_dispatch_is_applied_once(tmp_path):
     assert len(ControlledAgent.messages) == 1
     assert "Operator steering" in ControlledAgent.messages[0]
     assert "prioritize evidence" in ControlledAgent.messages[0]
+
+
+@pytest.mark.asyncio
+async def test_cancel_retries_when_an_external_start_wins_the_revision(tmp_path, monkeypatch):
+    harness, store = _harness(tmp_path)
+    run_id = "run-cancel-interleave"
+    store.create_run(RunSnapshot(run_id=run_id, session_id="session-1"))
+    queued = store.apply_transition(
+        LifecycleTransition(
+            run_id=run_id,
+            kind=TransitionKind.QUEUE,
+            transition_id=f"{run_id}:queue",
+        ),
+        expected_revision=0,
+    ).lifecycle.after
+    original_apply = store.apply_transition
+    interleaved = False
+
+    def apply_with_external_start(transition, *, expected_revision, **kwargs):
+        nonlocal interleaved
+        if transition.kind is TransitionKind.REQUEST_CANCEL and not interleaved:
+            interleaved = True
+            original_apply(
+                LifecycleTransition(
+                    run_id=run_id,
+                    kind=TransitionKind.START,
+                    transition_id=f"{run_id}:external-start",
+                ),
+                expected_revision=queued.revision,
+            )
+        return original_apply(
+            transition,
+            expected_revision=expected_revision,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(store, "apply_transition", apply_with_external_start)
+
+    cancelled = await harness._cancel_runtime_run(run_id)
+
+    assert interleaved is True
+    assert cancelled.state is RunState.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_accepted_steering_is_visible_before_worker_closes_window(tmp_path, monkeypatch):
+    harness, store = _harness(tmp_path)
+    run_id = "run-steer-interleave"
+    context = ExecutionContext.create(
+        user_id="user-1",
+        session_id="session-1",
+        workspace_id=str(tmp_path / "workspace"),
+    )
+    store.create_run(
+        RunSnapshot(
+            run_id=run_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=context.session_id,
+        )
+    )
+    store.apply_transition(
+        LifecycleTransition(
+            run_id=run_id,
+            kind=TransitionKind.QUEUE,
+            transition_id=f"{run_id}:queue",
+        ),
+        expected_revision=0,
+    )
+    request = {
+        "message": "work",
+        "context": context,
+        "kwargs": {},
+        "steering": [],
+        "child_spec": None,
+    }
+    harness._run_requests[run_id] = request
+    harness._run_control_locks = {run_id: asyncio.Lock()}
+    original_apply = store.apply_transition
+    steer_committed = threading.Event()
+    release_steer_return = threading.Event()
+    target_attempts = 0
+
+    def apply_with_delayed_steer_return(transition, *, expected_revision, **kwargs):
+        nonlocal target_attempts
+        if transition.transition_id == "steer-target":
+            target_attempts += 1
+            if target_attempts == 1:
+                current = store.get_run(run_id)
+                original_apply(
+                    LifecycleTransition(
+                        run_id=run_id,
+                        kind=TransitionKind.STEER,
+                        transition_id="steer-interleaving-revision",
+                        payload={"instruction_digest": "interleaving"},
+                    ),
+                    expected_revision=current.revision,
+                )
+            result = original_apply(
+                transition,
+                expected_revision=expected_revision,
+                **kwargs,
+            )
+            if target_attempts == 2:
+                steer_committed.set()
+                assert release_steer_return.wait(timeout=2)
+            return result
+        return original_apply(
+            transition,
+            expected_revision=expected_revision,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(store, "apply_transition", apply_with_delayed_steer_return)
+    steer_task = asyncio.create_task(
+        harness._command_runtime_run(
+            run_id,
+            Steer("prioritize evidence", command_id="steer-target"),
+        )
+    )
+    assert await asyncio.to_thread(steer_committed.wait, 2)
+    harness._launch_runtime_worker(run_id, request)
+
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(ControlledAgent.started.wait(), timeout=0.05)
+    finally:
+        release_steer_return.set()
+
+    await steer_task
+    ControlledAgent.release.set()
+    await asyncio.wait_for(harness._live_runs[run_id], timeout=2)
+
+    assert target_attempts == 2
+    assert "prioritize evidence" in ControlledAgent.messages[0]
+
+
+@pytest.mark.asyncio
+async def test_reattached_owner_local_controls_fail_before_acknowledgement(tmp_path):
+    harness, store = _harness(tmp_path)
+    run_id = "run-remote-steer"
+    store.create_run(
+        RunSnapshot(
+            run_id=run_id,
+            tenant_id=harness._tenant_id,
+            user_id=harness.user_id,
+            session_id="session-1",
+        )
+    )
+    queued = store.apply_transition(
+        LifecycleTransition(
+            run_id=run_id,
+            kind=TransitionKind.QUEUE,
+            transition_id=f"{run_id}:queue",
+        ),
+        expected_revision=0,
+    ).lifecycle.after
+    reattached = harness.get_run(run_id)
+
+    for command in (
+        Pause("cannot reach the owner-local worker", command_id="pause-remote"),
+        Steer("cannot reach an owner-local buffer", command_id="steer-remote"),
+    ):
+        with pytest.raises(HarnessError) as unavailable:
+            await reattached.command(command)
+
+        assert unavailable.value.code == "RUN_CONTROL_OWNER_UNAVAILABLE"
+        assert unavailable.value.details["command_type"] == command.command_type
+        assert store.get_run(run_id).revision == queued.revision
+        assert store.get_run(run_id).last_transition_id == queued.last_transition_id
+
+    paused = store.apply_transition(
+        LifecycleTransition(
+            run_id=run_id,
+            kind=TransitionKind.PAUSE,
+            transition_id=f"{run_id}:owner-pause",
+        ),
+        expected_revision=queued.revision,
+    ).lifecycle.after
+    with pytest.raises(HarnessError) as unavailable:
+        await reattached.command(Resume(command_id="resume-remote"))
+
+    assert unavailable.value.code == "RUN_CONTROL_OWNER_UNAVAILABLE"
+    assert unavailable.value.details["command_type"] == "resume"
+    assert store.get_run(run_id).state is RunState.PAUSED
+    assert store.get_run(run_id).revision == paused.revision
+    assert store.get_run(run_id).last_transition_id == paused.last_transition_id
 
 
 @pytest.mark.asyncio
