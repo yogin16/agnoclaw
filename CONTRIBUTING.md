@@ -43,10 +43,13 @@ uv run ruff check --fix src/ tests/ scripts/ && uv run ruff format src/ tests/ s
 - Tests live in `tests/` mirroring the `src/agnoclaw/` structure
 - Use `tmp_path` (pytest built-in) or the fixtures in `tests/conftest.py`
 - Tests that require API keys must be marked with `pytest.mark.integration`
-  and skipped by default:
+  and `pytest.mark.live_model`, and are skipped by default. Hosted CI/CD sets
+  `AGNOCLAW_CI_NO_LIVE_LLM=1`; this fails before fixture setup if a provider
+  credential is present or a live-model test is selected:
 
 ```python
 @pytest.mark.integration
+@pytest.mark.live_model
 def test_real_api_call():
     ...
 ```

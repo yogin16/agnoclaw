@@ -10,6 +10,10 @@ No changes yet.
 
 ### Fixed
 
+- Concurrent resource-ownership and reconciliation-heartbeat contracts now
+  synchronize on run identity and committed checkpoints instead of scheduler
+  ordering or sleeps near lease expiry, removing their hosted-CI flakes.
+
 - Cancel now re-reads and retries a bounded number of times when another worker
   wins the run revision, so callers receive the authoritative cancelled state
   instead of a raw `RunRevisionConflictError`.
@@ -24,6 +28,10 @@ No changes yet.
   continues to take precedence.
 
 ### Changed
+
+- Hosted CI and pre-publish verification now fail before fixture setup when
+  provider credentials, live-model opt-ins, or selected live-model tests are
+  present, preventing test lanes from consuming local or paid LLM tokens.
 
 - Release documentation now distinguishes representative release-critical
   extras from the complete published extras catalog and scopes the 0.12 digest

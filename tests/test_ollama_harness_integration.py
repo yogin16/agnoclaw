@@ -17,7 +17,7 @@ import pytest
 
 from agnoclaw import AgentHarness, InMemoryEventSink
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.live_model]
 
 
 def _require_ollama() -> str:

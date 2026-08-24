@@ -14,7 +14,7 @@ from tests._ollama import ollama_available
 ROOT = Path(__file__).resolve().parents[1]
 PROBE = ROOT / "scripts" / "learning_benefit_probe.py"
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.live_model]
 
 
 def test_agno_learned_knowledge_beats_no_learning_control() -> None:

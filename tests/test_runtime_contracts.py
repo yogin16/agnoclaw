@@ -619,7 +619,10 @@ async def test_context_managers_and_data_containers_are_run_owned(tmp_path):
         harness.arun("two", session_id="session-two"),
     )
 
-    first, second = ManagedAgent.instances[1:]
+    run_agents = {agent.session_id: agent for agent in ManagedAgent.instances[1:]}
+    assert set(run_agents) == {"session-one", "session-two"}
+    first = run_agents["session-one"]
+    second = run_agents["session-two"]
     assert first.compression_manager is not second.compression_manager
     assert first.session_summary_manager is not second.session_summary_manager
     assert first.dependencies is not second.dependencies

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -217,6 +218,7 @@ def _worker(
     *,
     worker_id: str,
     lease_seconds: int = 30,
+    heartbeat_interval_seconds: float | None = None,
 ) -> LearningReconciliationWorker:
     coordinator = LearningReconciliationCoordinator(
         gateway,
@@ -231,7 +233,11 @@ def _worker(
             lease_seconds=lease_seconds,
             poll_interval_seconds=0.01,
             page_limit=1,
-            heartbeat_interval_seconds=(0.2 if lease_seconds == 1 else None),
+            heartbeat_interval_seconds=(
+                heartbeat_interval_seconds
+                if heartbeat_interval_seconds is not None
+                else (0.2 if lease_seconds == 1 else None)
+            ),
         ),
     )
 
@@ -279,20 +285,36 @@ async def test_worker_cursor_resumes_next_page_after_ledger_restart(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_worker_heartbeats_during_slow_observation(tmp_path) -> None:
+async def test_worker_heartbeats_during_slow_observation(tmp_path, monkeypatch) -> None:
     ledger, artifacts, gateway, records = await _unknown_candidates(tmp_path, count=1)
     owner = records[0].candidate.owner
-    observer = _AbsentObserver(artifacts, delay=1.25)
+    observer = _AbsentObserver(artifacts, delay=0.25)
     worker = _worker(
         gateway,
         owner,
         observer,
         worker_id="worker-slow",
-        lease_seconds=1,
+        lease_seconds=5,
+        heartbeat_interval_seconds=0.05,
     )
 
+    heartbeat_committed = threading.Event()
+    original_checkpoint = ledger.checkpoint_reconciliation_worker
+
+    def track_checkpoint(lease, *, cursor, lease_seconds):
+        renewed = original_checkpoint(
+            lease,
+            cursor=cursor,
+            lease_seconds=lease_seconds,
+        )
+        if cursor == lease.cursor:
+            heartbeat_committed.set()
+        return renewed
+
+    monkeypatch.setattr(ledger, "checkpoint_reconciliation_worker", track_checkpoint)
+
     task = asyncio.create_task(worker.run_once())
-    await asyncio.sleep(1.05)
+    assert await asyncio.to_thread(heartbeat_committed.wait, 3)
     competing = ledger.claim_reconciliation_worker(
         owner=owner,
         worker_id="worker-competing",

@@ -15,7 +15,7 @@ These tests are skipped in CI unless explicitly enabled.
 
 import pytest
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.live_model]
 
 
 # ── Basic inference ───────────────────────────────────────────────────────────
