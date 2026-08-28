@@ -141,6 +141,48 @@ def test_learning_preflight_reads_a_real_agno_sqlite_learning_table(tmp_path) ->
     assert "sensitive real Agno learning" not in json.dumps(report.to_dict())
 
 
+def test_learning_preflight_does_not_recreate_checkpointed_wal_sidecars(tmp_path) -> None:
+    path = tmp_path / "learning-wal.db"
+    _learning_db(path)
+    connection = sqlite3.connect(path)
+    assert connection.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+    connection.close()
+    assert not (tmp_path / "learning-wal.db-wal").exists()
+    assert not (tmp_path / "learning-wal.db-shm").exists()
+    before = path.stat().st_mtime_ns
+
+    report = inspect_migration_012(learning_sqlite_path=path)
+
+    assert report.preflight_clear is True
+    assert "MIGRATION_SOURCE_CHANGED_DURING_SCAN" not in _codes(report)
+    assert not (tmp_path / "learning-wal.db-wal").exists()
+    assert not (tmp_path / "learning-wal.db-shm").exists()
+    assert path.stat().st_mtime_ns == before
+
+
+def test_learning_preflight_refuses_a_live_wal_before_snapshot_scan(tmp_path) -> None:
+    path = tmp_path / "learning-live-wal.db"
+    _learning_db(path)
+    connection = sqlite3.connect(path)
+    assert connection.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+    connection.execute(
+        "INSERT INTO agno_learnings(learning_id, learning_type, content) VALUES (?, ?, ?)",
+        ("learning-1", "learned_knowledge", "sensitive-content"),
+    )
+    connection.commit()
+    assert (tmp_path / "learning-live-wal.db-wal").exists()
+
+    try:
+        report = inspect_migration_012(learning_sqlite_path=path)
+    finally:
+        connection.close()
+
+    assert report.preflight_clear is False
+    assert "MIGRATION_LEARNING_LIVE_WAL" in _codes(report)
+    assert report.learning_tables == ()
+    assert "sensitive-content" not in json.dumps(report.to_dict())
+
+
 def test_learning_preflight_blocks_unresolved_scope_owner_collision_and_limit(
     tmp_path,
 ) -> None:

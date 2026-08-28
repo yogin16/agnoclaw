@@ -35,6 +35,7 @@ from unittest.mock import patch
 import pytest
 
 from agnoclaw.workspace import Workspace
+from tests._ci_safety import CI_NO_LIVE_LLM_ENV, ci_llm_safety_violations
 
 # ── pytest marks ─────────────────────────────────────────────────────────────
 
@@ -47,12 +48,36 @@ def pytest_configure(config):
             "end-to-end certification probes"
         ),
     )
+    config.addinivalue_line(
+        "markers",
+        "live_model: tests that dispatch requests to a local or hosted LLM",
+    )
 
 
 def pytest_sessionstart(session) -> None:
-    """Prevent pytest-asyncio from preserving an implicitly created old loop."""
+    """Enforce hosted-test safety and reset any implicitly created old loop."""
     del session
+    if os.environ.get(CI_NO_LIVE_LLM_ENV) == "1":
+        violations = ci_llm_safety_violations(os.environ)
+        if violations:
+            names = ", ".join(violations)
+            raise pytest.UsageError(
+                "hosted tests forbid live-model opt-ins and provider credentials; "
+                f"unset: {names}"
+            )
     asyncio.set_event_loop(None)
+
+
+def pytest_runtest_setup(item) -> None:
+    """Stop a selected live-model test before its fixtures or model call run."""
+    if (
+        os.environ.get(CI_NO_LIVE_LLM_ENV) == "1"
+        and item.get_closest_marker("live_model") is not None
+    ):
+        pytest.fail(
+            "live-model tests are disabled in hosted CI/CD",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)
