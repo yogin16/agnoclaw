@@ -16,6 +16,9 @@ This project follows Keep a Changelog structure.
 
 ### Fixed
 
+- The blocking PostgreSQL performance gate now applies a 0.5 ms floor when
+  computing relative p95 slowdown. Sub-millisecond baseline noise can no longer
+  fail an otherwise healthy run whose absolute latency remains far below budget.
 - Hosted CI and publish verification now fail before test fixtures run when a
   provider credential or live-model opt-in is present, and every test capable
   of dispatching an LLM request carries an explicit `live_model` marker. This

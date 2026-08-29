@@ -619,9 +619,10 @@ uv run python scripts/benchmark_postgres_runtime.py \
 
 The executable oracle uses a random, exactly cleaned prefix and 10,000 terminal rows.
 It requires exact-owner recovery under three noisy workers, 400 completed probe calls,
-no p99 above 25 ms, no p95 slowdown above 6x on shared hosted runners (4x remains
-the local target; the CI limit was widened on 2026-08-20 after healthy runners
-measured unstable ratios), four typed overloads when a two-connection
+no p99 above 25 ms, and no p95 slowdown above 6x on shared hosted runners. The
+relative calculation floors sub-millisecond baselines at 0.5 ms so harmless
+runner jitter cannot dominate an otherwise low absolute latency (4x remains the
+local target). It also requires four typed overloads when a two-connection
 pool plus two-request queue is saturated, and cool-tenant admission after at most one
 ready hot-tenant turn. Retain the JSON output from three consecutive passes. This gate
 is intentionally narrower than production certification: cross-process weighted
