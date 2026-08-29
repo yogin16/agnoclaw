@@ -171,6 +171,7 @@ def test_long_run_probe_exercises_compaction_reopen_and_rehydration() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.live_model
 @pytest.mark.skipif(
     os.environ.get("AGNOCLAW_RUN_LIVE_CONTINUITY") != "1",
     reason="set AGNOCLAW_RUN_LIVE_CONTINUITY=1 with a loopback Ollama daemon",

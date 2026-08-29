@@ -2,7 +2,7 @@
 
 Status: provisional 0.12 development matrix
 
-Last verified: 2026-08-18
+Last verified: 2026-08-28
 
 `agnoclaw` supports behavior, not merely import success. A production lane enters this
 table only after the full non-network contract suite passes; providers, databases, MCP,
@@ -11,10 +11,9 @@ feature is called certified.
 
 ## Current runtime matrix
 
-The Agno 2.9.0 primary row is the complete schema-v12/spec-1.1 local evidence from
-2026-08-18. The legacy row retains complete schema-v11 evidence; the other isolated
-rows retain exact schema-v10 evidence and require a current-schema rerun before
-release-candidate certification.
+Agno 3.0.1 is the primary development lock and stable-v3 lane. Agno 2.9.0 remains a
+required stable-v2 lane and 2.6.4 remains the legacy boundary. Older cross-Python rows
+retain their dated evidence and are not claims about the current lock.
 
 The primary line additionally certifies `AgnoFeature.TOOL_BATCH_CHECKPOINT` through two
 real-process matrices. Three tool-sequence crashes produce two exact completions, one
@@ -48,20 +47,20 @@ claim.
 | Python 3.11 + Agno 2.8.7 | provisional supported | 1,404 passed, 27 skipped, 10 integration tests deselected |
 | Python 3.12 + Agno 2.8.7 | provisional supported | 1,404 passed, 27 skipped, 10 integration tests deselected |
 | Python 3.13 + Agno 2.6.4 | legacy supported | The retained complete lane passes 1,739 tests with 35 environment/optional-extra skips and 10 integration deselections. On 2026-08-17 the current affected ownership/learning/evaluation/documentation slice additionally passed 214 tests with 2 deselections through a fresh isolated editable environment. The schema-v11/spec-1.1 lane covers declared children, nested bounded/fair lifecycle admission, depth-16 recovery lineage, pre-provisioned result identities, deterministic every-state/all-effect/both-order controls, history-bounded recovery plans, operational budgets, structured result validation, governed synthesis, typed artifact handoff, output replay, recovery/reconciliation, trajectory/outbox, dead-letter administration, governed context/effects, learning, migration, profiles, overflow, improvement evaluation, and service safety contracts. |
-| Python 3.13 + Agno 2.9.0 | primary supported | 2,037 passed, 55 environment/service/provider/vector skips, and 18 integration deselections at the 0.12.0 RC checkpoint in the warning-clean non-integration lane (earlier tranche: 1,948/55/17 in 175.21 seconds); development lock is 2.9.0. The full run includes explicit-profile convenience lifecycle routing, schema-v12 scheduling, service migration, observability/privacy, schema-v5 evaluation archive, schema-v6 application/outcome attribution, retryable learning-store recovery, harness-owned model-transport cleanup, the Agno evaluation-subject adapter, governed-corpus evidence, runner-schema-1.2 fresh-process subjects, strict Docker contracts, capability-effect process-crash contracts, deterministic plus opt-in live tool-bearing long-run contracts, cooperative same-host context locking, tool-free summary maintenance, automatic source-bound goal carry, bounded narrative fitting, carried-state search deduplication, and typed continuation/source-token accounting. The retained outer-model, tool-checkpoint, and approval-wait real-process integration files pass 3/3 in 21.03 seconds. The strengthened outer factory file separately passes on both Agno 2.6.4 and 2.9.0 and is wired into each hosted compatibility row; tool/approval continuation remains hosted in the primary Python 3.13 lane. The focused affected compatibility/documentation path passes 99 tests with one intentional upstream-capability skip on isolated Agno 2.6.4; the affected 74-test context lane also passes there. 51/51 focused SQLite learning contracts pass, the live learning ledger passes 11/11 against disposable PostgreSQL 17, the exact Agno 2.9.0 Ollama/LanceDB benefit gate passes in an isolated optional-dependency environment, and separate deterministic plus pinned `qwen2.5:7b` Ollama 100-turn/11-tool context certifications pass. The independent coverage measurement was rerun at the 0.12.0 release-candidate checkpoint: 82.42% on the narrowed core scope (see docs/evaluation.md, "Core coverage gate"). |
+| Python 3.13 + Agno 2.9.0 | stable-v2 supported | 2,037 passed, 55 environment/service/provider/vector skips, and 18 integration deselections at the 0.12.0 RC checkpoint in the warning-clean non-integration lane (earlier tranche: 1,948/55/17 in 175.21 seconds); it was the 0.12.0 development lock. The full run includes explicit-profile convenience lifecycle routing, schema-v12 scheduling, service migration, observability/privacy, schema-v5 evaluation archive, schema-v6 application/outcome attribution, retryable learning-store recovery, harness-owned model-transport cleanup, the Agno evaluation-subject adapter, governed-corpus evidence, runner-schema-1.2 fresh-process subjects, strict Docker contracts, capability-effect process-crash contracts, deterministic plus opt-in live tool-bearing long-run contracts, cooperative same-host context locking, tool-free summary maintenance, automatic source-bound goal carry, bounded narrative fitting, carried-state search deduplication, and typed continuation/source-token accounting. The retained outer-model, tool-checkpoint, and approval-wait real-process integration files pass 3/3 in 21.03 seconds. The strengthened outer factory file separately passes on both Agno 2.6.4 and 2.9.0 and is wired into each hosted compatibility row; tool/approval continuation remains hosted in the primary Python 3.13 lane. The focused affected compatibility/documentation path passes 99 tests with one intentional upstream-capability skip on isolated Agno 2.6.4; the affected 74-test context lane also passes there. 51/51 focused SQLite learning contracts pass, the live learning ledger passes 11/11 against disposable PostgreSQL 17, the exact Agno 2.9.0 Ollama/LanceDB benefit gate passes in an isolated optional-dependency environment, and separate deterministic plus pinned `qwen2.5:7b` Ollama 100-turn/11-tool context certifications pass. The independent coverage measurement was rerun at the 0.12.0 release-candidate checkpoint: 82.42% on the narrowed core scope (see docs/evaluation.md, "Core coverage gate"). |
+| Python 3.13 + Agno 3.0.1 | primary supported | 2,075 passed, 52 environment/optional-extra skips, and 18 integration deselections in the isolated, fail-closed token-free compatibility lane. The final live-WAL refusal change then passed the 12-test migration suite and focused slices on all three Agno lanes. The CI-equivalent locked coverage lane separately passed 2,055 tests at 82.46%. All five deterministic operation, tool-checkpoint, approval, outer-model, and learning process-restart probes passed. Hosted Ubuntu evidence remains the final release gate. |
 | Python 3.14 + Agno 2.8.7 | provisional supported | 1,404 passed, 27 skipped, 10 deselected; no former frontmatter warning |
-| Python 3.13 + Agno 3.0.0a1 | preview only | 1,404 passed, 27 skipped, 10 deselected after an explicit CI-only dependency override; never selected by normal installation |
 
 These local results were produced on macOS. The matching Ubuntu CI matrix is a release
 gate. Windows support remains unclaimed until shell, path, sandbox, and process suites
 run there.
 
-The normal dependency range is `agno>=2.6.4,<2.10`. Agno 2.9.0 was the latest
-stable release and 3.0.0a1 the latest prerelease when the official
+The normal dependency range is `agno>=2.6.4,<3.1`. Agno 3.0.1 was the latest
+stable release when the official
 [PyPI registry](https://pypi.org/project/agno/) and
 [GitHub releases](https://github.com/agno-agi/agno/releases) and exact repository tags
-were rechecked on 2026-08-17. A passing prerelease suite provides migration warning; it does not make the
-preview production-supported.
+were rechecked on 2026-08-28. Prereleases remain certification signals and never enter
+normal dependency resolution.
 
 ## Lean core and extras
 
@@ -297,9 +296,9 @@ modules are not an accepted compatibility strategy.
 
 | Surface | Current level | Qualification |
 |---|---|---|
-| Core `run/arun`, raw streaming, tools, policy, hooks, events | contract-tested on 2.6.4, 2.9.0, and 3.0.0a1 preview | Explicit profiles enter lifecycle; raw streaming uses a bounded presentation, sync calls reuse a harness-owned event loop, cross-loop API mixing fails closed, and named legacy retains direct behavior. Model/provider network calls are mocked in the default suite. |
-| Durable native tool/approval recovery | conditionally certified on Agno 2.9.0; conservative fallback on 2.6.4 | Exact feature detection requires the native `tool-batch` checkpoint plus cancel/continue signatures. The certified path is non-streaming, run-owned, artifact-backed, and restricted to governed registered capabilities; unsupported surfaces never silently enter it. |
-| Model-driven skill activation | Agno-native progressive disclosure on the primary 2.9.0 lane | A behavioral two-provider turn proves the model selects `get_skill_instructions`, receives one trust-filtered exact skill, and continues under its allowed-tool boundary. Community and model/context/schema-changing skills remain explicit-only. |
+| Core `run/arun`, raw streaming, tools, policy, hooks, events | contract-tested on 2.6.4, 2.9.0, and 3.0.1 | Explicit profiles enter lifecycle; raw streaming uses a bounded presentation, sync calls reuse a harness-owned event loop, cross-loop API mixing fails closed, and named legacy retains direct behavior. Model/provider network calls are mocked in the default suite. |
+| Durable native tool/approval recovery | conditionally certified on Agno 2.9.0 and 3.0.1; conservative fallback on 2.6.4 | Exact feature detection requires the native `tool-batch` checkpoint plus cancel/continue signatures. The certified path is non-streaming, run-owned, artifact-backed, and restricted to governed registered capabilities; unsupported surfaces never silently enter it. |
+| Model-driven skill activation | Agno-native progressive disclosure on the stable 2.9.0 and primary 3.0.1 lanes | A behavioral two-provider turn proves the model selects `get_skill_instructions`, receives one trust-filtered exact skill, and continues under its allowed-tool boundary. Community and model/context/schema-changing skills remain explicit-only. |
 | First-party CLI/chat/TUI/heartbeat/scheduler routing | profile-routed preview | Explicit quick/durable/service work uses lifecycle start/wait and records runtime identity; only named legacy remains direct. The schema-v12 RuntimeSchedulerBackend adds database-clock SQLite/PostgreSQL occurrence claims, leases/fences, deterministic retries/jitter, misfires, bounded concurrency groups, and same-attempt lifecycle reattachment; JSON remains compatibility-only. Async REPL/TUI and sync chat model work use the same lifecycle plus bounded presentation and artifact text replay. Host-declared capability-only child runs use the lifecycle kernel; explicit profiles omit/reject raw subagents and Agno Team presets. Named-legacy compatibility certification, first-party cross-child artifact reads, restart-safe/pre-spend hard limits, multi-tenant schedule administration, migration cutover, and production scheduler partition/soak proof remain open. |
 | Agno LearningMachine core stores | import/config plus exact-name observer contract-tested; one local vector smoke on 2.9.0 | Institutional Learned Knowledge additionally requires vector-backed `Knowledge`. The public `VectorDb.name_exists` contract and first-party content-free reconciliation composition pass on Agno 2.6.4/2.9.0. A real Ollama-embedding/LanceDB smoke now saves through `learned_knowledge_store` and recalls through Agno context; production vector backends and failover/partition/soak still need certification. |
 | Agno model-backed evaluation subjects | contract-tested on 2.6.4 and 2.9.0; narrow live benefit proof on 2.9.0 | `AgnoEvaluationSubject` adapts a host-supplied fresh `Agent.arun()` to the paired runner using public content/token/cost fields, opaque per-rollout sessions, and optional owned cleanup. The local `learning_benefit_probe.py` now proves this exact Learned Knowledge configuration beats an identical no-learning control in held-in/out/transfer cases. The independent verifier, frozen gates, and explicit promotion boundary remain agnoclaw-owned; multi-provider/previous-version/general benefit remains uncertified. |
