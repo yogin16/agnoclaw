@@ -56,7 +56,7 @@ class AsyncREPL:
         self._enable_heartbeat = enable_heartbeat
         self._debug = debug
         self._console = Console()
-        self._session = PromptSession()
+        self._session: PromptSession[str] = PromptSession()
         self._notification_queue: asyncio.Queue[str] = asyncio.Queue()
         self._queued_skill: str | None = None
         self._daemon: HeartbeatDaemon | None = None

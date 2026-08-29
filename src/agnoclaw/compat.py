@@ -19,9 +19,9 @@ from typing import Any
 from .runtime.errors import AgnoCapabilityError, AgnoVersionError
 
 MIN_AGNO_VERSION = "2.6.4"
-PRIMARY_AGNO_VERSION = "2.9.0"
-MAX_STABLE_AGNO_VERSION = "2.10.0"
-STABLE_AGNO_SPEC = ">=2.6.4,<2.10"
+PRIMARY_AGNO_VERSION = "3.0.1"
+MAX_STABLE_AGNO_VERSION = "3.1.0"
+STABLE_AGNO_SPEC = ">=2.6.4,<3.1"
 
 _VERSION_PATTERN = re.compile(
     r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
@@ -48,6 +48,7 @@ class ParsedVersion:
 class AgnoLane(StrEnum):
     LEGACY = "legacy-2.6"
     STABLE = "stable-2.x"
+    STABLE_V3 = "stable-3.x"
     PREVIEW = "preview-3"
     UNSUPPORTED = "unsupported"
 
@@ -142,17 +143,17 @@ def classify_agno_version(raw: str) -> AgnoLane:
     parsed = parse_agno_version(raw)
     minimum = parse_agno_version(MIN_AGNO_VERSION)
     maximum = parse_agno_version(MAX_STABLE_AGNO_VERSION)
-    if minimum <= parsed < maximum and parsed.major == 2:
+    if minimum <= parsed < maximum:
         if parsed.prerelease:
-            # PEP 440 phase ordering places 2.x prereleases (2.9.0a1,
-            # 2.10.0rc1) inside the window; they are preview builds, never
-            # production-supported lanes.
+            # PEP 440 phase ordering places prereleases inside the stable
+            # window; they remain preview builds, never production-supported.
             return AgnoLane.PREVIEW
-        if parsed.minor == 6:
-            return AgnoLane.LEGACY
-        return AgnoLane.STABLE
-    if parsed.major == 3 and parsed.prerelease:
-        return AgnoLane.PREVIEW
+        if parsed.major == 2:
+            if parsed.minor == 6:
+                return AgnoLane.LEGACY
+            return AgnoLane.STABLE
+        if parsed.major == 3:
+            return AgnoLane.STABLE_V3
     return AgnoLane.UNSUPPORTED
 
 
@@ -354,27 +355,28 @@ def inspect_agno_compatibility() -> AgnoCompatibilityReport:
             v3_storage,
             "Agno 3 migration/runtime projection is present"
             if v3_storage
-            else "Agno 3 preview component or optional dependency is unavailable",
+            else "Agno 3 component or optional dependency is unavailable",
         ),
         _status(
             AgnoFeature.V3_JOB_QUEUE,
             v3_queue,
             "Agno 3 job queue is present"
             if v3_queue
-            else "Agno 3 preview component or optional dependency is unavailable",
+            else "Agno 3 component or optional dependency is unavailable",
         ),
         _status(
             AgnoFeature.V3_EVENT_STREAMS,
             v3_events,
             "Agno 3 event streams are present"
             if v3_events
-            else "Agno 3 preview component or optional dependency is unavailable",
+            else "Agno 3 component or optional dependency is unavailable",
         ),
     )
     return AgnoCompatibilityReport(
         version=resolved_version,
         lane=lane,
-        production_supported=lane in {AgnoLane.LEGACY, AgnoLane.STABLE},
+        production_supported=lane
+        in {AgnoLane.LEGACY, AgnoLane.STABLE, AgnoLane.STABLE_V3},
         preview=lane == AgnoLane.PREVIEW,
         capabilities=capabilities,
     )
@@ -388,7 +390,7 @@ def require_supported_agno(*, allow_preview: bool = False) -> AgnoCompatibilityR
     raise AgnoVersionError(
         version=report.version,
         reason=(
-            f"supported production range is {STABLE_AGNO_SPEC}; Agno 3 prereleases "
+            f"supported production range is {STABLE_AGNO_SPEC}; Agno prereleases "
             "are certification previews only"
         ),
     )

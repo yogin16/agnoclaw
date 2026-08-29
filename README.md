@@ -218,11 +218,11 @@ and the [Lilian Weng research audit](docs/lilian-weng-harness-audit.md).
 
 ## Compatibility and quality
 
-The current development lock is Agno 2.9.0; Agno 2.6.4 is the legacy lane and Agno
-3.0.0a1 is a quarantined preview. Schema-v12 is current; retained cross-Python/preview
-evidence predates its durable-scheduler tables and must rerun. Real-service, chaos,
-hosted-CI, soak, migration, and release-candidate gates remain separately tracked—unit
-count alone is not a production claim.
+The current development lock is Agno 3.0.1. Agno 2.6.4 remains the legacy lane and
+2.9.0 remains a required stable-v2 compatibility lane. Schema-v12 is current. The
+full token-free contract suite and deterministic process-restart probes certify all
+three exact Agno boundaries; real-service, chaos, soak, provider-backed, and hosted-CI
+gates remain separately tracked because unit count alone is not a production claim.
 
 - [Compatibility matrix](docs/compatibility.md)
 - [Evaluation and release gates](docs/evaluation.md)

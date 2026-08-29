@@ -21,6 +21,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Release verification must never dispatch a local or hosted LLM request.
+  AGNOCLAW_CI_NO_LIVE_LLM: "1"
+
 jobs:
   check:
     name: Detect version bump

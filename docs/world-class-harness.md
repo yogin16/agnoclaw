@@ -77,7 +77,7 @@ not cosmetic:
 | P1 | A content-free schema-v1 projection now converts durable events into HMAC-linked OpenTelemetry logs and low-cardinality event/token/cost counters; exact-owner/scope SDK plus read-only stable-JSON CLI explain a run without copying content. | Live GenAI spans/trace correlation, exporter-health SLOs, support bundles, Collector backpressure/queue-loss, and production volume/TLS/RBAC/key-rotation/retention certification remain T13. |
 | P1 | Local SQLite/JSON migration has preflight plus plan/apply/verify/cutover/rollback; service migration now has streamed PostgreSQL 17 scanning, an evidence-bound plan, bounded deterministic transformation, provenance/control tables, idempotent batched apply, independent verification, cutover receipts, reverse-order drift-refusing rollback, automation-safe CLI dry-runs, representative process-death resume, and a 5,000-row/three-database/least-privilege matrix. | Deployment-enforced writer fencing, complete checkpoint-kill/rogue-writer/credential-rotation/TLS/native-backup/production-volume matrices, artifacts/keys/PITR, RPO/RTO, and production certification remain T14b/T5b. |
 | P2 | The default permission mode is `bypass`, the full default tool set is eager, and prompt-injection defense is mainly instructional. | The easiest embedding path has a broader trust surface and higher context cost than a safe default should. |
-| P2 | The development lock is Agno 2.9.0; 2.6.4 remains the legacy lane and 3.0.0a1 is quarantined preview-only after a release-by-release audit. | Hosted certification, future release monitoring, and evidence-gated Agno 3 adoption remain required as upstream moves quickly. |
+| P2 | The development lock is Agno 3.0.1; 2.6.4 remains the legacy boundary and 2.9.0 remains a required stable-v2 lane after a release-by-release audit. | Hosted certification and future release monitoring remain required as upstream moves quickly. |
 
 The implementation evidence and corrected capability matrix live in
 [Harness gap analysis](harness-gap-analysis.md). The target contracts are specified in
@@ -466,8 +466,8 @@ releases and do not move any core harness work past final `0.12.0`.
 - Publish this strategy, architecture, learning guide, and evaluation contract.
 - Correct README and gap claims.
 - Turn the complete [Agno release-practice audit](agno-release-practices.md) into tested
-  adopt/adapt/avoid decisions. Develop against 2.6.4 legacy, 2.9.0 primary, and a
-  non-production newest-Agno-3 preview; generate the final range from RC evidence.
+  adopt/adapt/avoid decisions. Develop against 2.6.4 legacy, 2.9.0 stable-v2, and
+  3.0.1 primary; generate future ranges from exact release-candidate evidence.
 - Add known-limitations and capability maturity labels: stable, preview, experimental,
   planned.
 
@@ -599,4 +599,4 @@ embedding API.
 - [OpenTelemetry GenAI agent spans](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md)
 - [Agnoclaw observability contract](observability.md)
 - [Agno 2.9.0](https://github.com/agno-agi/agno/releases/tag/v2.9.0)
-- [Agno 3.0.0a1](https://github.com/agno-agi/agno/releases/tag/v3.0.0a1)
+- [Agno 3.0.1](https://pypi.org/project/agno/3.0.1/)

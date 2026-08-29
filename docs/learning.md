@@ -2,7 +2,7 @@
 
 Status: current v0.12 preview contract, legacy migration, and remaining gates
 
-Last verified against Agno 2.6.4 and 2.9.0 contract lanes
+Last verified against Agno 2.6.4, 2.9.0, and 3.0.1 contract lanes
 
 Research date: 2026-08-08; upstream/live implementation evidence rechecked: 2026-08-18
 
@@ -170,8 +170,8 @@ richer statistical-policy, and broad model-backed benefit gates land:
 
 ## Recent Agno learning changes that affect the target
 
-The prerequisite validation above is verified against the 2.6.4 legacy and 2.9.0
-primary lanes. Recent releases still change the implementation plan:
+The prerequisite validation above is verified against the 2.6.4 legacy, 2.9.0
+stable-v2, and 3.0.1 primary lanes. Recent releases still change the implementation plan:
 
 - Agno 2.6.5 added memory identity fields; 2.6.6 integrated LearningMachine context
   into teams; 2.6.14 added AgentOS learning CRUD. agnoclaw must preserve trusted scope
@@ -188,8 +188,9 @@ primary lanes. Recent releases still change the implementation plan:
   caching on durable ingress and derives learning identity only from trusted
   `ExecutionContext`; the upstream fixes are defense in depth, not a substitute for
   the owner-bound operation and learning ledgers.
-- Agno 3.0.0a1 removes deprecated memory/history parameters. One version adapter must
-  map the stable agnoclaw `LearningPolicy`; prerelease APIs never leak into user code.
+- Agno 3 removes deprecated memory/history parameters. The stable-v3 compatibility
+  lane keeps that delta behind the same agnoclaw `LearningPolicy`; upstream version
+  details do not leak into user code.
 
 See [Agno release-practice audit](agno-release-practices.md) for the complete
 release-by-release evidence and certification policy.
@@ -565,6 +566,7 @@ See [Harness evaluation](evaluation.md) for the broader release gates.
 - [Agno institutional learning](https://docs.agno.com/use-cases/deep-research/institutional-learning)
 - [Agno release-practice audit](agno-release-practices.md)
 - [Agno 2.9.0](https://github.com/agno-agi/agno/releases/tag/v2.9.0)
+- [Agno 3.0.1](https://pypi.org/project/agno/3.0.1/)
 - [Agno 3.0.0a1](https://github.com/agno-agi/agno/releases/tag/v3.0.0a1)
 - [Letta context hierarchy](https://docs.letta.com/guides/core-concepts/memory/context-hierarchy)
 - [Letta memory blocks](https://docs.letta.com/guides/core-concepts/memory/memory-blocks)
