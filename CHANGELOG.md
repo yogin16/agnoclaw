@@ -4,6 +4,8 @@ This project follows Keep a Changelog structure.
 
 ## Unreleased
 
+## [0.12.2] - 2026-08-29
+
 ### Added
 
 - Agno 3.0.1 is a required, production-supported compatibility lane. The
@@ -22,6 +24,37 @@ This project follows Keep a Changelog structure.
   `immutable=1`. Agno 3 databases retain WAL journal mode, and a plain
   read-only connection recreated empty `-wal`/`-shm` sidecars, causing the
   preflight's source-integrity guard to block its own scan.
+
+- Concurrent resource-ownership and reconciliation-heartbeat contracts now
+  synchronize on run identity and committed checkpoints instead of scheduler
+  ordering or sleeps near lease expiry, removing their hosted-CI flakes.
+
+- Cancel now re-reads and retries a bounded number of times when another worker
+  wins the run revision, so callers receive the authoritative cancelled state
+  instead of a raw `RunRevisionConflictError`.
+- Accepted owner-local pre-dispatch pause, resume, and steer commands now share
+  one per-run control boundary with worker start and steering closure. A
+  successful steer can no longer be acknowledged and then omitted from the
+  model request. A reattached non-owner handle now rejects all three owner-local
+  controls before recording an accepted transition because their worker effects
+  are deliberately process-local.
+- Direct `MCPToolkit(url=".../sse")` construction again infers the legacy SSE
+  transport when `transport` is omitted, while explicit transport selection
+  continues to take precedence.
+
+### Changed
+
+- The network-denied exact-wheel release journey now runs on the pinned Python
+  3.14 slim image used by the current supported-Python matrix.
+- CI and publish workflows use current SHA-pinned GitHub Action releases, with
+  their exact artifact upload/download pins enforced by repository contracts.
+- Hosted CI and pre-publish verification now fail before fixture setup when
+  provider credentials, live-model opt-ins, or selected live-model tests are
+  present, preventing test lanes from consuming local or paid LLM tokens.
+
+- Release documentation now distinguishes representative release-critical
+  extras from the complete published extras catalog and scopes the 0.12 digest
+  consolidation claim to the paths that actually migrated.
 
 ## [0.12.0] - 2026-08-20
 
@@ -75,10 +108,10 @@ This project follows Keep a Changelog structure.
   a cancellation-preserving thread hop, with typed conflict handling that
   routes a concurrent cancel to the cancellation settle instead of a spurious
   failure. Terminal exception settles deliberately stay synchronous.
-- Every idempotency/approval/fencing digest now flows through one canonical
-  `canonical_json_digest` in `runtime/security.py` (byte-identical for all
-  previously valid inputs), removing five divergent per-module
-  implementations.
+- The approval, lifecycle, model-gateway, capability, and tool-ingress digest
+  paths migrated in this tranche now flow through `canonical_json_digest` in
+  `runtime/security.py` (byte-identical for all previously valid inputs),
+  removing their divergent per-module implementations.
 - The publish workflow verifies restored artifacts against the recorded SHA-256
   evidence before uploading, the release SBOM covers every optional extra, the
   unlocked MCP-contract lane runs in its own job so freshly resolved code never

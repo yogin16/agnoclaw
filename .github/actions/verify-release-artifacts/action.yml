@@ -1,10 +1,10 @@
 name: Verify release artifacts
 description: >-
-  Install and certify the exact built wheel and sdist across every published
-  extra, prove the network-denied container journeys, and certify the core
-  wheel against a secure etcd quorum. ci.yml (package) and publish.yml (test)
-  share these steps verbatim so the release path can never silently drift
-  from the CI path.
+  Install and certify the exact built wheel and sdist across representative
+  release-critical extras, prove the network-denied container journeys, and
+  certify the core wheel against a secure etcd quorum. ci.yml (package) and
+  publish.yml (test) share these steps verbatim so the release path can never
+  silently drift from the CI path.
 inputs:
   venv-prefix:
     description: Prefix for the disposable verification virtualenvs.

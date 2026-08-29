@@ -7,7 +7,7 @@ Status: generated from the complete top-level `agnoclaw.__all__` contract
 
 Reference schema: `1.0`
 Public symbols: `398`
-Public-surface digest: `sha256:188545eef664c00bbaaf02bdfe8f33128c030fa1080416b9f96ca5fc13dde3b8`
+Public-surface digest: `sha256:ca55b7e9173024eb9e050b9ff01a0ad625590fe2d4ae5d66b5370d2eb9334530`
 
 Every name below is importable directly from `agnoclaw`. Signatures are
 generated from the installed runtime objects; source modules identify the
@@ -797,7 +797,7 @@ Fork(from_step: 'int | str', command_id: 'str' = <factory>) -> None
 
 Class · `agnoclaw.commands.Pause`
 
-Request a pause at the next certified safe point.
+Request an owner-local pause at the next certified safe point.
 
 ```python
 from agnoclaw import Pause
@@ -821,7 +821,7 @@ Respond(request_id: 'str', payload: 'Any', command_id: 'str' = <factory>) -> Non
 
 Class · `agnoclaw.commands.Resume`
 
-Resume a paused run from its certified continuation boundary.
+Resume an owner-local worker from its certified continuation boundary.
 
 ```python
 from agnoclaw import Resume
@@ -833,7 +833,7 @@ Resume(command_id: 'str' = <factory>) -> None
 
 Class · `agnoclaw.commands.Steer`
 
-Add operator guidance before a run closes its steering safe point.
+Add owner-local guidance before a run closes its steering safe point.
 
 ```python
 from agnoclaw import Steer

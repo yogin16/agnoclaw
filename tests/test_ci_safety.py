@@ -54,7 +54,6 @@ def test_hosted_session_guard_rejects_credentials_without_exposing_values(
     assert "ANTHROPIC_API_KEY" in str(raised.value)
     assert secret not in str(raised.value)
 
-
 def test_live_model_contracts_are_explicitly_marked() -> None:
     module_contracts = (
         "tests/test_integration.py",

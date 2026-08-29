@@ -271,7 +271,7 @@ class MCPToolkit(Toolkit):
         env: dict[str, str] | None = None,
         *,
         headers: dict[str, str] | None = None,
-        transport: str = "streamable_http",
+        transport: str | None = None,
         servers: Sequence[Mapping[str, Any]] | None = None,
         client_factory: Callable[[MCPServerDefinition], Any] | None = None,
     ) -> None:

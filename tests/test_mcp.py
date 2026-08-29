@@ -125,6 +125,18 @@ def test_url_transport_defaults_infer_legacy_sse_paths() -> None:
     assert explicit.transport == "streamable_http"
 
 
+def test_public_toolkit_constructor_infers_legacy_sse_paths() -> None:
+    toolkit = MCPToolkit(url="http://localhost:3001/sse")
+
+    assert toolkit._server("mcp").transport == "sse"
+
+    explicit = MCPToolkit(
+        url="http://localhost:3001/sse",
+        transport="streamable_http",
+    )
+    assert explicit._server("mcp").transport == "streamable_http"
+
+
 @pytest.mark.asyncio
 async def test_search_then_digest_bound_call_preserves_structured_content() -> None:
     toolkit, client, contexts = _toolkit()

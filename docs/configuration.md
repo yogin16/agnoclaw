@@ -300,8 +300,9 @@ exact governed non-streaming envelope; see
 
 MCP requires the optional `mcp>=2,<3` SDK. Each entry has a unique `name` and exactly
 one `command` (stdio) or `url` (remote). Remote URLs default to
-`transport = "streamable_http"`; `transport = "sse"` is an explicit legacy escape
-hatch.
+`transport = "streamable_http"`, except that an omitted transport on a URL path ending
+in `/sse` infers the legacy SSE transport for compatibility. Explicit transport
+selection always wins; new deployments should select Streamable HTTP.
 
 ```toml
 network_enabled = true

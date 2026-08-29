@@ -303,8 +303,12 @@ than raw steering or response content.
 
 Current execution boundary:
 
-- pause/resume is implemented only before provider dispatch;
-- steering is accepted only before the explicit steering-close transition;
+- pause/resume is implemented only before provider dispatch and requires the harness
+  instance that owns the live worker;
+- steering is accepted only before the explicit steering-close transition and
+  requires the harness instance that owns the pre-dispatch request buffer;
+- a reattached handle on a non-owning harness fails pause, resume, and steering with
+  `RUN_CONTROL_OWNER_UNAVAILABLE` before recording an accepted transition;
 - a late pause or steer fails instead of pretending it affected the model;
 - ordinary response IDs are bound by the lifecycle reducer. An approval response is
   stricter: the store requires the exact settled approval state and decision digest,
@@ -701,6 +705,7 @@ that makes this distinction necessary.
 | `APPROVAL_RUN_NOT_WAITING` | A decision arrived after the run left its exact approval wait. |
 | `APPROVAL_ALREADY_SETTLED` | A retry conflicts with the settled approval; exact replay returns the existing decision. |
 | `RUN_STEERING_CLOSED` | Steering arrived after its certified safe point. |
+| `RUN_CONTROL_OWNER_UNAVAILABLE` | This harness does not own the live pre-dispatch worker required to apply pause, resume, or steering. |
 | `RUN_PAUSE_SAFE_POINT_UNAVAILABLE` | Current embedded worker cannot pause safely at this point. |
 | `RUN_FORK_CHECKPOINT_REQUIRED` | No certified checkpoint exists for an effect-capable fork. |
 | `RUN_EVENT_CURSOR_INVALID` | Cursor is malformed, unsupported, or belongs to another run. |

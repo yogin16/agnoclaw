@@ -33,7 +33,7 @@ def _thaw_data(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class Pause:
-    """Request a pause at the next certified safe point."""
+    """Request an owner-local pause at the next certified safe point."""
 
     command_type: ClassVar[str] = "pause"
     schema_version: ClassVar[str] = "1.0"
@@ -50,7 +50,7 @@ class Pause:
 
 @dataclass(frozen=True)
 class Resume:
-    """Resume a paused run from its certified continuation boundary."""
+    """Resume an owner-local worker from its certified continuation boundary."""
 
     command_type: ClassVar[str] = "resume"
     schema_version: ClassVar[str] = "1.0"
@@ -84,7 +84,7 @@ class Respond:
 
 @dataclass(frozen=True)
 class Steer:
-    """Add operator guidance before a run closes its steering safe point."""
+    """Add owner-local guidance before a run closes its steering safe point."""
 
     instruction: str
     command_id: str = field(default_factory=_command_id)
