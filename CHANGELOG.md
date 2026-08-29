@@ -4,6 +4,8 @@ This project follows Keep a Changelog structure.
 
 ## Unreleased
 
+## [0.12.2] - 2026-08-29
+
 ### Added
 
 - Agno 3.0.1 is a required, production-supported compatibility lane. The
@@ -22,10 +24,6 @@ This project follows Keep a Changelog structure.
   `immutable=1`. Agno 3 databases retain WAL journal mode, and a plain
   read-only connection recreated empty `-wal`/`-shm` sidecars, causing the
   preflight's source-integrity guard to block its own scan.
-
-## [0.12.1] - 2026-08-24
-
-### Fixed
 
 - Concurrent resource-ownership and reconciliation-heartbeat contracts now
   synchronize on run identity and committed checkpoints instead of scheduler
