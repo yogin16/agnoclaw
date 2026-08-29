@@ -44,6 +44,10 @@ This project follows Keep a Changelog structure.
 
 ### Changed
 
+- The network-denied exact-wheel release journey now runs on the pinned Python
+  3.14 slim image used by the current supported-Python matrix.
+- CI and publish workflows use current SHA-pinned GitHub Action releases, with
+  their exact artifact upload/download pins enforced by repository contracts.
 - Hosted CI and pre-publish verification now fail before fixture setup when
   provider credentials, live-model opt-ins, or selected live-model tests are
   present, preventing test lanes from consuming local or paid LLM tokens.
