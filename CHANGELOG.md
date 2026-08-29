@@ -4,7 +4,24 @@ This project follows Keep a Changelog structure.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- Agno 3.0.1 is a required, production-supported compatibility lane. The
+  dependency range is now `agno>=2.6.4,<3.1`, the development lock and primary
+  capability target use 3.0.1, and CI runs the full warning-clean contract
+  suite plus process-restart probes on 2.6.4, 2.9.0, and 3.0.1. The former
+  allowed-to-fail 3.0.0a1 preview job and dependency override are removed.
+
+### Fixed
+
+- Hosted CI and publish verification now fail before test fixtures run when a
+  provider credential or live-model opt-in is present, and every test capable
+  of dispatching an LLM request carries an explicit `live_model` marker. This
+  makes accidental token spend a tested release invariant.
+- Migration preflight opens clean checkpointed SQLite snapshots with
+  `immutable=1`. Agno 3 databases retain WAL journal mode, and a plain
+  read-only connection recreated empty `-wal`/`-shm` sidecars, causing the
+  preflight's source-integrity guard to block its own scan.
 
 ## [0.12.1] - 2026-08-24
 

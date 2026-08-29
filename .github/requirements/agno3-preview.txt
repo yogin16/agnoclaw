@@ -1,2 +1,0 @@
-# CI-only override. Prereleases never enter agnoclaw's stable dependency range.
-agno==3.0.0a1

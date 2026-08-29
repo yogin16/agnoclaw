@@ -296,7 +296,7 @@ batch = await harness.observe_learning_reconciliation_page(
 ```
 
 This requires the version-probed public `VectorDb.name_exists` contract, which passes
-on the minimum Agno 2.6.4 and primary 2.9.0 lanes. It never calls semantic search. The
+on the 2.6.4 legacy, 2.9.0 stable-v2, and 3.0.1 primary lanes. It never calls semantic search. The
 exact Agno title contains a 128-bit prefix of the immutable candidate digest, and the
 complete ledger reference is bounded to 512 characters. The observer stages only the
 candidate/observer digests, revision, effect kind, exact-key digest, and Boolean

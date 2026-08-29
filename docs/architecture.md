@@ -2,7 +2,7 @@
 
 Status: target architecture; not all components are implemented
 
-Last reviewed: 2026-08-18
+Last reviewed: 2026-08-28
 
 This document defines the architecture `agnoclaw` should converge on. For the
 implementation-aligned current audit, see [Harness gap analysis](harness-gap-analysis.md).
@@ -808,9 +808,9 @@ It is an adapter over the embedded types, not a second runtime.
 
 Agno is a fast-moving substrate. `agnoclaw` should maintain:
 
-- a locked, fully tested Agno production version (2.9.0 primary during development);
+- a locked, fully tested Agno production version (3.0.1 primary during development);
 - a documented supported range;
-- CI against the 2.6.4 legacy lane, primary stable, and newest Agno 3 prerelease;
+- CI against the 2.6.4 legacy, 2.9.0 stable-v2, and 3.0.1 primary lanes;
 - contract tests for Agent signatures, event mapping, learning store behavior,
   cancellation/continuation, compression, and AgentOS adapter behavior;
 - feature detection only when both branches have tests;

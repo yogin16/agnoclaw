@@ -29,9 +29,11 @@ from agnoclaw.runtime import AgnoCapabilityError, AgnoVersionError
         ("2.8.7", AgnoLane.STABLE),
         ("2.9.0", AgnoLane.STABLE),
         ("3.0.0a1", AgnoLane.PREVIEW),
+        ("3.0.0", AgnoLane.STABLE_V3),
+        ("3.0.1", AgnoLane.STABLE_V3),
+        ("3.1.0a1", AgnoLane.PREVIEW),
         ("2.6.3", AgnoLane.UNSUPPORTED),
-        ("2.10.0", AgnoLane.UNSUPPORTED),
-        ("3.0.0", AgnoLane.UNSUPPORTED),
+        ("3.1.0", AgnoLane.UNSUPPORTED),
     ],
 )
 def test_classify_agno_version(version, lane):
@@ -103,5 +105,5 @@ def test_report_serialization_is_stable():
     report = inspect_agno_compatibility()
     payload = report.to_dict()
 
-    assert payload["supported_spec"] == ">=2.6.4,<2.10"
+    assert payload["supported_spec"] == ">=2.6.4,<3.1"
     assert payload["capabilities"][0]["feature"] == "learning_machine"

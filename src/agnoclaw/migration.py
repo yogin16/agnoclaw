@@ -556,9 +556,18 @@ def _inspect_learning_sqlite(
             "Freeze the old writer, checkpoint it, and take a verified backup "
             "before planning copy.",
         )
+        return
 
     try:
-        connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        # Agno 3 uses WAL mode. A plain mode=ro connection recreates empty
+        # -wal/-shm sidecars after a clean checkpoint, making this read-only
+        # preflight appear to mutate its own source. Live sidecars return above;
+        # immutable mode keeps a checkpointed snapshot byte-for-byte
+        # unchanged while it is inspected.
+        connection = sqlite3.connect(
+            f"{path.as_uri()}?mode=ro&immutable=1",
+            uri=True,
+        )
         try:
             connection.execute("PRAGMA query_only = ON")
             connection.execute("BEGIN")

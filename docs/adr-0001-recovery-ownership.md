@@ -11,8 +11,8 @@ Schema/API freeze remains gated by the T10a security foundation.
 ## Context
 
 `agnoclaw` needs one honest recovery contract for short and long-running agents. Agno
-2.x persists sessions and exposes continuation APIs. Agno 3.0.0a1 previews normalized
-run rows and a durable job queue with retries, leases, heartbeats, stale-attempt reclaim,
+2.x persists sessions and exposes continuation APIs. Agno 3 ships normalized run rows
+and a durable job queue with retries, leases, heartbeats, stale-attempt reclaim,
 and fencing. Names and database rows alone do not prove that a killed process can resume
 from a settled model/tool boundary without losing work or duplicating an external
 effect.
@@ -39,7 +39,7 @@ surface, not a process-death operation-recovery protocol.
 
 Result: **no certified stable-2.x resume boundary**.
 
-### Agno 3.0.0a1 preview
+### Agno 3.0.0a1 queue probe (retained evidence)
 
 The preview probe used a real ephemeral PostgreSQL 17 database and Agno's actual
 `PostgresDb` queue. It killed a worker immediately before and immediately after a
@@ -179,6 +179,7 @@ require human review.
 ## Sources
 
 - [Agno 2.6.19 continuation and checkpoint release](https://github.com/agno-agi/agno/releases/tag/v2.6.19)
+- [Agno 3.0.1 stable package](https://pypi.org/project/agno/3.0.1/)
 - [Agno 3.0.0a1 release](https://github.com/agno-agi/agno/releases/tag/v3.0.0a1)
 - [agnoclaw Agno release-practice audit](agno-release-practices.md)
 - [Harness evaluation and release gates](evaluation.md)
