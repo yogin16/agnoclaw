@@ -15,6 +15,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Pytest fails before fixtures run if credentials or a live-model test are selected.
+  AGNOCLAW_CI_NO_LIVE_LLM: "1"
+
 jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -63,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agno-version: ["2.6.4", "2.9.0"]
+        agno-version: ["2.6.4", "2.9.0", "3.0.1"]
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -90,36 +94,6 @@ jobs:
           pytest tests/test_agno_stack_restart_probe.py
           tests/test_learning_reconciliation_restart_probe.py
           -q -m integration --tb=short
-
-  agno-preview:
-    name: Agno 3 preview (quarantined)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.13"
-
-      - name: Install pinned uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          version: "0.9.15"
-
-      - name: Create preview environment
-        run: uv venv .venv-preview --python 3.13
-
-      - name: Install with explicit prerelease override
-        run: >-
-          uv pip install --python .venv-preview/bin/python
-          --overrides .github/requirements/agno3-preview.txt
-          -e '.[dev]'
-
-      - name: Run warning-clean preview contract suite
-        run: .venv-preview/bin/python -m pytest tests/ -q -m "not integration" --tb=short
 
   agentos-edge:
     name: AgentOS edge / FastAPI ${{ matrix.fastapi-version }}
