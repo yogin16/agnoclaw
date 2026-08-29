@@ -6,6 +6,7 @@ import argparse
 
 import pytest
 from scripts.benchmark_postgres_runtime import (
+    _p95_slowdown_ratio,
     _percentiles,
     _validate_arguments,
     _validate_target,
@@ -46,6 +47,11 @@ def test_postgres_benchmark_percentiles_use_nearest_rank() -> None:
         "p99_ms": 99.0,
         "max_ms": 100.0,
     }
+
+
+def test_postgres_benchmark_slowdown_ratio_has_submillisecond_floor() -> None:
+    assert _p95_slowdown_ratio(baseline_ms=0.348674, noisy_ms=2.183292) == 4.367
+    assert _p95_slowdown_ratio(baseline_ms=0.75, noisy_ms=3.0) == 4.0
 
 
 def test_postgres_benchmark_arguments_are_bounded() -> None:

@@ -30,6 +30,7 @@ from agnoclaw.runtime.lifecycle import (
 from agnoclaw.runtime.store import RunOwner, _canonical_json
 
 _OLD = "2000-01-01T00:00:00+00:00"
+_P95_RATIO_BASELINE_FLOOR_MS = 0.5
 
 
 def _validate_target(dsn: str) -> None:
@@ -57,6 +58,11 @@ def _percentiles(samples: list[float]) -> dict[str, float]:
         "p99_ms": round(percentile(0.99), 6),
         "max_ms": round(ordered[-1], 6),
     }
+
+
+def _p95_slowdown_ratio(*, baseline_ms: float, noisy_ms: float) -> float:
+    """Return a stable relative signal when the baseline is sub-millisecond."""
+    return round(noisy_ms / max(baseline_ms, _P95_RATIO_BASELINE_FLOOR_MS), 3)
 
 
 def _timings(call: Callable[[], Any], samples: int) -> tuple[dict[str, float], int]:
@@ -235,13 +241,13 @@ def _latency_probe(
             "hot_worker_queries": hot_counts,
         },
         "p95_slowdown_ratio": {
-            "get_run": round(
-                noisy_get["p95_ms"] / max(baseline_get["p95_ms"], 0.1),
-                3,
+            "get_run": _p95_slowdown_ratio(
+                baseline_ms=baseline_get["p95_ms"],
+                noisy_ms=noisy_get["p95_ms"],
             ),
-            "owner_recovery": round(
-                noisy_recovery["p95_ms"] / max(baseline_recovery["p95_ms"], 0.1),
-                3,
+            "owner_recovery": _p95_slowdown_ratio(
+                baseline_ms=baseline_recovery["p95_ms"],
+                noisy_ms=noisy_recovery["p95_ms"],
             ),
         },
         "owner_isolation": True,
@@ -481,6 +487,7 @@ def main() -> int:
         "thresholds": {
             "max_p99_ms": args.max_p99_ms,
             "max_p95_slowdown_ratio": args.max_p95_slowdown_ratio,
+            "p95_ratio_baseline_floor_ms": _P95_RATIO_BASELINE_FLOOR_MS,
         },
         "synthetic_rows_cleaned": cleaned_rows,
         "elapsed_seconds": round(time.monotonic() - started, 3),
