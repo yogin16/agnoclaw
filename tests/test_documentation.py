@@ -417,11 +417,11 @@ def test_release_workflow_publishes_the_checked_artifacts() -> None:
     assert ".sha256" in test_commands
     assert ".provenance" in test_commands
     assert (
-        "actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4"
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
         in test_actions
     )
     assert (
-        "actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0"
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
         in publish_actions
     )
     assert (
