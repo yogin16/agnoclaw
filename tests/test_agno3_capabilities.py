@@ -220,6 +220,8 @@ def test_code_mode_collapses_tools_and_executes_in_bounded_kernel(tmp_path) -> N
         }
     finally:
         harness.close()
+    snapshots = getattr(code, "_snapshots", None)
+    assert not getattr(snapshots, "_timers", {})
 
 
 def test_code_mode_shell_disable_survives_sibling_magic_materialization(tmp_path) -> None:

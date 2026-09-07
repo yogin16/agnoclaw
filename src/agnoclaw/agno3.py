@@ -7,6 +7,7 @@ decides when those formats may participate in its runtime and policy contracts.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import threading
@@ -82,11 +83,42 @@ class OwnedCodeModeResource:
         if loop is not None and not loop.is_running() and not loop.is_closed():
             loop.close()
 
+    async def _drain_snapshot_timers(self) -> None:
+        """Cancel Agno's debounced snapshot tasks before its loop is closed.
+
+        Agno 3.0.6 flushes live sessions during shutdown but leaves the separate
+        debounce tasks registered. If the loop is then collected, Python 3.12+
+        reports those coroutines as unraisable exceptions. The harness owns the
+        CodeMode lifecycle, so it also owns draining these background tasks.
+        """
+        snapshots = getattr(self.code_mode, "_snapshots", None)
+        timers = getattr(snapshots, "_timers", None)
+        if not isinstance(timers, dict) or not timers:
+            return
+        pending = tuple(timers.values())
+        timers.clear()
+        for timer in pending:
+            timer.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    def _drain_snapshot_timers_sync(self) -> None:
+        runner = getattr(self.code_mode, "_runner", None)
+        if not bool(getattr(runner, "started", False)):
+            return
+        run_on_loop = getattr(self.code_mode, "_run_on_loop_sync", None)
+        if callable(run_on_loop):
+            run_on_loop(self._drain_snapshot_timers())
+
     def close(self) -> None:
+        self._drain_snapshot_timers_sync()
         self.code_mode.shutdown()
         self._stop_runner()
 
     async def aclose(self) -> None:
+        runner = getattr(self.code_mode, "_runner", None)
+        run_on_loop = getattr(self.code_mode, "_run_on_loop", None)
+        if bool(getattr(runner, "started", False)) and callable(run_on_loop):
+            await run_on_loop(self._drain_snapshot_timers())
         await self.code_mode.ashutdown()
         self._stop_runner()
 

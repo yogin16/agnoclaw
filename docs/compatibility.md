@@ -279,8 +279,8 @@ verified lifecycle contract during packaging freeze.
 
 The 0.13 Agno 3 checkpoint extracts 25.8 KB/661 lines of model-facing learning
 composition into `learning_runtime.py`, leaving `agent.py` at 483,710 bytes/11,833
-lines. The exact wheel measures 756,470 bytes, the pre-evidence sdist 2,007,880 bytes,
-and Python source 3,416,886 bytes; cold import loads 879 modules in a 0.297-second median.
+lines. The exact wheel measures 756,877 bytes, the pre-evidence sdist 2,008,392 bytes,
+and Python source 3,418,391 bytes; cold import loads 879 modules in a 0.306-second median.
 The rebaselined ceilings retain roughly two percent headroom at 771 KB/2.05 MB/3.487
 MB and 494 KB/12,070 lines. Core dependencies remain six and the two-second import
 gate does not move.

@@ -40,6 +40,12 @@ This project follows Keep a Changelog structure.
   so call-site metadata wins over component metadata and `allow_shell=False` cannot
   be bypassed by lazy IPython magic registration.
 
+### Fixed
+
+- Harness-owned CodeMode shutdown now cancels and drains Agno's debounced snapshot
+  tasks before closing the background loop, preventing Python 3.12+ unraisable-task
+  failures during deterministic CI teardown.
+
 ## [0.12.2] - 2026-08-29
 
 ### Added
