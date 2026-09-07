@@ -21,7 +21,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 from uuid import uuid4
 
 from .learning import LearningPolicy, LearningScope, LearningWritePath
@@ -1346,6 +1346,19 @@ class CandidateConflictError(HarnessError):
         )
 
 
+class LearningProposalBudgetExceededError(HarnessError):
+    """The active source run has exhausted its institutional proposal budget."""
+
+    def __init__(self, *, source_run_id: str, maximum: int):
+        super().__init__(
+            code="LEARNING_PROPOSAL_BUDGET_EXCEEDED",
+            category="learning",
+            message="The active run has reached its reviewed-learning proposal budget.",
+            retryable=False,
+            details={"source_run_id": source_run_id, "maximum": maximum},
+        )
+
+
 class CandidateRevisionError(HarnessError):
     def __init__(self, candidate_id: str, *, expected: int, actual: int):
         super().__init__(
@@ -1448,7 +1461,6 @@ class LearningLedger(Protocol):
         limit: int = 100,
         state: CandidateState | None = None,
     ) -> list[CandidateRecord]: ...
-
     def scan_reconciliation_required(
         self,
         *,
@@ -1647,6 +1659,45 @@ class LearningOutcomeLedger(Protocol):
         owner: LearningOwner,
         policy: LearningEffectivenessPolicy,
     ) -> LearningEffectivenessSummary: ...
+
+
+@runtime_checkable
+class LearningProposalLedger(Protocol):
+    """Atomic quota boundary required for model-authored learning proposals."""
+
+    def create_candidate_with_run_budget(
+        self,
+        candidate: LearningCandidate,
+        *,
+        source_run_id: str,
+        maximum: int,
+    ) -> CandidateRecord: ...
+
+
+def _validate_model_proposal_budget_request(
+    candidate: LearningCandidate,
+    *,
+    source_run_id: str,
+    maximum: int,
+) -> None:
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 100:
+        raise ValueError("maximum must be an integer between 1 and 100")
+    _require_id(source_run_id, field_name="source_run_id")
+    if (
+        candidate.target is not LearningTarget.LEARNED_KNOWLEDGE
+        or candidate.created_by is not CandidateAuthor.AGENT
+        or candidate.source_run_ids != (source_run_id,)
+    ):
+        raise HarnessError(
+            code="LEARNING_PROPOSAL_CONTRACT_INVALID",
+            category="learning",
+            message=(
+                "Run-budgeted proposals must be agent-authored Learned Knowledge "
+                "bound only to the active source run."
+            ),
+            retryable=False,
+            details={"candidate_id": candidate.candidate_id},
+        )
 
 
 class SQLiteLearningLedger:
@@ -2049,64 +2100,131 @@ class SQLiteLearningLedger:
             (event.candidate_id, event.sequence, event_json, event.occurred_at),
         )
 
-    def create_candidate(self, candidate: LearningCandidate) -> CandidateRecord:
+    def _create_candidate_locked(self, candidate: LearningCandidate) -> CandidateRecord:
         record = CandidateRecord(candidate=candidate)
+        existing = self._connection.execute(
+            """
+            SELECT candidate_digest, record_json FROM learning_candidates
+            WHERE candidate_id = ?
+            """,
+            (candidate.candidate_id,),
+        ).fetchone()
+        if existing is not None:
+            if existing["candidate_digest"] != candidate.digest:
+                raise CandidateConflictError(candidate.candidate_id)
+            return self._record(existing)
+        if candidate.supersedes_candidate_id is not None:
+            parent = self._get_locked(
+                candidate.supersedes_candidate_id,
+                owner=candidate.owner,
+            )
+            if parent.state is CandidateState.DELETED:
+                raise CandidateTransitionError(
+                    candidate.supersedes_candidate_id,
+                    state=parent.state,
+                    action="supersede",
+                )
+            if parent.candidate.target is not candidate.target:
+                raise HarnessError(
+                    code="LEARNING_CANDIDATE_TARGET_CONFLICT",
+                    category="learning",
+                    message="An edited candidate cannot change learning target.",
+                    retryable=False,
+                    details={"candidate_id": candidate.candidate_id},
+                )
+        self._connection.execute(
+            """
+            INSERT INTO learning_candidates(
+                candidate_id, candidate_digest, tenant_id, storage_namespace,
+                state, revision, content_storage_key, record_json, created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate.candidate_id,
+                candidate.digest,
+                candidate.tenant_id,
+                candidate.storage_namespace,
+                record.state.value,
+                record.revision,
+                candidate.content_artifact.storage_key,
+                _canonical_json(record.to_dict()),
+                candidate.created_at,
+                record.updated_at,
+            ),
+        )
+        self._save_event(None, record)
+        return record
+
+    def create_candidate(self, candidate: LearningCandidate) -> CandidateRecord:
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                record = self._create_candidate_locked(candidate)
+            except BaseException:
+                self._connection.execute("ROLLBACK")
+                raise
+            else:
+                self._connection.execute("COMMIT")
+        return record
+
+    def create_candidate_with_run_budget(
+        self,
+        candidate: LearningCandidate,
+        *,
+        source_run_id: str,
+        maximum: int,
+    ) -> CandidateRecord:
+        """Create one model proposal under an atomic owner/run quota."""
+        _validate_model_proposal_budget_request(
+            candidate,
+            source_run_id=source_run_id,
+            maximum=maximum,
+        )
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
                 existing = self._connection.execute(
-                    """
-                    SELECT candidate_digest, record_json FROM learning_candidates
-                    WHERE candidate_id = ?
-                    """,
+                    "SELECT candidate_digest, record_json FROM learning_candidates "
+                    "WHERE candidate_id = ?",
                     (candidate.candidate_id,),
                 ).fetchone()
                 if existing is not None:
                     if existing["candidate_digest"] != candidate.digest:
                         raise CandidateConflictError(candidate.candidate_id)
-                    self._connection.execute("COMMIT")
-                    return self._record(existing)
-                if candidate.supersedes_candidate_id is not None:
-                    parent = self._get_locked(
-                        candidate.supersedes_candidate_id,
-                        owner=candidate.owner,
-                    )
-                    if parent.state is CandidateState.DELETED:
-                        raise CandidateTransitionError(
-                            candidate.supersedes_candidate_id,
-                            state=parent.state,
-                            action="supersede",
+                    record = self._record(existing)
+                else:
+                    count = self._connection.execute(
+                        """
+                        SELECT COUNT(*) AS candidate_count
+                        FROM learning_candidates AS c
+                        WHERE c.tenant_id IS ?
+                          AND c.storage_namespace = ?
+                          AND json_extract(c.record_json, '$.candidate.target') = ?
+                          AND json_extract(c.record_json, '$.candidate.created_by') = ?
+                          AND EXISTS (
+                              SELECT 1
+                              FROM json_each(
+                                  c.record_json,
+                                  '$.candidate.source_run_ids'
+                              ) AS source
+                              WHERE source.value = ?
+                          )
+                        """,
+                        (
+                            candidate.tenant_id,
+                            candidate.storage_namespace,
+                            LearningTarget.LEARNED_KNOWLEDGE.value,
+                            CandidateAuthor.AGENT.value,
+                            source_run_id,
+                        ),
+                    ).fetchone()
+                    if int(count["candidate_count"]) >= maximum:
+                        raise LearningProposalBudgetExceededError(
+                            source_run_id=source_run_id,
+                            maximum=maximum,
                         )
-                    if parent.candidate.target is not candidate.target:
-                        raise HarnessError(
-                            code="LEARNING_CANDIDATE_TARGET_CONFLICT",
-                            category="learning",
-                            message="An edited candidate cannot change learning target.",
-                            retryable=False,
-                            details={"candidate_id": candidate.candidate_id},
-                        )
-                self._connection.execute(
-                    """
-                    INSERT INTO learning_candidates(
-                        candidate_id, candidate_digest, tenant_id, storage_namespace,
-                        state, revision, content_storage_key, record_json, created_at,
-                        updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        candidate.candidate_id,
-                        candidate.digest,
-                        candidate.tenant_id,
-                        candidate.storage_namespace,
-                        record.state.value,
-                        record.revision,
-                        candidate.content_artifact.storage_key,
-                        _canonical_json(record.to_dict()),
-                        candidate.created_at,
-                        record.updated_at,
-                    ),
-                )
-                self._save_event(None, record)
+                    record = self._create_candidate_locked(candidate)
             except BaseException:
                 self._connection.execute("ROLLBACK")
                 raise
@@ -2122,6 +2240,33 @@ class SQLiteLearningLedger:
     ) -> CandidateRecord:
         with self._lock:
             return self._get_locked(candidate_id, owner=owner)
+
+    def find_candidate_by_digest_prefix(
+        self,
+        digest_prefix: str,
+        *,
+        owner: LearningOwner,
+    ) -> CandidateRecord | None:
+        if re.fullmatch(r"[0-9a-f]{32}", digest_prefix) is None:
+            raise ValueError("candidate digest prefix must contain 32 lowercase hex digits")
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT record_json FROM learning_candidates
+                WHERE tenant_id IS ? AND storage_namespace = ?
+                  AND candidate_digest LIKE ?
+                ORDER BY candidate_id LIMIT 2
+                """,
+                (owner.tenant_id, owner.storage_namespace, f"sha256:{digest_prefix}%"),
+            ).fetchall()
+        if len(rows) > 1:
+            raise HarnessError(
+                code="LEARNING_CANDIDATE_DIGEST_AMBIGUOUS",
+                category="learning",
+                message="A recalled learning digest does not identify one candidate.",
+                retryable=False,
+            )
+        return self._record(rows[0]) if rows else None
 
     def list_candidates(
         self,
@@ -3602,6 +3747,7 @@ class LearningGateway:
         change_hypothesis_artifact_id: str | None = None,
         component_manifest_artifact_id: str | None = None,
         supersedes_candidate_id: str | None = None,
+        source_run_budget: int | None = None,
     ) -> CandidateRecord:
         target = LearningTarget(target)
         store_policy = self._target_policy(policy, target)
@@ -3618,6 +3764,70 @@ class LearningGateway:
         if not source_run_ids:
             raise ValueError("source_run_ids cannot be empty")
         resolved_id = candidate_id or f"lc_{uuid4().hex}"
+        if source_run_budget is not None and not isinstance(
+            self.ledger,
+            LearningProposalLedger,
+        ):
+            raise HarnessError(
+                code="LEARNING_PROPOSAL_LEDGER_UNSUPPORTED",
+                category="learning",
+                message=(
+                    "Model-authored proposals require a ledger with atomic "
+                    "per-run budget enforcement."
+                ),
+                retryable=False,
+            )
+
+        # Deterministic model proposals may be redispatched after an ambiguous
+        # process death. Resolve the already-committed candidate before staging
+        # again so encrypted artifact nonces cannot turn a safe retry into a
+        # false candidate conflict.
+        if candidate_id is not None:
+            try:
+                existing = await asyncio.to_thread(
+                    self.ledger.get_candidate,
+                    resolved_id,
+                    owner=LearningOwner(scope.tenant_id, scope.storage_namespace),
+                )
+            except CandidateNotFoundError:
+                existing = None
+            if existing is not None:
+                existing_content = await self.artifact_store.load_json(
+                    existing.candidate.content_artifact
+                )
+                expected_fields = (
+                    target,
+                    tuple(source_run_ids),
+                    tuple(evidence_artifact_ids),
+                    confidence,
+                    CandidateRisk(risk),
+                    CandidateAuthor(created_by),
+                    mechanism_version,
+                    scope.user_id,
+                    expires_at,
+                    change_hypothesis_artifact_id,
+                    component_manifest_artifact_id,
+                    supersedes_candidate_id,
+                )
+                actual_fields = (
+                    existing.candidate.target,
+                    existing.candidate.source_run_ids,
+                    existing.candidate.evidence_artifact_ids,
+                    existing.candidate.confidence,
+                    existing.candidate.risk,
+                    existing.candidate.created_by,
+                    existing.candidate.mechanism_version,
+                    existing.candidate.source_user_id,
+                    existing.candidate.expires_at,
+                    existing.candidate.change_hypothesis_artifact_id,
+                    existing.candidate.component_manifest_artifact_id,
+                    existing.candidate.supersedes_candidate_id,
+                )
+                if actual_fields != expected_fields or _canonical_json(
+                    existing_content
+                ) != _canonical_json(content):
+                    raise CandidateConflictError(resolved_id)
+                return existing
         artifact = await self.artifact_store.stage_json(
             content,
             scope=ArtifactScope(
@@ -3650,6 +3860,14 @@ class LearningGateway:
             component_manifest_artifact_id=component_manifest_artifact_id,
             supersedes_candidate_id=supersedes_candidate_id,
         )
+        if source_run_budget is not None:
+            proposal_ledger = cast(LearningProposalLedger, self.ledger)
+            return await asyncio.to_thread(
+                proposal_ledger.create_candidate_with_run_budget,
+                candidate,
+                source_run_id=source_run_ids[0],
+                maximum=source_run_budget,
+            )
         return await asyncio.to_thread(self.ledger.create_candidate, candidate)
 
     async def read_content(
@@ -3693,6 +3911,43 @@ class LearningGateway:
             candidate_id,
             owner=owner,
         )
+
+    async def find_by_digest_prefix(
+        self,
+        digest_prefix: str,
+        *,
+        owner: LearningOwner,
+    ) -> CandidateRecord | None:
+        """Resolve a promoted-title marker without assuming a short candidate ID."""
+        if re.fullmatch(r"[0-9a-f]{32}", digest_prefix) is None:
+            raise ValueError("candidate digest prefix must contain 32 lowercase hex digits")
+        resolver = getattr(self.ledger, "find_candidate_by_digest_prefix", None)
+        if callable(resolver):
+            return await asyncio.to_thread(
+                resolver,
+                digest_prefix,
+                owner=owner,
+            )
+        # Compatibility path for custom ledgers. It is bounded and may decline
+        # attribution, but it can never return a digest-mismatched candidate.
+        candidates = await asyncio.to_thread(
+            self.ledger.list_candidates,
+            owner=owner,
+            limit=1000,
+        )
+        matches = [
+            record
+            for record in candidates
+            if record.candidate.digest.removeprefix("sha256:").startswith(digest_prefix)
+        ]
+        if len(matches) > 1:
+            raise HarnessError(
+                code="LEARNING_CANDIDATE_DIGEST_AMBIGUOUS",
+                category="learning",
+                message="A recalled learning digest does not identify one candidate.",
+                retryable=False,
+            )
+        return matches[0] if matches else None
 
     async def list_candidates(
         self,
@@ -4323,6 +4578,8 @@ __all__ = [
     "LearningOutcomeKind",
     "LearningOutcomeLedger",
     "LearningOutcomeNotFoundError",
+    "LearningProposalBudgetExceededError",
+    "LearningProposalLedger",
     "LearningReconciliationWorkerLease",
     "LearningReconciliationWorkerLeaseError",
     "LearningPromotionAdapter",

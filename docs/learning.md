@@ -1,8 +1,8 @@
 # Learning and self-improvement
 
-Status: current v0.12 preview contract, legacy migration, and remaining gates
+Status: current v0.13 contract, legacy migration, and remaining gates
 
-Last verified against Agno 2.6.4, 2.9.0, and 3.0.1 contract lanes
+Last verified against Agno 2.6.4, 2.9.0, and 3.0.6 contract lanes
 
 Research date: 2026-08-08; upstream/live implementation evidence rechecked: 2026-08-18
 
@@ -11,7 +11,7 @@ learning differs from session history, workspace memory, and skill improvement.
 
 ## Current implementation and limits
 
-The recommended v0.12 API is an immutable policy plus a scope resolved from trusted
+The recommended v0.13 API is an immutable policy plus a scope resolved from trusted
 run identity:
 
 ```python
@@ -67,7 +67,11 @@ harness = AgentHarness(
 
 Institutional stores are recall-only on the direct Agno path. The proposing model has no
 direct save authority: Entity Memory tools are disabled, and Learned Knowledge/Decision
-Log expose search without save. Their writes are declared `candidate`. The v0.12 preview
+Log expose search without save. Their writes are declared `candidate`. Under reviewed
+Learned Knowledge, Agnoclaw adds one `propose_learning` tool that creates only an inert,
+deterministically identified candidate. Its atomic ledger boundary enforces the active
+run's update budget across retries and concurrent workers; it never promotes or makes
+the proposal visible to future recall. The v0.13 contract
 now has artifact-backed SQLite/PostgreSQL candidate ledgers, exact-scope host APIs,
 evidence evaluation, immutable supersession edits, quarantine/tombstones, reviewed
 promotion, and intent-first rollback. See
@@ -171,7 +175,7 @@ richer statistical-policy, and broad model-backed benefit gates land:
 ## Recent Agno learning changes that affect the target
 
 The prerequisite validation above is verified against the 2.6.4 legacy, 2.9.0
-stable-v2, and 3.0.1 primary lanes. Recent releases still change the implementation plan:
+stable-v2, and 3.0.6 primary lanes. Recent releases still change the implementation plan:
 
 - Agno 2.6.5 added memory identity fields; 2.6.6 integrated LearningMachine context
   into teams; 2.6.14 added AgentOS learning CRUD. agnoclaw must preserve trusted scope
@@ -229,7 +233,7 @@ Agno's modes have important semantics:
 - **Propose** is enforced through instructions, not a hard application approval gate.
   It must not be the only control for regulated or high-stakes learning.
 
-## Explicit public API (v0.12 preview)
+## Explicit public API (v0.13)
 
 `LearningProfile` is a small set of constructors for immutable `LearningPolicy`;
 identity and storage scope are resolved from trusted run input:
@@ -566,7 +570,7 @@ See [Harness evaluation](evaluation.md) for the broader release gates.
 - [Agno institutional learning](https://docs.agno.com/use-cases/deep-research/institutional-learning)
 - [Agno release-practice audit](agno-release-practices.md)
 - [Agno 2.9.0](https://github.com/agno-agi/agno/releases/tag/v2.9.0)
-- [Agno 3.0.1](https://pypi.org/project/agno/3.0.1/)
+- [Agno 3.0.6](https://github.com/agno-agi/agno/releases/tag/v3.0.6)
 - [Agno 3.0.0a1](https://github.com/agno-agi/agno/releases/tag/v3.0.0a1)
 - [Letta context hierarchy](https://docs.letta.com/guides/core-concepts/memory/context-hierarchy)
 - [Letta memory blocks](https://docs.letta.com/guides/core-concepts/memory/memory-blocks)

@@ -22,6 +22,7 @@ from .context import ExecutionContext
 from .errors import HarnessError
 from .lifecycle import TERMINAL_RUN_STATES, RunSnapshot, RunState
 from .output_segments import OUTPUT_SEGMENT_EVENT_TYPE, RunOutputSegment, load_run_output_segment
+from .requirements import PendingRunRequirement, pending_agno_requirements
 from .security import thaw_data
 from .store import RunOwner, RuntimeStore, decode_event_cursor
 
@@ -71,6 +72,24 @@ class RunReconciliationRequiredError(HarnessError):
             message="The run requires independent external-effect reconciliation.",
             retryable=False,
             details={"run_id": snapshot.run_id, "state": snapshot.state.value},
+        )
+        self.snapshot = snapshot
+
+
+class RunInputRequiredError(HarnessError):
+    """A wait reached a durable host-input boundary instead of a terminal result."""
+
+    def __init__(self, snapshot: RunSnapshot) -> None:
+        super().__init__(
+            code="RUN_INPUT_REQUIRED",
+            category="lifecycle",
+            message="The run is waiting for a response to its pending requirement.",
+            retryable=True,
+            details={
+                "run_id": snapshot.run_id,
+                "state": snapshot.state.value,
+                "request_id": snapshot.pending_request_id,
+            },
         )
         self.snapshot = snapshot
 
@@ -156,6 +175,8 @@ class HarnessRun:
         snapshot = await self.status()
         if snapshot.state is RunState.WAITING_FOR_RECONCILIATION:
             raise RunReconciliationRequiredError(snapshot)
+        if snapshot.state is RunState.WAITING_FOR_INPUT:
+            raise RunInputRequiredError(snapshot)
         if snapshot.state not in TERMINAL_RUN_STATES:
             raise HarnessError(
                 code="RUN_WAIT_INCOMPLETE",
@@ -344,6 +365,17 @@ class HarnessRun:
         )
         return results.require_all_terminal() if require_terminal else results
 
+    async def pending_requirements(self) -> tuple[PendingRunRequirement, ...]:
+        """Return the owner-authorized Agno questions currently blocking this run."""
+        run_id, store = self._require_lifecycle("pending_requirements")
+        snapshot = await self.status()
+        return await pending_agno_requirements(
+            store=store,
+            artifact_store=self._artifact_store,
+            snapshot=snapshot,
+            owner=self._owner or RunOwner(None, None),
+        )
+
     async def read_child_artifact(
         self,
         artifact_id: str,
@@ -507,8 +539,10 @@ class HarnessRun:
 
 __all__ = [
     "HarnessRun",
+    "PendingRunRequirement",
     "RunControlUnavailableError",
     "RunHeartbeat",
+    "RunInputRequiredError",
     "RunReconciliationRequiredError",
     "RunWaitError",
 ]

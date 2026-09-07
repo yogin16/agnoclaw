@@ -14,6 +14,11 @@ each with its own reviewed backend, for lifecycle-governed delegation.
 
 The backend object is the runtime boundary.
 
+It is distinct from Agno 3 CodeMode. CodeMode owns a local host IPython kernel and
+only reaches this backend when kernel code calls an injected tool handle such as
+`await bash(...)`. Direct Python does not route through the backend. See
+[Code execution models](../code-execution.md) before combining them.
+
 That means one backend owns:
 
 - shell execution
@@ -197,6 +202,7 @@ The backend abstraction does not replace:
 - policy checkpoints
 - permission approval
 - path/network guardrails
+- Agno CodeMode's host-side IPython kernel
 
 The layering stays:
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agnoclaw"
-version = "0.12.2"
+version = "0.13.0"
 description = "A hackable, model-agnostic agent harness built on Agno — with Claude Code's prompt wisdom, OpenClaw's UX patterns, and full Python extensibility"
 readme = "README.md"
 license = { text = "MIT" }
@@ -67,6 +67,11 @@ web = [
 scheduler = [
     "croniter>=1.3.0",
 ]
+# Agno 3 CodeMode: persistent, session-scoped IPython kernels.
+code = [
+    # 3.0.2 fixes allow_shell=False bypasses under IPython 9.17.
+    "agno[code]>=3.0.2,<3.1",
+]
 # Basic CLI (Click REPL + Rich output)
 cli = [
     "click>=8.3.3",
@@ -81,7 +86,7 @@ tui = [
 ]
 # Recommended batteries-included personal-assistant setup.
 full = [
-    "agnoclaw[anthropic,scheduler,tui,web]",
+    "agnoclaw[anthropic,code,scheduler,tui,web]",
 ]
 postgres = [
     "psycopg[binary,pool]>=3.2.0",
@@ -129,6 +134,12 @@ server = [
 media = [
     "pymupdf>=1.23.0",
 ]
+media-s3 = [
+    "agno[s3]>=3.0.1,<3.1",
+]
+media-gcs = [
+    "agno[gcs]>=3.0.1,<3.1",
+]
 # RAG (Retrieval-Augmented Generation) examples
 rag = [
     "lancedb>=0.4.0",
@@ -156,6 +167,8 @@ dev = [
     "croniter>=1.3.0",  # scheduler expression contracts
     "openai>=2.0.0",    # Agno uses openai as transport; needed by team model resolution tests
     "nbformat>=5.9.0",  # needed by notebook toolkit tests
+    "ipykernel>=7.3.0",  # Agno 3 CodeMode contracts
+    "dill>=0.4.1",  # Agno 3 CodeMode snapshots
 ]
 
 [project.scripts]

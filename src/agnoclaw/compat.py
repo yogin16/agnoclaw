@@ -19,7 +19,7 @@ from typing import Any
 from .runtime.errors import AgnoCapabilityError, AgnoVersionError
 
 MIN_AGNO_VERSION = "2.6.4"
-PRIMARY_AGNO_VERSION = "3.0.1"
+PRIMARY_AGNO_VERSION = "3.0.6"
 MAX_STABLE_AGNO_VERSION = "3.1.0"
 STABLE_AGNO_SPEC = ">=2.6.4,<3.1"
 
@@ -69,6 +69,10 @@ class AgnoFeature(StrEnum):
     V3_NORMALIZED_RUN_STORAGE = "v3_normalized_run_storage"
     V3_JOB_QUEUE = "v3_job_queue"
     V3_EVENT_STREAMS = "v3_event_streams"
+    V3_TOOL_RESULT_OFFLOADING = "v3_tool_result_offloading"
+    V3_MEDIA_OFFLOADING = "v3_media_offloading"
+    V3_CODE_MODE = "v3_code_mode"
+    V3_INCREMENTAL_HISTORY = "v3_incremental_history"
 
 
 @dataclass(frozen=True)
@@ -165,6 +169,12 @@ def installed_agno_version() -> str:
             version="not-installed",
             reason="install agnoclaw with its required Agno dependency",
         ) from exc
+
+
+def supports_agno_learning_update_budget(version: str | None = None) -> bool:
+    """Return whether Agno exposes the 2.8.1+ per-run learning budget contract."""
+    resolved = installed_agno_version() if version is None else version
+    return parse_agno_version(resolved) >= parse_agno_version("2.8.1")
 
 
 def _module_available(module_name: str) -> bool:
@@ -279,6 +289,52 @@ def inspect_agno_compatibility() -> AgnoCompatibilityReport:
     v3_storage = v3 and _module_available("agno.db.migrations")
     v3_queue = v3 and _module_available("agno.job_queue")
     v3_events = v3 and _module_available("agno.os.event_streams")
+    v3_tool_result_offloading = v3 and all(
+        (
+            _parameter_available(
+                "agno.agent",
+                "Agent",
+                "__init__",
+                "offload_tool_results",
+            ),
+            _symbol_available("agno.offload.store", "ResultStore"),
+        )
+    )
+    v3_media_offloading = v3 and all(
+        (
+            _parameter_available(
+                "agno.agent",
+                "Agent",
+                "__init__",
+                "media_storage",
+            ),
+            _symbol_available("agno.media.storage.local", "LocalMediaStorage"),
+        )
+    )
+    # Agno 3.0.2 fixed allow_shell=False bypasses caused by IPython lazily
+    # re-registering sibling shell magics. Do not advertise CodeMode below the
+    # first version that can uphold agnoclaw's shell-disabled contract, even if
+    # the symbol happens to be installed through another dependency extra.
+    v3_code_mode = (
+        parsed >= parse_agno_version("3.0.2")
+        and _symbol_available("agno.tools.code", "CodeMode")
+    )
+    v3_incremental_history = v3 and all(
+        (
+            _parameter_available(
+                "agno.agent",
+                "Agent",
+                "__init__",
+                "cache_session",
+            ),
+            _parameter_available(
+                "agno.db.base",
+                "BaseDb",
+                "get_session",
+                "runs_limit",
+            ),
+        )
+    )
     capabilities = (
         _status(
             AgnoFeature.LEARNING_MACHINE,
@@ -370,6 +426,34 @@ def inspect_agno_compatibility() -> AgnoCompatibilityReport:
             "Agno 3 event streams are present"
             if v3_events
             else "Agno 3 component or optional dependency is unavailable",
+        ),
+        _status(
+            AgnoFeature.V3_TOOL_RESULT_OFFLOADING,
+            v3_tool_result_offloading,
+            "Agno 3 ResultStore tool-result offloading is available"
+            if v3_tool_result_offloading
+            else "requires Agno 3 tool-result offloading",
+        ),
+        _status(
+            AgnoFeature.V3_MEDIA_OFFLOADING,
+            v3_media_offloading,
+            "Agno 3 media storage is available"
+            if v3_media_offloading
+            else "requires Agno 3 media storage",
+        ),
+        _status(
+            AgnoFeature.V3_CODE_MODE,
+            v3_code_mode,
+            "Agno 3 CodeMode and its optional dependencies are available"
+            if v3_code_mode
+            else "requires Agno 3 and the agnoclaw[code] extra",
+        ),
+        _status(
+            AgnoFeature.V3_INCREMENTAL_HISTORY,
+            v3_incremental_history,
+            "Agno 3 bounded incremental session history is available"
+            if v3_incremental_history
+            else "requires Agno 3 bounded session reads",
         ),
     )
     return AgnoCompatibilityReport(

@@ -12,6 +12,8 @@ from types import ModuleType
 
 import pytest
 
+from agnoclaw.compat import AgnoLane, inspect_agno_compatibility
+
 ROOT = Path(__file__).resolve().parents[1]
 PROBE = ROOT / "scripts" / "long_run_continuity_probe.py"
 
@@ -107,6 +109,75 @@ def test_long_run_probe_tool_model_uses_real_agno_tool_call_shape_exactly_once()
 
     second = model.invoke(messages=[type("Message", (), {"role": "tool", "content": marker})()])
     assert second.content == "Synthetic tool-bearing step acknowledged."
+
+
+@pytest.mark.asyncio
+async def test_agno3_context_replacement_retires_normalized_source_runs(tmp_path: Path) -> None:
+    if inspect_agno_compatibility().lane is not AgnoLane.STABLE_V3:
+        pytest.skip("normalized run replacement is an Agno 3 contract")
+    module = _module()
+    provider = module.ProbeProvider(
+        kind="deterministic",
+        model_id="context-persistence-regression",
+        model_digest="sha256:" + ("1" * 64),
+        host=None,
+        host_class="none",
+        configuration_digest="sha256:" + ("2" * 64),
+    )
+    harness, database, _artifacts, _model, model_resource = module._open_harness(
+        tmp_path,
+        max_context_tokens=10_000,
+        tool_turns=frozenset(),
+        tool_tracker=None,
+        provider=provider,
+        provider_timeout=10,
+    )
+    closed = False
+    try:
+        await harness.arun(
+            "Synthetic continuity turn 001. Preserve normalized run evidence.",
+            session_id="continuity-session",
+            user_id="continuity-user",
+        )
+        await harness.arun(
+            "Synthetic continuity turn 002. Preserve normalized run evidence.",
+            session_id="continuity-session",
+            user_id="continuity-user",
+        )
+        source_runs = database.get_runs(session_id="continuity-session")
+        source_ids = {run.run_id for run in source_runs}
+        assert len(source_ids) == 2
+
+        checkpoint = await harness.compact_session(summary="Bounded continuation state.")
+        persisted = database.get_runs(session_id="continuity-session")
+
+        assert len(persisted) == 1
+        replacement_id = persisted[0].run_id
+        assert replacement_id.startswith("context-compaction-")
+        assert module._run_metadata(persisted[0])["agnoclaw_context_checkpoint"][
+            "checkpoint_id"
+        ] == checkpoint.checkpoint_id
+        assert source_ids.isdisjoint(run.run_id for run in persisted)
+
+        await module._close_harness(harness, database, model_resource)
+        closed = True
+        harness, database, _artifacts, _model, model_resource = module._open_harness(
+            tmp_path,
+            max_context_tokens=10_000,
+            tool_turns=frozenset(),
+            tool_tracker=None,
+            provider=provider,
+            provider_timeout=10,
+        )
+        reopened = database.get_session(
+            session_id="continuity-session",
+            user_id="continuity-user",
+        )
+        assert reopened is not None
+        assert [run.run_id for run in reopened.runs] == [replacement_id]
+    finally:
+        if not closed or database is not None:
+            await module._close_harness(harness, database, model_resource)
 
 
 @pytest.mark.integration

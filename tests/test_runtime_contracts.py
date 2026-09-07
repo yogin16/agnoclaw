@@ -24,6 +24,7 @@ from agnoclaw import (
     EffectClass,
 )
 from agnoclaw.agent import _RESULT_REF_KEYS, AgentHarness, _merge_result_ref_keys
+from agnoclaw.compat import AgnoFeature, inspect_agno_compatibility
 from agnoclaw.config import HarnessConfig, RuntimeProfile
 from agnoclaw.context_locking import (
     ContextLockLostError,
@@ -167,10 +168,10 @@ def test_harness_copies_config_and_compiles_resource_inventory(tmp_path):
     assert harness.config.session_history_runs == 2
     assert harness._spec.settings["context"]["history_runs"] == 2
     assert harness._spec.settings_digest.startswith("sha256:")
-    assert [item.resource_id for item in harness._spec.resources] == [
-        "model",
-        "agno_db",
-    ]
+    expected_resources = ["model", "agno_db"]
+    if inspect_agno_compatibility().has(AgnoFeature.V3_MEDIA_OFFLOADING):
+        expected_resources.append("agno_media_storage")
+    assert [item.resource_id for item in harness._spec.resources] == expected_resources
 
 
 def test_harness_spec_snapshots_dict_output_schema(tmp_path):

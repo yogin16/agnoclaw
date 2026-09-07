@@ -57,10 +57,25 @@ def materialize_run_agent(
             )
         from ..memory import build_learning_machine
 
+        active_run_id = harness._active_runtime_run_id.get()
+        proposal_handler = None
+        if (
+            active_run_id is not None
+            and harness._learning_gateway is not None
+            and harness._learning_policy.learned_knowledge is not None
+            and harness._learning_policy.promotion.value == "reviewed"
+        ):
+            async def proposal_handler(**kwargs: Any) -> dict[str, Any]:
+                return await harness._propose_learning_from_model(
+                    expected_run_id=active_run_id,
+                    scope=learning_scope,
+                    **kwargs,
+                )
         blueprint["learning"] = build_learning_machine(
             db=harness._learning_db,
             policy=harness._learning_policy,
             scope=learning_scope,
+            learning_proposal_handler=proposal_handler,
         )
         blueprint["add_learnings_to_context"] = False
         user_id = learning_scope.storage_user_id

@@ -54,6 +54,18 @@ runs:
         uv pip check --python "$VENV-mcp/bin/python"
         "$VENV-mcp/bin/python" -I scripts/smoke_core_install.py
 
+    - name: Verify the exact wheel with Agno 3 CodeMode
+      shell: bash
+      env:
+        VENV: ${{ inputs.venv-prefix }}
+      run: |
+        uv venv "$VENV-code" --python 3.13
+        WHEELS=(dist/*.whl)
+        uv pip install --python "$VENV-code/bin/python" "${WHEELS[0]}[code]"
+        uv pip check --python "$VENV-code/bin/python"
+        AGNOCLAW_CI_NO_LIVE_LLM=1 "$VENV-code/bin/python" -I \
+          scripts/smoke_code_install.py
+
     - name: Verify the exact wheel with AgentOS lifecycle dependencies
       shell: bash
       env:

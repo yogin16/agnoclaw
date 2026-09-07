@@ -158,7 +158,7 @@ Run against:
 
 - repository-legacy Agno 2.6.4 during the migration window;
 - stable-v2 Agno 2.9.0;
-- primary stable Agno 3.0.1 during development and the newest certified stable at RC;
+- primary stable Agno 3.0.6 during development and the newest certified stable at RC;
 - the next major prerelease in a non-production preview lane;
 - supported Python versions;
 - current supported MCP SDK/protocol revision;
@@ -992,7 +992,7 @@ structure, not scheduled workflows.
 - docs links and examples;
 - deterministic scenario subset;
 - security static checks;
-- Agno 2.6.4, 2.9.0, and 3.0.1 full compatibility lanes.
+- Agno 2.6.4, 2.9.0, and 3.0.6 full compatibility lanes.
 
 ### Core coverage gate
 
@@ -1006,7 +1006,7 @@ adapters exercised in dedicated dependency/PostgreSQL lanes
 ### Nightly
 
 - current supported models with strict cost caps;
-- Agno 2.6.4 legacy, stable-v2 2.9.0, primary 3.0.1, and current MCP;
+- Agno 2.6.4 legacy, stable-v2 2.9.0, primary 3.0.6, and current MCP;
 - concurrency and chaos subsets;
 - long-context and tool-catalog benchmarks;
 - learning isolation suite.
@@ -1088,7 +1088,7 @@ This loop is the practical replacement for a promise to be “worry-free forever
 - [Agno evaluations](https://docs.agno.com/evals/overview)
 - [Agno release-practice audit](agno-release-practices.md)
 - [Agno 2.9.0](https://github.com/agno-agi/agno/releases/tag/v2.9.0)
-- [Agno 3.0.1](https://pypi.org/project/agno/3.0.1/)
+- [Agno 3.0.6](https://github.com/agno-agi/agno/releases/tag/v3.0.6)
 - [Agno 3.0.0a1](https://github.com/agno-agi/agno/releases/tag/v3.0.0a1)
 - [Agno Agent Platform evaluations](https://docs.agno.com/tutorials/agent-platform/evals)
 - [Letta stateful-agent evaluation concepts](https://docs.letta.com/guides/evals/concepts/overview)

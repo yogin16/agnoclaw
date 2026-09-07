@@ -307,9 +307,11 @@ the `pypi` environment with required reviewers and a main-only deployment policy
 | Telemetry or support-bundle leakage | runtime → operators/exporters | registered-event allowlist, content-free HMAC projection, low-cardinality metrics, exact-owner/scope inspection, database read-only mode, `SafeDiagnostic`; support-bundle/production Collector certification remains T10b/T13 |
 | Store tampering/corruption | storage/admin → recovery | checksums, transactions, AAD, backup/restore, corruption state; T5/T10b/T12 |
 
-Trusted in-process Python is not sandboxed from the host process. Sandboxed local and
-remote MCP capability classes must state the backend-specific containment guarantee.
-No prompt instruction is described as a deterministic security boundary.
+Trusted in-process Python, including the Agno CodeMode host kernel, is not sandboxed
+from the host process. CodeMode tool handles may route through RuntimeBackend, but
+direct imports, file/process APIs, and sockets do not. Sandboxed local and remote MCP
+capability classes must state the backend-specific containment guarantee. No prompt
+instruction is described as a deterministic security boundary.
 
 The strict Docker evaluation profile injects no host environment, network, or mounts;
 uses an immutable exact-platform image with no declared volume; runs non-root on a

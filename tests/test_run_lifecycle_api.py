@@ -8,20 +8,34 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agno.models.response import ToolExecution
+from agno.run.agent import RunOutput
+from agno.run.base import RunStatus
+from agno.run.requirement import RunRequirement
+from agno.tools.function import UserInputField
 
 from agnoclaw import AgentHarness, HarnessConfig
-from agnoclaw.commands import Pause, Resume, Steer
+from agnoclaw.commands import Pause, Respond, Resume, Steer
 from agnoclaw.runtime import (
     ExecutionContext,
     HarnessError,
     LifecycleTransition,
     LocalArtifactStore,
+    OperationState,
+    RunInputRequiredError,
+    RunOwner,
     RunReconciliationRequiredError,
     RunSnapshot,
     RunState,
     RuntimeLeaseLostError,
     RunWaitError,
     TransitionKind,
+    command_decision,
+)
+from agnoclaw.runtime.requirements import (
+    AgnoRequirementResponse,
+    load_agno_requirement_checkpoint,
+    persist_agno_requirement_response,
 )
 from agnoclaw.runtime.store import (
     SQLiteRuntimeStore,
@@ -105,6 +119,83 @@ class PartialStreamingControlledAgent(ControlledAgent):
         return stream()
 
 
+class PausingControlledAgent(ControlledAgent):
+    paused_output: RunOutput | None = None
+    continuations = 0
+
+    async def arun(self, message, **kwargs):
+        self.__class__.calls += 1
+        self.__class__.messages.append(message)
+        self.__class__.call_kwargs.append(dict(kwargs))
+        self._started.set()
+        self._dispatch_started.set()
+        tool = ToolExecution(
+            tool_call_id="ask-name-1",
+            tool_name="ask_name",
+            tool_args={},
+            requires_user_input=True,
+            user_input_schema=[UserInputField(name="name", field_type=str)],
+        )
+        requirement = RunRequirement(tool, id="requirement-name-1")
+        requirement.user_input_schema = tool.user_input_schema
+        output = RunOutput(
+            run_id=kwargs["run_id"],
+            session_id=kwargs.get("session_id"),
+            user_id=kwargs.get("user_id"),
+            status=RunStatus.paused,
+            requirements=[requirement],
+        )
+        self.__class__.paused_output = output
+        return output
+
+    async def aget_run_output(self, run_id, **_kwargs):
+        assert self.__class__.paused_output is not None
+        assert self.__class__.paused_output.run_id == run_id
+        return self.__class__.paused_output
+
+    async def acontinue_run(self, *, run_id, requirements, **_kwargs):
+        self.__class__.continuations += 1
+        assert all(requirement.is_resolved() for requirement in requirements)
+        name = requirements[0].user_input_schema[0].value
+        return RunOutput(
+            run_id=run_id,
+            session_id=_kwargs.get("session_id"),
+            user_id=_kwargs.get("user_id"),
+            status=RunStatus.completed,
+            content=f"hello {name}",
+        )
+
+
+class MultiPauseControlledAgent(PausingControlledAgent):
+    async def acontinue_run(self, *, run_id, requirements, **_kwargs):
+        self.__class__.continuations += 1
+        assert all(requirement.is_resolved() for requirement in requirements)
+        if self.__class__.continuations == 1:
+            tool = ToolExecution(
+                tool_call_id="confirm-greeting-1",
+                tool_name="send_greeting",
+                tool_args={"recipient": "Ada"},
+                requires_confirmation=True,
+            )
+            requirement = RunRequirement(tool, id="requirement-confirm-1")
+            output = RunOutput(
+                run_id=run_id,
+                session_id=_kwargs.get("session_id"),
+                user_id=_kwargs.get("user_id"),
+                status=RunStatus.paused,
+                requirements=[requirement],
+            )
+            self.__class__.paused_output = output
+            return output
+        return RunOutput(
+            run_id=run_id,
+            session_id=_kwargs.get("session_id"),
+            user_id=_kwargs.get("user_id"),
+            status=RunStatus.completed,
+            content="greeting sent",
+        )
+
+
 def _harness(
     tmp_path,
     *,
@@ -127,6 +218,9 @@ def _harness(
     agent_type.failure = None
     agent_type.messages = []
     agent_type.call_kwargs = []
+    if issubclass(agent_type, PausingControlledAgent):
+        agent_type.paused_output = None
+        agent_type.continuations = 0
     if issubclass(agent_type, PartialStreamingControlledAgent):
         agent_type.chunk_consumed = asyncio.Event()
     runtime_store = store or SQLiteRuntimeStore(tmp_path / "runtime.db")
@@ -711,6 +805,224 @@ async def test_cancel_before_model_dispatch_is_truthfully_cancelled(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_respond_fails_closed_without_durable_provider_continuation(tmp_path):
+    harness, store = _harness(tmp_path)
+    run = await harness.start("work")
+    paused = await run.command(Pause("hold", command_id="pause-before-respond"))
+
+    with pytest.raises(HarnessError) as unavailable:
+        await run.command(
+            Respond(
+                request_id="request-1",
+                payload={"answer": "approved"},
+                command_id="respond-without-continuation",
+            )
+        )
+
+    assert unavailable.value.code == "RUN_RESPOND_CONTINUATION_UNAVAILABLE"
+    assert store.get_run(str(run.run_id)).revision == paused.revision
+    assert store.get_run(str(run.run_id)).state is RunState.PAUSED
+    assert ControlledAgent.calls == 0
+    await run.cancel()
+
+
+@pytest.mark.asyncio
+async def test_agno_requirement_is_durable_inspectable_and_resumable(tmp_path):
+    artifacts = LocalArtifactStore(tmp_path / "artifacts")
+    harness, store = _harness(
+        tmp_path,
+        artifact_store=artifacts,
+        agent_type=PausingControlledAgent,
+    )
+    # This controlled agent models the Agno API while the test explicitly
+    # selects the same certified outer provider-checkpoint lane used by a
+    # materializable first-party Agent.
+    harness._can_enable_durable_model_loop = lambda _request: True
+    harness._run_agent_factory_enabled = False
+
+    run = await harness.start("greet the user", session_id="session-1")
+    await asyncio.wait_for(PausingControlledAgent.started.wait(), timeout=2)
+    for _ in range(100):
+        if (await run.status()).state is RunState.WAITING_FOR_INPUT:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("run did not reach its durable input boundary")
+
+    pending = await run.pending_requirements()
+    assert len(pending) == 1
+    assert pending[0].kinds == ("user_input",)
+    assert pending[0].tool_name == "ask_name"
+    assert pending[0].user_input_schema[0]["name"] == "name"
+    assert store.get_operation(f"{run.run_id}:model:1").state is OperationState.DISPATCHING
+    with pytest.raises(RunInputRequiredError) as waiting:
+        await run.wait(timeout=1)
+    assert waiting.value.snapshot.pending_request_id == pending[0].request_id
+    with pytest.raises(HarnessError) as incomplete:
+        await run.command(
+            Respond(
+                pending[0].request_id,
+                {},
+                command_id="respond-name-incomplete",
+            )
+        )
+    assert incomplete.value.code == "RUN_RESPONSE_PAYLOAD_INCOMPLETE"
+    assert (await run.status()).state is RunState.WAITING_FOR_INPUT
+
+    resumed = await run.command(
+        Respond(
+            request_id=pending[0].request_id,
+            payload={"name": "Ada"},
+            command_id="respond-name-1",
+        )
+    )
+
+    assert resumed.state is RunState.RUNNING
+    result = await run.wait(timeout=2)
+    assert result.content == "hello Ada"
+    assert PausingControlledAgent.continuations == 1
+    assert (await run.pending_requirements()) == ()
+    assert store.get_operation(f"{run.run_id}:model:1").state is OperationState.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_reattached_harness_can_respond_to_durable_agno_requirement(tmp_path):
+    artifacts = LocalArtifactStore(tmp_path / "artifacts")
+    first, store = _harness(
+        tmp_path,
+        artifact_store=artifacts,
+        agent_type=PausingControlledAgent,
+    )
+    first._can_enable_durable_model_loop = lambda _request: True
+    first._run_agent_factory_enabled = False
+    original = await first.start("greet the user", session_id="session-1")
+    for _ in range(100):
+        if (await original.status()).state is RunState.WAITING_FOR_INPUT:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("run did not reach its durable input boundary")
+    persisted_pause = PausingControlledAgent.paused_output
+    assert persisted_pause is not None
+
+    second, _ = _harness(
+        tmp_path,
+        store=store,
+        artifact_store=artifacts,
+        agent_type=PausingControlledAgent,
+    )
+    PausingControlledAgent.paused_output = persisted_pause
+    second._can_enable_durable_model_loop = lambda _request: True
+    second._run_agent_factory_enabled = False
+    attached = second.get_run(str(original.run_id))
+    pending = await attached.pending_requirements()
+
+    await attached.command(Respond(pending[0].request_id, {"name": "Grace"}))
+
+    result = await attached.wait(timeout=2)
+    assert result.content == "hello Grace"
+    assert PausingControlledAgent.continuations == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_replays_response_persisted_before_worker_restart(tmp_path):
+    artifacts = LocalArtifactStore(tmp_path / "artifacts")
+    first, store = _harness(
+        tmp_path,
+        artifact_store=artifacts,
+        agent_type=PausingControlledAgent,
+    )
+    first._can_enable_durable_model_loop = lambda _request: True
+    first._run_agent_factory_enabled = False
+    original = await first.start("greet the user", session_id="session-1")
+    for _ in range(100):
+        snapshot = await original.status()
+        if snapshot.state is RunState.WAITING_FOR_INPUT:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("run did not reach its durable input boundary")
+    persisted_pause = PausingControlledAgent.paused_output
+    assert persisted_pause is not None
+    pending = (await original.pending_requirements())[0]
+    command = Respond(pending.request_id, {"name": "Lin"}, command_id="response-before-crash")
+    owner = RunOwner(None, None)
+    checkpoint = await load_agno_requirement_checkpoint(
+        store=store,
+        artifact_store=artifacts,
+        snapshot=snapshot,
+        owner=owner,
+        request_id=pending.request_id,
+    )
+    await persist_agno_requirement_response(
+        AgnoRequirementResponse(
+            run_id=str(original.run_id),
+            request_id=pending.request_id,
+            command_id=command.command_id,
+            checkpoint_digest=checkpoint.digest,
+            payload=command.payload,
+        ),
+        store=store,
+        artifact_store=artifacts,
+        worker_id="host-before-crash",
+    )
+    transition = command_decision(snapshot, command).transition
+    assert transition is not None
+    store.apply_transition(
+        transition,
+        expected_revision=snapshot.revision,
+    )
+
+    second, _ = _harness(
+        tmp_path,
+        store=store,
+        artifact_store=artifacts,
+        agent_type=PausingControlledAgent,
+    )
+    PausingControlledAgent.paused_output = persisted_pause
+    second._can_enable_durable_model_loop = lambda _request: True
+    second._run_agent_factory_enabled = False
+    recovered = await second.recover_run(str(original.run_id))
+
+    result = await recovered.wait(timeout=2)
+    assert result.content == "hello Lin"
+    assert PausingControlledAgent.continuations == 1
+
+
+@pytest.mark.asyncio
+async def test_agno_requirement_supports_multiple_durable_pause_cycles(tmp_path):
+    artifacts = LocalArtifactStore(tmp_path / "artifacts")
+    harness, store = _harness(
+        tmp_path,
+        artifact_store=artifacts,
+        agent_type=MultiPauseControlledAgent,
+    )
+    harness._can_enable_durable_model_loop = lambda _request: True
+    harness._run_agent_factory_enabled = False
+    run = await harness.start("greet the user", session_id="session-1")
+
+    for expected_generation, payload in ((1, {"name": "Ada"}), (2, True)):
+        for _ in range(100):
+            pending = await run.pending_requirements()
+            if pending and pending[0].generation == expected_generation:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError(f"run did not reach input generation {expected_generation}")
+        await run.command(Respond(pending[0].request_id, payload))
+
+    result = await run.wait(timeout=2)
+    assert result.content == "greeting sent"
+    assert MultiPauseControlledAgent.continuations == 2
+    checkpoints = [
+        operation
+        for operation in store.list_run_operations(str(run.run_id))
+        if operation.intent.target == "agnoclaw.runtime.agno_requirement_checkpoint"
+    ]
+    assert len(checkpoints) == 2
+
+
+@pytest.mark.asyncio
 async def test_cancellation_during_lease_commit_does_not_dispatch_or_strand_lane(tmp_path):
     store = SQLiteRuntimeStore(tmp_path / "runtime.db")
     original_acquire = store.acquire_run_lease
@@ -801,6 +1113,82 @@ async def test_reattached_completed_handle_reads_persisted_result(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reattached_running_handle_waits_without_timeout(tmp_path):
+    harness, _ = _harness(tmp_path)
+    original = await harness.start("work")
+    await asyncio.wait_for(ControlledAgent.started.wait(), timeout=2)
+    original_release = ControlledAgent.release
+
+    reopened = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    second_harness, _ = _harness(tmp_path / "second", store=reopened)
+    reattached = second_harness.get_run(str(original.run_id))
+    waiter = asyncio.create_task(reattached.wait())
+    await asyncio.sleep(0.02)
+
+    assert not waiter.done()
+    original_release.set()
+    assert await asyncio.wait_for(waiter, timeout=2) == {"content": "ok"}
+    assert (await reattached.status()).state == RunState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_reattached_running_handle_timeout_does_not_cancel_run(tmp_path):
+    harness, _ = _harness(tmp_path)
+    original = await harness.start("work")
+    await asyncio.wait_for(ControlledAgent.started.wait(), timeout=2)
+    original_release = ControlledAgent.release
+
+    reopened = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    second_harness, _ = _harness(tmp_path / "second", store=reopened)
+    reattached = second_harness.get_run(str(original.run_id))
+
+    with pytest.raises(TimeoutError):
+        await reattached.wait(timeout=0.01)
+    assert (await reattached.status()).state == RunState.RUNNING
+
+    original_release.set()
+    assert await asyncio.wait_for(reattached.wait(), timeout=2) == {"content": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_reattached_wait_wakes_at_reconciliation_boundary(tmp_path):
+    harness, _ = _harness(tmp_path)
+    original = await harness.start("work")
+    await asyncio.wait_for(ControlledAgent.started.wait(), timeout=2)
+    await original.cancel()
+
+    reopened = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    second_harness, _ = _harness(tmp_path / "second", store=reopened)
+    reattached = second_harness.get_run(str(original.run_id))
+
+    with pytest.raises(RunReconciliationRequiredError):
+        await asyncio.wait_for(reattached.wait(), timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_reattached_cancel_never_confirms_another_workers_effect_boundary(tmp_path):
+    harness, store = _harness(tmp_path)
+    original = await harness.start("work")
+    await asyncio.wait_for(ControlledAgent.started.wait(), timeout=2)
+    original_release = ControlledAgent.release
+
+    reopened = SQLiteRuntimeStore(tmp_path / "runtime.db")
+    second_harness, _ = _harness(tmp_path / "second", store=reopened)
+    reattached = second_harness.get_run(str(original.run_id))
+    requested = await reattached.cancel()
+
+    assert requested.state is RunState.CANCELLING
+    assert store.get_run(str(original.run_id)).state is RunState.CANCELLING
+    assert store.get_terminal(str(original.run_id)) is None
+
+    original_release.set()
+    with pytest.raises(RunWaitError) as cancelled:
+        await asyncio.wait_for(original.wait(), timeout=2)
+    assert cancelled.value.code == "RUN_CANCELLED"
+    assert store.get_run(str(original.run_id)).state is RunState.CANCELLED
+
+
+@pytest.mark.asyncio
 async def test_get_run_hides_cross_owner_run(tmp_path):
     harness, _ = _harness(tmp_path)
     ControlledAgent.release.set()
@@ -859,7 +1247,10 @@ async def test_steering_before_worker_dispatch_is_applied_once(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cancel_retries_when_an_external_start_wins_the_revision(tmp_path, monkeypatch):
+async def test_cancel_requests_stop_when_an_external_start_wins_the_revision(
+    tmp_path,
+    monkeypatch,
+):
     harness, store = _harness(tmp_path)
     run_id = "run-cancel-interleave"
     store.create_run(RunSnapshot(run_id=run_id, session_id="session-1"))
@@ -894,10 +1285,11 @@ async def test_cancel_retries_when_an_external_start_wins_the_revision(tmp_path,
 
     monkeypatch.setattr(store, "apply_transition", apply_with_external_start)
 
-    cancelled = await harness._cancel_runtime_run(run_id)
+    cancelling = await harness._cancel_runtime_run(run_id)
 
     assert interleaved is True
-    assert cancelled.state is RunState.CANCELLED
+    assert cancelling.state is RunState.CANCELLING
+    assert store.get_terminal(run_id) is None
 
 
 @pytest.mark.asyncio

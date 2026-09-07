@@ -452,6 +452,20 @@ def test_observability_contract_is_installable_and_indexed() -> None:
     assert "agnoclaw inspect run" in cli
 
 
+def test_code_execution_models_define_backend_and_codemode_overlap() -> None:
+    index = (DOCS / "README.md").read_text(encoding="utf-8")
+    execution = (DOCS / "code-execution.md").read_text(encoding="utf-8")
+    configuration = (DOCS / "configuration.md").read_text(encoding="utf-8")
+
+    assert "code-execution.md" in index
+    assert "CodeMode execute -> host IPython kernel" in execution
+    assert "await bash(...) -> governed tool -> RuntimeBackend" in execution
+    assert "open/subprocess/socket/import ---> host directly" in execution
+    assert "Notebook toolkit" in execution
+    assert "Filesystem routing, not OS/process/network isolation" in execution
+    assert "Use backend-routed Bash with CodeMode disabled" in configuration
+
+
 def test_learning_reconciliation_docs_use_the_exact_agno_observer() -> None:
     candidates = (DOCS / "learning-candidates.md").read_text(encoding="utf-8")
     compatibility = (DOCS / "compatibility.md").read_text(encoding="utf-8")

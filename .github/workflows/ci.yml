@@ -67,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agno-version: ["2.6.4", "2.9.0", "3.0.1"]
+        agno-version: ["2.6.4", "2.9.0", "3.0.6"]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

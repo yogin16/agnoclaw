@@ -330,6 +330,16 @@ class HarnessConfig(BaseSettings):
     max_inline_output_chars: int | None = Field(default=None, ge=1024, le=1_000_000)
     """Spill larger governed capability results to the ArtifactStore before model reuse."""
 
+    agno_tool_result_offloading: Literal["auto", "enabled", "disabled"] = "auto"
+    """Use Agno 3 ResultStore for oversized native tool results.
+
+    ``auto`` enables it on Agno 3 when an Agno database is present and neither
+    compression nor agnoclaw's governed-output spill owns the same boundary.
+    """
+
+    agno_tool_result_threshold_chars: int = Field(default=16_000, ge=1_024, le=1_000_000)
+    agno_tool_result_ttl_seconds: int | None = Field(default=None, ge=60, le=31_536_000)
+
     # Session summaries
     enable_session_summary: bool = False
     """Enable automatic session summaries at the end of each run.
@@ -353,6 +363,31 @@ class HarnessConfig(BaseSettings):
     # Media
     enable_media_tools: bool = False
     """Enable media toolkit (PDF, image reading). Requires agnoclaw[media]."""
+
+    agno_media_offloading: Literal["auto", "enabled", "disabled"] = "auto"
+    """Persist Agno run media outside session rows.
+
+    ``auto`` uses lazy local storage for persistent SQLite on Agno 3. Service
+    deployments should pass an S3/GCS Agno MediaStorage explicitly.
+    """
+
+    agno_media_storage_path: str = "~/.agnoclaw/media"
+    agno_media_persist_remote_urls: bool = False
+
+    # Agno 3 CodeMode
+    enable_code_mode: bool = False
+    """Collapse tools behind Agno CodeMode's persistent IPython kernel.
+
+    The kernel is a host child process even when tool handles use a custom runtime
+    backend. This is explicit-only because direct Python can bypass agnoclaw's
+    governed tools. Install ``agnoclaw[code]`` before enabling.
+    """
+
+    code_mode_allow_shell: bool = False
+    code_mode_snapshot: bool = True
+    code_mode_timeout_seconds: int = Field(default=300, ge=1, le=3_600)
+    code_mode_idle_ttl_seconds: int = Field(default=1_800, ge=30, le=86_400)
+    code_mode_max_kernels: int = Field(default=4, ge=1, le=128)
 
     # Notebook
     enable_notebook_tools: bool = False

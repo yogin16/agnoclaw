@@ -20,7 +20,7 @@ import tempfile
 import threading
 import warnings
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
@@ -37,8 +37,15 @@ from agno.tools.function import Function, FunctionCall
 from agno.tools.toolkit import Toolkit
 
 if TYPE_CHECKING:
+    from agno.media.storage.base import AsyncMediaStorage, MediaStorage
     from agno.models.base import Model
+    from agno.offload.store import ResultStore
+    from agno.tools.code import CodeMode
 
+from .agno3 import (
+    describe_agno3_runtime,
+    resolve_agno3_runtime,
+)
 from .backends import RuntimeBackend, SandboxMode, normalize_sandbox_mode
 from .capabilities import (
     CapabilityCatalogEntry,
@@ -70,7 +77,7 @@ from .context_overflow import (
     is_context_overflow_signal,
 )
 from .context_runtime import _ContextManagementMixin
-from .learning import LearningPolicy, LearningScope
+from .learning import LearningPolicy, LearningPromotion, LearningScope
 from .learning_admin import (
     LearningAdminGateway,
     LearningDataRecord,
@@ -108,6 +115,7 @@ from .learning_candidates import (
     ReconciliationVerdict,
 )
 from .learning_reconciliation_runtime import _LearningReconciliationMixin
+from .learning_runtime import _LearningRuntimeMixin
 from .legacy_tools import (
     LegacyToolBinding,
     normalize_legacy_tools,
@@ -245,6 +253,19 @@ from .runtime.reconciliation import (
     wait_for_model_operation_reconciliation,
 )
 from .runtime.recovery import inspect_child_recovery
+from .runtime.requirements import (
+    AgnoRequirementCheckpoint,
+    AgnoRequirementResponse,
+    ResolvedAgnoInteraction,
+    agno_result_requirements,
+    load_agno_requirement_checkpoint,
+    load_agno_requirement_response,
+    load_latest_resolved_agno_interaction,
+    persist_agno_requirement_checkpoint,
+    persist_agno_requirement_response,
+    resolve_agno_requirements,
+    validate_agno_requirement_checkpoint_result,
+)
 from .runtime.spec import (
     HarnessRuntimeManifest,
     ResourceConcurrency,
@@ -280,14 +301,16 @@ from .workspace import Workspace
 
 _AGNO_AGENT_TYPE = Agent
 logger = logging.getLogger("agnoclaw.agent")
-_LEARNING_PROMPT_MAX_BYTES = 64 * 1024
-
 _ERROR_MESSAGE_LIMIT = 500
 _RESULT_PREVIEW_LIMIT = 240
 _RESULT_REF_KEYS = ("id", "name", "title", "type", "version", "filename")
 _ASSISTANT_STREAM_EVENTS = frozenset({"RunContent"})
 _DURABLE_MODEL_LOOP_MODE = "provider-checkpoint-v1"
 _RUNTIME_CONTROL_MAX_ATTEMPTS = 5
+
+
+class _RunRequirementDeferred(OperationDispatchDeferredError):
+    """Internal signal that a durable model loop intentionally released its worker."""
 
 
 def _is_durable_model_loop_intent(operation: Any) -> bool:
@@ -746,7 +769,11 @@ class _ToolScope:
             function.parameters = original_parameters
 
 
-class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
+class AgentHarness(
+    _LearningRuntimeMixin,
+    _LearningReconciliationMixin,
+    _ContextManagementMixin,
+):
     """Embeddable Agno runtime for short, long, and controllable agent work.
 
     It composes trusted identity, profiles, model/tool execution, workspace and skills,
@@ -846,6 +873,9 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
         auto_compact_context: bool | None = None,
         context_lock_provider: ContextLockProvider | None = None,
         max_inline_output_chars: int | None = None,
+        offload_tool_results: bool | ResultStore | None = None,
+        media_storage: MediaStorage | AsyncMediaStorage | None = None,
+        code_mode: bool | CodeMode | None = None,
         # Structured output / response parsing
         output_schema: type | dict[str, Any] | None = None,
         parser_model: Any | None = None,
@@ -1737,6 +1767,38 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
             and artifact_store is not None
         )
 
+        (
+            resolved_tool_result_offloading,
+            resolved_media_storage,
+            resolved_code_mode,
+            owned_code_mode,
+        ) = resolve_agno3_runtime(
+            explicit_tool_result=offload_tool_results,
+            explicit_media=media_storage,
+            explicit_code_mode=code_mode,
+            config=self.config,
+            provided_db=provided_db,
+            db=db,
+            tools=_all_tools,
+            profile=self.profile.value,
+            owner_scope=(self._tenant_id, self._org_id, self._agent_id),
+            cwd=self.sandbox_dir,
+            compression_enabled=bool(_enable_compression),
+            governed_spill_enabled=self._max_inline_output_chars is not None,
+            compatibility=agno_compatibility,
+        )
+        if resolved_code_mode is not None:
+            _all_tools = [resolved_code_mode]
+            self._attach_tool_runtime_hooks(_all_tools)
+        if owned_code_mode is not None:
+            self._owned_sync_resources.append(owned_code_mode)
+        agno3_spec = describe_agno3_runtime(
+            tool_results=resolved_tool_result_offloading,
+            media=resolved_media_storage,
+            code_mode=resolved_code_mode,
+            compatibility=agno_compatibility,
+        )
+
         # Core Agno Agent — model accepted as "provider:model_id" string
         self._agent_constructor = Agent
         self._agent_blueprint = dict(
@@ -1781,6 +1843,10 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
             session_summary_manager=session_summary_manager,
             add_session_summary_to_context=_enable_session_summary,
         )
+        if agno_compatibility.has(AgnoFeature.V3_TOOL_RESULT_OFFLOADING):
+            self._agent_blueprint["offload_tool_results"] = resolved_tool_result_offloading
+        if agno_compatibility.has(AgnoFeature.V3_MEDIA_OFFLOADING):
+            self._agent_blueprint["media_storage"] = resolved_media_storage
         if self._agno_tool_batch_checkpoint_enabled:
             self._agent_blueprint["checkpoint"] = "tool-batch"
         self._agent = self._agent_constructor(**self._agent_blueprint)
@@ -1828,6 +1894,15 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 recovery=ResourceRecovery.LIVE_ONLY,
             ),
         ]
+        if resolved_media_storage is not None:
+            materializers.append(
+                host_managed_resource(
+                    "agno_media_storage",
+                    resolved_media_storage,
+                    lifetime=ResourceLifetime.PROCESS_POOL,
+                    recovery=ResourceRecovery.LIVE_ONLY,
+                )
+            )
         if runtime_store is not None:
             materializers.append(
                 host_managed_resource(
@@ -1996,6 +2071,12 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                         }
                     ),
                     "candidate_gateway": self._learning_gateway is not None,
+                    "agent_proposals": bool(
+                        self._learning_gateway is not None
+                        and self._learning_policy is not None
+                        and self._learning_policy.learned_knowledge is not None
+                        and self._learning_policy.promotion is LearningPromotion.REVIEWED
+                    ),
                 },
                 "context": {
                     "compression": bool(_enable_compression),
@@ -2012,6 +2093,7 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                         else None
                     ),
                     "agno_tool_batch_checkpoint": self._agno_tool_batch_checkpoint_enabled,
+                    **agno3_spec["context"],
                 },
                 "output": {
                     "schema": (
@@ -2023,7 +2105,9 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                     "structured_outputs": structured_outputs,
                     "json_mode": use_json_mode,
                     "max_inline_chars": self._max_inline_output_chars,
+                    **agno3_spec["output"],
                 },
+                "code_mode": agno3_spec["code_mode"],
                 "capabilities": [binding.spec.manifest() for binding in self._capability_bindings],
                 "legacy_tools": [binding.manifest() for binding in self._legacy_tool_bindings],
                 "extension_tools": [
@@ -6159,130 +6243,6 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
             consented=consented,
         )
 
-    @staticmethod
-    def _learning_message_text(message: Any) -> str | None:
-        """Mirror Agno's textual recall input without serializing binary parts."""
-        if message is None:
-            return None
-        if isinstance(message, str):
-            return message or None
-        content = getattr(message, "content", None)
-        if content is not None and content is not message:
-            return AgentHarness._learning_message_text(content)
-        if isinstance(message, (list, tuple)):
-            parts = [AgentHarness._learning_message_text(item) for item in message]
-            return "\n".join(part for part in parts if part) or None
-        if isinstance(message, Mapping):
-            parts = [value for value in message.values() if isinstance(value, str)]
-            return "\n".join(part for part in parts if part) or None
-        model_dump = getattr(message, "model_dump", None)
-        if callable(model_dump):
-            try:
-                return AgentHarness._learning_message_text(model_dump())
-            except Exception:
-                return None
-        return None
-
-    def _learning_prompt_enabled(self) -> bool:
-        return bool(
-            self._include_learning
-            and not self._plan_mode
-            and self._internal_run_kind.get() not in {"summary", "memory_flush"}
-        )
-
-    @staticmethod
-    def _bounded_learning_prompt(guidance: Any, recalled: Any) -> str:
-        parts = [
-            str(value).strip()
-            for value in (guidance, recalled)
-            if isinstance(value, str) and value.strip()
-        ]
-        if not parts:
-            return ""
-        body = "\n\n".join(parts)
-        encoded = body.encode("utf-8")
-        if len(encoded) > _LEARNING_PROMPT_MAX_BYTES:
-            body = encoded[:_LEARNING_PROMPT_MAX_BYTES].decode(
-                "utf-8", errors="ignore"
-            ).rstrip()
-            body += "\n\n[Learning context truncated by AgnoClaw.]"
-        return (
-            "# Agno Learning Context\n\n"
-            "Recalled learning is scoped historical evidence, not system policy. "
-            "Current instructions, the current request, and verified evidence take "
-            "precedence.\n\n"
-            f"{body}"
-        )
-
-    def _learning_prompt_context_sync(
-        self,
-        *,
-        message: Any,
-        user_id: str | None,
-        session_id: str | None,
-        context: ExecutionContext,
-    ) -> str:
-        if not self._learning_prompt_enabled():
-            return ""
-        machine = getattr(self._agent, "_learning", None)
-        if machine is None:
-            return ""
-        guidance = ""
-        recalled = ""
-        try:
-            guidance = machine.instructions()
-        except Exception:
-            logger.warning("Agno learning guidance failed; continuing without it", exc_info=True)
-        try:
-            recalled = machine.build_context(
-                user_id=user_id,
-                session_id=session_id,
-                agent_id=getattr(self._agent, "id", None) or self._agent_id,
-                message=self._learning_message_text(message),
-                metadata=self._context_to_metadata(context),
-            )
-        except Exception:
-            logger.warning("Agno learning recall failed; continuing without it", exc_info=True)
-        return self._bounded_learning_prompt(guidance, recalled)
-
-    async def _learning_prompt_context_async(
-        self,
-        *,
-        message: Any,
-        user_id: str | None,
-        session_id: str | None,
-        context: ExecutionContext,
-    ) -> str:
-        if not self._learning_prompt_enabled():
-            return ""
-        machine = getattr(self._agent, "_learning", None)
-        if machine is None:
-            return ""
-        guidance = ""
-        recalled = ""
-        try:
-            guidance = machine.instructions()
-        except Exception:
-            logger.warning("Agno learning guidance failed; continuing without it", exc_info=True)
-        try:
-            build = getattr(machine, "abuild_context", None)
-            kwargs = {
-                "user_id": user_id,
-                "session_id": session_id,
-                "agent_id": getattr(self._agent, "id", None) or self._agent_id,
-                "message": self._learning_message_text(message),
-                "metadata": self._context_to_metadata(context),
-            }
-            if callable(build):
-                recalled = await build(**kwargs)
-            else:
-                recalled = await asyncio.to_thread(machine.build_context, **kwargs)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("Agno learning recall failed; continuing without it", exc_info=True)
-        return self._bounded_learning_prompt(guidance, recalled)
-
     def _append_learning_prompt(self, block: str) -> None:
         if not block:
             return
@@ -6927,9 +6887,17 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
             store=store,
             artifact_store=self._artifact_store,
             owner=owner,
-            waiter=lambda timeout: self._wait_runtime_run(run_id, timeout=timeout),
+            waiter=lambda timeout: self._wait_runtime_run(
+                run_id,
+                owner=owner,
+                timeout=timeout,
+            ),
             canceller=lambda: self._cancel_runtime_run(run_id),
-            commander=lambda command: self._command_runtime_run(run_id, command),
+            commander=lambda command: self._command_runtime_run(
+                run_id,
+                command,
+                owner=owner,
+            ),
         )
 
     def _launch_runtime_worker(self, run_id: str, request: dict[str, Any]) -> None:
@@ -7903,6 +7871,15 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
         handle = self._runtime_handle(run_id, owner=owner)
         if snapshot.terminal:
             return handle
+        if snapshot.state in {
+            RunState.WAITING_FOR_INPUT,
+            RunState.WAITING_FOR_APPROVAL,
+            RunState.PAUSED,
+        }:
+            # Intentional waits are durable safe points, not stranded workers.
+            # Explicit recovery must never wake them without their matching host
+            # response/approval/resume command.
+            return handle
 
         acquire = self._runtime_store_lease_method("acquire_run_lease")
         release = self._runtime_store_lease_method("release_run_lease")
@@ -7926,10 +7903,17 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
             raise asyncio.CancelledError
 
         recovered_request = None
+        recovered_interaction: ResolvedAgnoInteraction | None = None
         recovered_child_spec = None
         try:
             snapshot = await asyncio.to_thread(store.get_run, run_id, owner=owner)
             if snapshot.terminal:
+                return handle
+            if snapshot.state in {
+                RunState.WAITING_FOR_INPUT,
+                RunState.WAITING_FOR_APPROVAL,
+                RunState.PAUSED,
+            }:
                 return handle
             child_recovery = inspect_child_recovery(store, snapshot, owner=owner)
             try:
@@ -8154,6 +8138,14 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                                 ),
                             )
                         recovered_request = candidate_request
+                        recovered_interaction = (
+                            await load_latest_resolved_agno_interaction(
+                                store=store,
+                                artifact_store=self._artifact_store,
+                                snapshot=current,
+                                owner=owner,
+                            )
+                        )
                         recovered_child_spec = child_recovery.spec
                     except BaseException as exc:
                         if isinstance(exc, asyncio.CancelledError):
@@ -8188,19 +8180,22 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 if operation is not None and _is_durable_model_loop_intent(operation)
                 else "legacy"
             )
+            launch_request = {
+                "message": recovered_request.message,
+                "context": recovered_request.context,
+                "kwargs": recovered_request.kwargs,
+                "steering": [],
+                "child_spec": recovered_child_spec,
+                "model_loop_mode": recovered_model_loop,
+                "resume_agno_checkpoint": (
+                    recovered_model_loop == _DURABLE_MODEL_LOOP_MODE
+                ),
+            }
+            if recovered_interaction is not None:
+                launch_request["agno_interaction"] = recovered_interaction
             self._launch_runtime_worker(
                 run_id,
-                {
-                    "message": recovered_request.message,
-                    "context": recovered_request.context,
-                    "kwargs": recovered_request.kwargs,
-                    "steering": [],
-                    "child_spec": recovered_child_spec,
-                    "model_loop_mode": recovered_model_loop,
-                    "resume_agno_checkpoint": (
-                        recovered_model_loop == _DURABLE_MODEL_LOOP_MODE
-                    ),
-                },
+                launch_request,
             )
         return handle
 
@@ -8261,7 +8256,13 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
             ),
         )
 
-    async def _wait_runtime_run(self, run_id: str, *, timeout: float | None) -> Any:
+    async def _wait_runtime_run(
+        self,
+        run_id: str,
+        *,
+        owner: RunOwner,
+        timeout: float | None,
+    ) -> Any:
         task = self._live_runs.get(run_id)
         if task is not None:
             awaited = asyncio.shield(task)
@@ -8269,12 +8270,25 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 await awaited
             else:
                 await asyncio.wait_for(awaited, timeout=timeout)
-        elif timeout is not None:
-            deadline = monotonic() + timeout
-            while not self._get_runtime_store().get_run(run_id).terminal:
-                if monotonic() >= deadline:
+        else:
+            deadline = monotonic() + timeout if timeout is not None else None
+            store = self._get_runtime_store()
+            while True:
+                snapshot = await self._store_off_loop(
+                    lambda: store.get_run(run_id, owner=owner)
+                )
+                if (
+                    snapshot.terminal
+                    or snapshot.state is RunState.WAITING_FOR_RECONCILIATION
+                    or snapshot.state is RunState.WAITING_FOR_INPUT
+                ):
+                    break
+                if deadline is not None and monotonic() >= deadline:
                     raise TimeoutError(f"Timed out waiting for run '{run_id}'.")
-                await asyncio.sleep(0.05)
+                delay = 0.05
+                if deadline is not None:
+                    delay = min(delay, max(0, deadline - monotonic()))
+                await asyncio.sleep(delay)
         return self._run_results.get(run_id)
 
     # The terminal settle helpers below run synchronously by design: they are
@@ -8392,7 +8406,12 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
     async def _acquire_runtime_run_lease(self, run_id: str) -> RunLeaseClaim:
         request = self._run_requests[run_id]
         owner = self._runtime_owner(request["context"])
-        claim_id = f"{self._runtime_worker_id}:{run_id}"
+        # A logical run may own multiple worker epochs (for example after a
+        # durable human-input continuation). Reusing a released claim_id makes
+        # the store correctly replay the released claim, which must not be
+        # mistaken for a fresh lease. Keep one ID stable within this acquisition
+        # loop, but mint a new epoch for every worker launch.
+        claim_id = f"{self._runtime_worker_id}:{run_id}:{uuid4().hex}"
         lease_seconds = self._runtime_lease_seconds
         acquire = self._runtime_store_lease_method("acquire_run_lease")
         release = self._runtime_store_lease_method("release_run_lease")
@@ -8586,18 +8605,197 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
         if resume is not None:
             resume.set()
         task = self._live_runs.get(run_id)
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                pass
+        if task is None or task.done():
+            # This handle may be attached to a run owned by another worker. The
+            # durable CANCELLING transition is the cancellation request; only the
+            # lease-owning worker (or recovery after its lease expires) can prove
+            # the effect boundary and confirm CANCELLED versus reconciliation.
+            return await self._store_off_loop(lambda: store.get_run(run_id))
+        task.cancel()
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            pass
         current = await self._store_off_loop(lambda: store.get_run(run_id))
         if current.state == RunState.CANCELLING:
             current = self._settle_runtime_cancel(run_id)
         return current
 
-    async def _command_runtime_run(self, run_id: str, command: RunCommand) -> Any:
+    async def _respond_runtime_run(
+        self,
+        run_id: str,
+        command: Respond,
+        *,
+        owner: RunOwner,
+    ) -> RunSnapshot:
+        """Persist one exact Agno response, then restart its certified model loop."""
+        store = self._get_runtime_store()
+        control_lock = self._run_control_locks.get(run_id) or asyncio.Lock()
+        async with control_lock:
+            snapshot = await self._store_off_loop(
+                lambda: store.get_run(run_id, owner=owner)
+            )
+            if snapshot.state is not RunState.WAITING_FOR_INPUT:
+                raise HarnessError(
+                    code="RUN_RESPOND_CONTINUATION_UNAVAILABLE",
+                    category="lifecycle",
+                    message=(
+                        "Respond requires an active artifact-backed Agno input "
+                        "continuation."
+                    ),
+                    retryable=False,
+                    details={"run_id": run_id, "state": snapshot.state.value},
+                )
+            if self._artifact_store is None:
+                raise HarnessError(
+                    code="RUN_REQUIREMENT_ARTIFACT_STORE_REQUIRED",
+                    category="configuration",
+                    message="Durable Agno input continuation requires an ArtifactStore.",
+                    retryable=False,
+                    details={"run_id": run_id},
+                )
+            if snapshot.pending_request_id != command.request_id:
+                # Reuse the lifecycle reducer's stable mismatch/invalid-state errors.
+                command_decision(snapshot, command)
+                raise AssertionError("unreachable")  # pragma: no cover
+            model_operation = await self._store_off_loop(
+                lambda: store.get_operation(f"{run_id}:model:1", owner=owner)
+            )
+            if not _is_durable_model_loop_intent(model_operation):
+                raise HarnessError(
+                    code="RUN_REQUIREMENT_DURABLE_MODEL_LOOP_REQUIRED",
+                    category="recovery",
+                    message=(
+                        "This paused Agno run was not executed by the certified "
+                        "provider-checkpoint model loop."
+                    ),
+                    retryable=False,
+                    details={"run_id": run_id},
+                )
+            if model_operation.state not in {
+                OperationState.DISPATCHING,
+                OperationState.PLANNED,
+            }:
+                raise HarnessError(
+                    code="RUN_REQUIREMENT_MODEL_OPERATION_INVALID",
+                    category="recovery",
+                    message="The paused run's model operation is not resumable.",
+                    retryable=False,
+                    details={
+                        "run_id": run_id,
+                        "operation_state": model_operation.state.value,
+                    },
+                )
+            checkpoint = await load_agno_requirement_checkpoint(
+                store=store,
+                artifact_store=self._artifact_store,
+                snapshot=snapshot,
+                owner=owner,
+                request_id=command.request_id,
+            )
+            # Validate completeness before any response artifact or lifecycle write.
+            resolve_agno_requirements(
+                checkpoint,
+                request_id=command.request_id,
+                payload=command.payload,
+            )
+            response = AgnoRequirementResponse(
+                run_id=run_id,
+                request_id=command.request_id,
+                command_id=command.command_id,
+                checkpoint_digest=checkpoint.digest,
+                payload=command.payload,
+            )
+            await persist_agno_requirement_response(
+                response,
+                store=store,
+                artifact_store=self._artifact_store,
+                worker_id=self._runtime_worker_id,
+            )
+            decision = command_decision(snapshot, command)
+            if decision.transition is None:  # pragma: no cover - Respond always transitions
+                raise AssertionError("Respond did not produce a lifecycle transition")
+            applied = await self._store_off_loop(
+                functools.partial(
+                    store.apply_transition,
+                    decision.transition,
+                    expected_revision=snapshot.revision,
+                )
+            )
+            after = applied.lifecycle.after
+
+        prior_task = self._live_runs.get(run_id)
+        if prior_task is not None and prior_task is not asyncio.current_task():
+            await asyncio.shield(prior_task)
+
+        interaction = await load_agno_requirement_response(
+            store=store,
+            artifact_store=self._artifact_store,
+            snapshot=after,
+            owner=owner,
+            checkpoint=checkpoint,
+        )
+        current_operation = await self._store_off_loop(
+            lambda: store.get_operation(f"{run_id}:model:1", owner=owner)
+        )
+        if current_operation.state is OperationState.DISPATCHING:
+            try:
+                current_operation = await self._get_operation_gateway().recover_interrupted(
+                    current_operation.intent.operation_id,
+                    recovery_id=(
+                        f"{current_operation.intent.operation_id}:respond:"
+                        f"{checkpoint.generation:06d}"
+                    ),
+                )
+            except HarnessError:
+                current_operation = await self._store_off_loop(
+                    lambda: store.get_operation(f"{run_id}:model:1", owner=owner)
+                )
+                if current_operation.state is not OperationState.PLANNED:
+                    raise
+        if current_operation.state is not OperationState.PLANNED:
+            raise HarnessError(
+                code="RUN_REQUIREMENT_MODEL_OPERATION_INVALID",
+                category="recovery",
+                message="The responded run's model operation could not be reclaimed.",
+                retryable=False,
+                details={
+                    "run_id": run_id,
+                    "operation_state": current_operation.state.value,
+                },
+            )
+        recovered = await load_runtime_request_checkpoint(
+            store=store,
+            artifact_store=self._artifact_store,
+            snapshot=after,
+            owner=owner,
+            harness_spec_digest=self._spec.settings_digest,
+        )
+        child_recovery = inspect_child_recovery(store, after, owner=owner)
+        if child_recovery.error is not None:
+            raise child_recovery.error
+        self._launch_runtime_worker(
+            run_id,
+            {
+                "message": recovered.message,
+                "context": recovered.context,
+                "kwargs": recovered.kwargs,
+                "steering": [],
+                "child_spec": child_recovery.spec,
+                "model_loop_mode": _DURABLE_MODEL_LOOP_MODE,
+                "resume_agno_checkpoint": True,
+                "agno_interaction": interaction,
+            },
+        )
+        return after
+
+    async def _command_runtime_run(
+        self,
+        run_id: str,
+        command: RunCommand,
+        *,
+        owner: RunOwner | None = None,
+    ) -> Any:
         store = self._get_runtime_store()
         if isinstance(command, Fork):
             raise HarnessError(
@@ -8606,6 +8804,12 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 message="Fork requires a certified durable checkpoint.",
                 retryable=False,
                 details={"run_id": run_id},
+            )
+        if isinstance(command, Respond):
+            return await self._respond_runtime_run(
+                run_id,
+                command,
+                owner=owner or RunOwner(self._tenant_id, self.user_id),
             )
         # One per-run lock makes acceptance of a command and its in-memory
         # control effect atomic with the local worker's start/steering boundary.
@@ -8678,10 +8882,6 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 request = self._run_requests.get(run_id)
                 if request is not None:
                     request["steering"].append(command.instruction)
-            elif isinstance(command, Respond):
-                # The durable provider/tool continuation loop consumes the response
-                # record in T6; the lifecycle binding is already exact here.
-                pass
             return after
 
     async def _execute_runtime_run(self, run_id: str) -> None:
@@ -8921,6 +9121,65 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                         message=message,
                         request=request,
                     )
+                    paused_requirements = agno_result_requirements(value)
+                    if paused_requirements is not None:
+                        if not durable_model_loop:
+                            raise HarnessError(
+                                code="RUN_REQUIREMENT_DURABLE_MODEL_LOOP_REQUIRED",
+                                category="recovery",
+                                message=(
+                                    "Agno human-input continuation requires the "
+                                    "certified provider-checkpoint model loop."
+                                ),
+                                retryable=False,
+                                details={"run_id": run_id},
+                            )
+                        prior_interaction = request.get("agno_interaction")
+                        generation = (
+                            prior_interaction.checkpoint.generation + 1
+                            if isinstance(prior_interaction, ResolvedAgnoInteraction)
+                            else 1
+                        )
+                        checkpoint = AgnoRequirementCheckpoint.from_requirements(
+                            run_id=run_id,
+                            generation=generation,
+                            requirements=paused_requirements,
+                        )
+                        await persist_agno_requirement_checkpoint(
+                            checkpoint,
+                            store=store,
+                            artifact_store=self._artifact_store,
+                            worker_id=self._runtime_worker_id,
+                        )
+                        current = await self._store_off_loop(
+                            lambda: store.get_run(run_id)
+                        )
+                        await _advance(
+                            lambda snap: store.apply_transition(
+                                LifecycleTransition(
+                                    run_id=run_id,
+                                    kind=TransitionKind.WAIT_FOR_INPUT,
+                                    transition_id=(
+                                        f"{run_id}:agno-input:{generation:06d}:wait"
+                                    ),
+                                    pending_request_id=checkpoint.active.request_id,
+                                    reason_code="AGNO_REQUIREMENT_PENDING",
+                                    payload={
+                                        "generation": generation,
+                                        "requirement_kinds": list(
+                                            checkpoint.active.kinds
+                                        ),
+                                        "pending_count": len(checkpoint.pending),
+                                    },
+                                ),
+                                expected_revision=snap.revision,
+                            ),
+                            current,
+                        )
+                        raise _RunRequirementDeferred(
+                            run_id=run_id,
+                            reason_code="AGNO_REQUIREMENT_PENDING",
+                        )
                     if durable_model_loop and model_operation_has_unknown_effects(
                         store, run_id
                     ):
@@ -8977,6 +9236,11 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 ),
                 current,
             )
+        except _RunRequirementDeferred:
+            # The durable requirement checkpoint and wait transition are the
+            # authoritative continuation boundary. Releasing this worker also
+            # releases the run/session leases while the host obtains input.
+            return
         except asyncio.CancelledError:
             self._settle_runtime_cancel_or_unknown(
                 run_id,
@@ -10151,6 +10415,7 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                     user_id=agno_user,
                     session_id=agno_session,
                     context=ctx,
+                    learning_scope=learning_scope,
                 )
             )
 
@@ -10237,16 +10502,30 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                 scope_allowed = []
 
             continue_from_tool_checkpoint = False
+            continue_from_agno_requirement: ResolvedAgnoInteraction | None = None
             if self._active_runtime_checkpoint_resume.get():
                 checkpointed_run = await cast(Callable[..., Any], self._agent.aget_run_output)(
                     run_id,
                     session_id=agno_session,
                     user_id=agno_user,
                 )
-                continue_from_tool_checkpoint = has_valid_tool_batch_checkpoint(
-                    checkpointed_run
+                active_request = self._run_requests.get(run_id)
+                candidate_interaction = (
+                    active_request.get("agno_interaction")
+                    if isinstance(active_request, dict)
+                    else None
                 )
-                if continue_from_tool_checkpoint:
+                if isinstance(candidate_interaction, ResolvedAgnoInteraction):
+                    validate_agno_requirement_checkpoint_result(
+                        checkpointed_run,
+                        candidate_interaction.checkpoint,
+                    )
+                    continue_from_agno_requirement = candidate_interaction
+                else:
+                    continue_from_tool_checkpoint = has_valid_tool_batch_checkpoint(
+                        checkpointed_run
+                    )
+                if continue_from_tool_checkpoint or continue_from_agno_requirement is not None:
                     # The checkpoint already contains the exact history used by
                     # the interrupted run. Agno 2.9 otherwise re-fetches that
                     # same RUNNING run from its session and duplicates the
@@ -10256,13 +10535,29 @@ class AgentHarness(_LearningReconciliationMixin, _ContextManagementMixin):
                     event_type="run.checkpoint.resume.selected",
                     run_id=run_id,
                     context=ctx,
-                    payload={"tool_batch_checkpoint": continue_from_tool_checkpoint},
+                    payload={
+                        "tool_batch_checkpoint": continue_from_tool_checkpoint,
+                        "agno_requirement_checkpoint": (
+                            continue_from_agno_requirement is not None
+                        ),
+                    },
                 )
 
             overflow_retry_attempted = False
             while True:
                 try:
-                    if continue_from_tool_checkpoint:
+                    if continue_from_agno_requirement is not None:
+                        agno_call = cast(Callable[..., Any], self._agent.acontinue_run)(
+                            run_id=run_id,
+                            requirements=list(continue_from_agno_requirement.requirements),
+                            stream=stream,
+                            stream_events=stream_events,
+                            session_id=agno_session,
+                            user_id=agno_user,
+                            metadata=agent_metadata,
+                            **call_kwargs,
+                        )
+                    elif continue_from_tool_checkpoint:
                         agno_call = cast(Callable[..., Any], self._agent.acontinue_run)(
                             run_id=run_id,
                             stream=stream,

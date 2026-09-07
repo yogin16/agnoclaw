@@ -6,8 +6,8 @@ Status: generated from the complete top-level `agnoclaw.__all__` contract
 > `uv run python scripts/generate_api_reference.py` and review the diff.
 
 Reference schema: `1.0`
-Public symbols: `398`
-Public-surface digest: `sha256:ca55b7e9173024eb9e050b9ff01a0ad625590fe2d4ae5d66b5370d2eb9334530`
+Public symbols: `402`
+Public-surface digest: `sha256:f77339c01b02a128da7213ef1a689dc6d97548b04e233a1a949844cf8f993bd5`
 
 Every name below is importable directly from `agnoclaw`. Signatures are
 generated from the installed runtime objects; source modules identify the
@@ -404,6 +404,9 @@ AgentHarness(
     auto_compact_context: 'bool | None' = None,
     context_lock_provider: 'ContextLockProvider | None' = None,
     max_inline_output_chars: 'int | None' = None,
+    offload_tool_results: 'bool | ResultStore | None' = None,
+    media_storage: 'MediaStorage | AsyncMediaStorage | None' = None,
+    code_mode: 'bool | CodeMode | None' = None,
     output_schema: 'type | dict[str, Any] | None' = None,
     parser_model: 'Any | None' = None,
     parser_model_prompt: 'str | None' = None,
@@ -541,6 +544,9 @@ HarnessAgent(
     auto_compact_context: 'bool | None' = None,
     context_lock_provider: 'ContextLockProvider | None' = None,
     max_inline_output_chars: 'int | None' = None,
+    offload_tool_results: 'bool | ResultStore | None' = None,
+    media_storage: 'MediaStorage | AsyncMediaStorage | None' = None,
+    code_mode: 'bool | CodeMode | None' = None,
     output_schema: 'type | dict[str, Any] | None' = None,
     parser_model: 'Any | None' = None,
     parser_model_prompt: 'str | None' = None,
@@ -998,12 +1004,24 @@ HarnessConfig(
     max_context_tokens: Annotated[int | None, Gt(gt=0)] = None,
     auto_compact_context: bool = False,
     max_inline_output_chars: Annotated[int | None, Ge(ge=1024), Le(le=1000000)] = None,
+    agno_tool_result_offloading: Literal['auto', 'enabled', 'disabled'] = 'auto',
+    agno_tool_result_threshold_chars: Annotated[int, Ge(ge=1024), Le(le=1000000)] = 16000,
+    agno_tool_result_ttl_seconds: Annotated[int | None, Ge(ge=60), Le(le=31536000)] = None,
     enable_session_summary: bool = False,
     heartbeat: agnoclaw.config.HeartbeatConfig = <factory>,
     storage: agnoclaw.config.StorageConfig = <factory>,
     enable_browser: bool = False,
     mcp_servers: list[dict] = <factory>,
     enable_media_tools: bool = False,
+    agno_media_offloading: Literal['auto', 'enabled', 'disabled'] = 'auto',
+    agno_media_storage_path: str = '~/.agnoclaw/media',
+    agno_media_persist_remote_urls: bool = False,
+    enable_code_mode: bool = False,
+    code_mode_allow_shell: bool = False,
+    code_mode_snapshot: bool = True,
+    code_mode_timeout_seconds: Annotated[int, Ge(ge=1), Le(le=3600)] = 300,
+    code_mode_idle_ttl_seconds: Annotated[int, Ge(ge=30), Le(le=86400)] = 1800,
+    code_mode_max_kernels: Annotated[int, Ge(ge=1), Le(le=128)] = 4,
     enable_notebook_tools: bool = False,
     enable_plugins: bool = True,
     plugin_paths: list[str] = <factory>,
@@ -3124,6 +3142,30 @@ Stable error shape for public runtime operations.
 from agnoclaw import LearningPromotionUnknownError
 
 LearningPromotionUnknownError(candidate_id: 'str')
+```
+
+### `LearningProposalBudgetExceededError`
+
+Class · `agnoclaw.learning_candidates.LearningProposalBudgetExceededError`
+
+The active source run has exhausted its institutional proposal budget.
+
+```python
+from agnoclaw import LearningProposalBudgetExceededError
+
+LearningProposalBudgetExceededError(*, source_run_id: 'str', maximum: 'int')
+```
+
+### `LearningProposalLedger`
+
+Class · `agnoclaw.learning_candidates.LearningProposalLedger`
+
+Atomic quota boundary required for model-authored learning proposals.
+
+```python
+from agnoclaw import LearningProposalLedger
+
+LearningProposalLedger(*args, **kwargs)
 ```
 
 ### `LearningReconciliationWorkerLease`
@@ -6046,6 +6088,30 @@ from agnoclaw import RuntimeRecoveryStatus
 RuntimeRecoveryStatus(*values)
 ```
 
+## `agnoclaw.runtime.requirements`
+
+### `PendingRunRequirement`
+
+Class · `agnoclaw.runtime.requirements.PendingRunRequirement`
+
+Owner-visible question derived from one exact persisted Agno requirement.
+
+```python
+from agnoclaw import PendingRunRequirement
+
+PendingRunRequirement(
+    request_id: 'str',
+    run_id: 'str',
+    generation: 'int',
+    requirement_id: 'str',
+    kinds: 'tuple[str, ...]',
+    tool_name: 'str | None',
+    tool_arguments: 'Any',
+    user_input_schema: 'tuple[Any, ...]' = (),
+    user_feedback_schema: 'tuple[Any, ...]' = (),
+) -> None
+```
+
 ## `agnoclaw.runtime.run_handle`
 
 ### `HarnessRun`
@@ -6070,6 +6136,18 @@ HarnessRun(
     commander: 'CommandCallback | None' = None,
     session_id: 'str | None' = None,
 ) -> 'None'
+```
+
+### `RunInputRequiredError`
+
+Class · `agnoclaw.runtime.run_handle.RunInputRequiredError`
+
+A wait reached a durable host-input boundary instead of a terminal result.
+
+```python
+from agnoclaw import RunInputRequiredError
+
+RunInputRequiredError(snapshot: 'RunSnapshot') -> 'None'
 ```
 
 ### `RunReconciliationRequiredError`

@@ -60,6 +60,16 @@ file/shell/web/child effects cross operation settlement while remaining conserva
 single-flight. Other custom, dynamically discovered, and streaming calls remain on the
 compatibility gate. `start/get_run`, the pure lifecycle reducer, and a
 transactional SQLite run/event/outbox authority are implemented as preview contracts.
+
+On the primary Agno 3 lane, native ResultStore offloading and bounded normalized-history
+reads sit below this boundary: they reduce session payload size but never replace the
+operation ledger or RuntimeStore. Media storage is a host-managed projection that keeps
+binary bytes outside session rows. CodeMode is deliberately outside the durable slice;
+it exposes one programmable tool over owner/user/session-scoped kernels in supervised
+quick/legacy mode, with shell disabled by default and explicit harness shutdown. Its
+kernel is host-side: injected tool handles still use the RuntimeBackend, but direct
+Python does not. RuntimeBackend/LLMSandbox remains the execution-location and
+containment abstraction; CodeMode is a model-interface and state-reuse abstraction.
 Exact same-session lanes, a hard process queue/concurrency/time bound, round-robin
 tenant admission, content-free admission metrics, store-issued service-wide run/session
 leases, explicit drain/detach/cancel shutdown ownership, and an explicit admission-bound
@@ -230,6 +240,7 @@ class HarnessRun(Protocol):
     async def events(self, *, after: str | None = None): ...
     async def cancel(self): ...
     async def command(self, command: RunCommand): ...
+    async def pending_requirements(self) -> tuple[PendingRunRequirement, ...]: ...
 ```
 
 Quick runs may store this ephemerally and make no restart/cursor-after-process promise.
@@ -808,9 +819,9 @@ It is an adapter over the embedded types, not a second runtime.
 
 Agno is a fast-moving substrate. `agnoclaw` should maintain:
 
-- a locked, fully tested Agno production version (3.0.1 primary during development);
+- a locked, fully tested Agno production version (3.0.6 primary during development);
 - a documented supported range;
-- CI against the 2.6.4 legacy, 2.9.0 stable-v2, and 3.0.1 primary lanes;
+- CI against the 2.6.4 legacy, 2.9.0 stable-v2, and 3.0.6 primary lanes;
 - contract tests for Agent signatures, event mapping, learning store behavior,
   cancellation/continuation, compression, and AgentOS adapter behavior;
 - feature detection only when both branches have tests;

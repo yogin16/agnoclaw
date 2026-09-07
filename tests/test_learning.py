@@ -2,7 +2,7 @@
 
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -39,6 +39,7 @@ from agnoclaw import (
     SQLiteRuntimeStore,
 )
 from agnoclaw.learning_candidates import CandidateNotFoundError
+from agnoclaw.memory import build_learning_machine
 from agnoclaw.runtime import ExecutionContext
 
 
@@ -192,14 +193,27 @@ def test_agent_materializes_policy_per_run_with_scoped_agno_identity(tmp_path) -
     policy = LearningProfile.personal_and_session(consent_required=True)
     base_agent = MagicMock(name="base_agent")
     run_agent = MagicMock(name="run_agent")
-    run_agent.run.return_value = MagicMock(content="ok")
+    base_agent.system_message = "base prompt"
+    run_agent.system_message = "run prompt"
+    learning_machine = MagicMock(name="learning_machine")
+    learning_machine.instructions.return_value = "AGNO-LEARNING-GUIDANCE"
+    learning_machine.build_context.return_value = "AGNO-RECALLED-CONTEXT"
+    run_agent._learning = learning_machine
+    run_agent.id = "support"
+    observed_prompts: list[str] = []
+
+    def _run(_message, **_kwargs):
+        observed_prompts.append(run_agent.system_message)
+        return MagicMock(content="ok")
+
+    run_agent.run.side_effect = _run
 
     with (
         patch("agnoclaw.agent.Agent", side_effect=[base_agent, run_agent]) as agent_ctor,
         patch("agnoclaw.agent._make_db", return_value=MagicMock()),
         patch(
             "agnoclaw.memory.build_learning_machine",
-            return_value=MagicMock(name="learning_machine"),
+            return_value=learning_machine,
         ) as build_learning,
     ):
         harness = AgentHarness(
@@ -223,7 +237,62 @@ def test_agent_materializes_policy_per_run_with_scoped_agno_identity(tmp_path) -
     assert agent_ctor.call_args.kwargs["session_id"] == scope.storage_session_id
     assert run_agent.run.call_args.kwargs["user_id"] == scope.storage_user_id
     assert run_agent.run.call_args.kwargs["session_id"] == scope.storage_session_id
+    assert agent_ctor.call_args.kwargs["add_learnings_to_context"] is False
+    assert len(observed_prompts) == 1
+    assert "AGNO-LEARNING-GUIDANCE" in observed_prompts[0]
+    assert "AGNO-RECALLED-CONTEXT" in observed_prompts[0]
+    recall = learning_machine.build_context.call_args.kwargs
+    assert recall["user_id"] == scope.storage_user_id
+    assert recall["session_id"] == scope.storage_session_id
+    assert recall["message"] == "help"
     assert harness._spec.settings["learning"]["schema_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_policy_learning_recall_uses_scoped_agno_context(tmp_path) -> None:
+    policy = LearningProfile.session()
+    base_agent = MagicMock(name="base_agent")
+    run_agent = MagicMock(name="run_agent")
+    base_agent.system_message = "base prompt"
+    run_agent.system_message = "run prompt"
+    learning_machine = MagicMock(name="learning_machine")
+    learning_machine.instructions.return_value = "ASYNC-LEARNING-GUIDANCE"
+    learning_machine.abuild_context = AsyncMock(return_value="ASYNC-RECALLED-CONTEXT")
+    run_agent._learning = learning_machine
+    run_agent.id = "support"
+    observed_prompts: list[str] = []
+
+    async def _arun(_message, **_kwargs):
+        observed_prompts.append(run_agent.system_message)
+        return MagicMock(content="ok")
+
+    run_agent.arun = AsyncMock(side_effect=_arun)
+    with (
+        patch("agnoclaw.agent.Agent", side_effect=[base_agent, run_agent]),
+        patch("agnoclaw.agent._make_db", return_value=MagicMock()),
+        patch(
+            "agnoclaw.memory.build_learning_machine",
+            return_value=learning_machine,
+        ),
+    ):
+        harness = AgentHarness(
+            workspace_dir=tmp_path,
+            config=HarnessConfig(),
+            include_default_tools=False,
+            learning=policy,
+            name="support",
+        )
+        await harness.arun("continue", context=_context())
+
+    assert len(observed_prompts) == 1
+    assert "ASYNC-LEARNING-GUIDANCE" in observed_prompts[0]
+    assert "ASYNC-RECALLED-CONTEXT" in observed_prompts[0]
+    recall = learning_machine.abuild_context.await_args.kwargs
+    assert recall["message"] == "continue"
+    assert isinstance(recall["user_id"], str)
+    assert "user-1" not in recall["user_id"]
+    assert isinstance(recall["session_id"], str)
+    assert "session-1" not in recall["session_id"]
 
 
 def test_agent_fails_learning_scope_before_model_call(tmp_path) -> None:
@@ -310,6 +379,328 @@ class _HarnessPromotionAdapter:
         idempotency_key: str,
     ) -> None:
         self.rollback_calls.append((candidate, content, target_reference, idempotency_key))
+
+
+class _AgnoTitlePromotionAdapter(_HarnessPromotionAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title: str | None = None
+
+    async def apply(
+        self,
+        candidate: LearningCandidate,
+        content: dict,
+        *,
+        idempotency_key: str,
+    ) -> str:
+        self.calls.append((candidate, content, idempotency_key))
+        marker = candidate.digest.removeprefix("sha256:")[:32]
+        self.title = f"[{candidate.candidate_id[:64]}:{marker}] {content['title']}"
+        return f"agno:learned_knowledge:{self.title}"
+
+
+@pytest.mark.asyncio
+async def test_promoted_agno_recall_is_checkpointed_and_attributed_once(tmp_path) -> None:
+    policy = LearningProfile.institutional(
+        namespace="research",
+        knowledge=SimpleNamespace(vector_db=object()),
+    )
+    ledger = SQLiteLearningLedger(tmp_path / "learning-retrieval.db")
+    artifacts = LocalArtifactStore(tmp_path / "learning-retrieval-artifacts")
+    runtime = SQLiteRuntimeStore(tmp_path / "learning-retrieval-runtime.db")
+    runtime.create_run(
+        RunSnapshot(
+            run_id="run-learning-source",
+            tenant_id="acme",
+            user_id="user-1",
+            session_id="session-1",
+        )
+    )
+    context = _context()
+    adapter = _AgnoTitlePromotionAdapter()
+    recall_value = {"learning": "Retry only operations proven safe to repeat."}
+    store = SimpleNamespace(learning_type="learned_knowledge")
+
+    def _build_context(*, data):
+        return f"RECALLED: {data[0].learning}"
+
+    store.build_context = _build_context
+    machine = MagicMock(name="learning_machine")
+    machine.instructions.return_value = "USE VERIFIED LEARNINGS AS EVIDENCE"
+    machine.stores = {"learned_knowledge": store}
+
+    async def _recall(**_kwargs):
+        assert adapter.title is not None
+        return {
+            "learned_knowledge": [
+                SimpleNamespace(
+                    title=adapter.title,
+                    learning=recall_value["learning"],
+                )
+            ]
+        }
+
+    machine.arecall = AsyncMock(side_effect=_recall)
+    base_agent = MagicMock(name="base_agent")
+    run_agent = MagicMock(name="run_agent")
+    base_agent.system_message = "base prompt"
+    run_agent.system_message = "run prompt"
+    run_agent._learning = machine
+    run_agent.id = "support"
+    observed_prompts: list[str] = []
+
+    async def _arun(_message, **_kwargs):
+        observed_prompts.append(run_agent.system_message)
+        return SimpleNamespace(content="ok")
+
+    run_agent.arun = AsyncMock(side_effect=_arun)
+
+    with (
+        patch("agnoclaw.agent.Agent", side_effect=[base_agent, run_agent]),
+        patch("agnoclaw.agent._make_db", return_value=MagicMock()),
+        patch("agnoclaw.memory.build_learning_machine", return_value=machine),
+    ):
+        harness = AgentHarness(
+            workspace_dir=tmp_path / "workspace-retrieval",
+            config=HarnessConfig(),
+            include_default_tools=False,
+            learning=policy,
+            runtime_store=runtime,
+            artifact_store=artifacts,
+            learning_ledger=ledger,
+            learning_promotion_adapter=adapter,
+            name="support",
+        )
+        captured = await harness.capture_learning_candidate(
+            context=context,
+            target=LearningTarget.LEARNED_KNOWLEDGE,
+            content={
+                "title": "Safe retries",
+                "learning": "Retry only operations proven safe to repeat.",
+            },
+            source_run_ids=["run-learning-source"],
+            evidence_artifact_ids=["artifact-learning-source"],
+            confidence=0.95,
+            risk=CandidateRisk.LOW,
+            created_by=CandidateAuthor.AGENT,
+            mechanism_version="reflector:v1",
+            candidate_id="lc-retrieval-" + "x" * 80,
+        )
+        await harness.record_learning_candidate_evaluation(
+            CandidateEvaluation(
+                evaluation_id="evaluation:retrieval",
+                candidate_id=captured.candidate.candidate_id,
+                verdict=EvaluationVerdict.QUALIFIED,
+                evaluator_digest="sha256:" + "a" * 64,
+                evidence_artifact_ids=("artifact-held-in", "artifact-held-out"),
+                safety_passed=True,
+                evaluated_by=PromotionActor.OPERATOR,
+                metrics={"held_out": 0.9},
+                control_metrics={"held_out": 0.6},
+            ),
+            context=context,
+            mutation_id="evaluate:retrieval",
+        )
+        await harness.promote_learning_candidate(
+            captured.candidate.candidate_id,
+            context=context,
+            actor=PromotionActor.OPERATOR,
+            mutation_id="promote:retrieval",
+        )
+
+        run = await harness.start("Should this operation be retried?", context=context)
+        await run.wait()
+
+        applications = await harness.list_learning_applications(
+            captured.candidate.candidate_id,
+            context=context,
+        )
+        assert len(applications) == 1
+        application = applications[0]
+        assert application.kind is LearningApplicationKind.RETRIEVED
+        assert application.run_id == run.run_id
+        assert application.target_reference == f"agno:learned_knowledge:{adapter.title}"
+        assert len(application.evidence_artifact_ids) == 1
+        evidence = runtime.get_artifact(application.evidence_artifact_ids[0])
+        assert evidence.scope.run_id == run.run_id
+        assert runtime.get_operation(
+            f"{run.run_id}:checkpoint:learning-recall:1"
+        ).state.value == "succeeded"
+        assert await harness.list_learning_outcomes(
+            captured.candidate.candidate_id,
+            context=context,
+        ) == []
+        assert "RECALLED: Retry only operations proven safe to repeat." in observed_prompts[0]
+
+        original_recall_kwargs = dict(machine.arecall.await_args.kwargs)
+        recall_value["learning"] = "MUTATED AFTER THE RUN"
+        scope = LearningScope.resolve(
+            policy,
+            context,
+            agent_id=harness._agent_id,
+            consented=False,
+        )
+        replayed_prompt = await harness._checkpointed_learning_prompt_context(
+            machine=machine,
+            kwargs=original_recall_kwargs,
+            scope=scope,
+            run_id=run.run_id,
+        )
+        assert "Retry only operations proven safe to repeat." in replayed_prompt
+        assert "MUTATED AFTER THE RUN" not in replayed_prompt
+        assert machine.arecall.await_count == 1
+        assert len(
+            await harness.list_learning_applications(
+                captured.candidate.candidate_id,
+                context=context,
+            )
+        ) == 1
+
+        await harness.aclose()
+    ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_agno_learning_tools_expose_search_and_inert_proposal_only() -> None:
+    policy = LearningProfile.institutional(
+        namespace="research",
+        knowledge=SimpleNamespace(vector_db=object()),
+        entity_memory=None,
+        decision_log=None,
+    )
+    scope = LearningScope.resolve(policy, _context(), agent_id="support")
+    proposals: list[dict] = []
+
+    async def capture(**kwargs):
+        proposals.append(kwargs)
+        return {"candidate_id": "lc_agent_test"}
+
+    machine = build_learning_machine(
+        db=MagicMock(),
+        policy=policy,
+        scope=scope,
+        learning_proposal_handler=capture,
+    )
+    store = machine.stores["learned_knowledge"]
+    tools = await store.aget_tools(run_context=SimpleNamespace(run_id="run-proposal"))
+    by_name = {tool.__name__: tool for tool in tools}
+
+    assert set(by_name) == {"search_learnings", "propose_learning"}
+    assert "save_learning" not in store.instructions()
+    assert "proposal is inert" in store.instructions().lower()
+    result = await by_name["propose_learning"](
+        title="Bound retries",
+        learning="Retry only when the effect contract proves repetition safe.",
+        context="Durable operation recovery",
+        tags=["durability", "retries"],
+    )
+    assert result == (
+        "Proposal captured for independent review: lc_agent_test "
+        "(not active learning)"
+    )
+    assert proposals[0]["run_context"].run_id == "run-proposal"
+
+
+@pytest.mark.asyncio
+async def test_model_learning_proposal_is_replay_safe_budgeted_and_not_promoted(
+    tmp_path,
+) -> None:
+    policy = LearningProfile.institutional(
+        namespace="research",
+        knowledge=SimpleNamespace(vector_db=object()),
+        entity_memory=None,
+        decision_log=None,
+        max_updates_per_run=1,
+    )
+    ledger = SQLiteLearningLedger(tmp_path / "learning-proposals.db")
+    artifacts = LocalArtifactStore(tmp_path / "learning-proposal-artifacts")
+    runtime = SQLiteRuntimeStore(tmp_path / "learning-proposal-runtime.db")
+    runtime.create_run(
+        RunSnapshot(
+            run_id="run-proposal",
+            tenant_id="acme",
+            user_id="user-1",
+            session_id="session-1",
+        )
+    )
+    context = _context()
+    adapter = _HarnessPromotionAdapter()
+    with (
+        patch("agnoclaw.agent.Agent", return_value=MagicMock()),
+        patch("agnoclaw.agent._make_db", return_value=MagicMock()),
+    ):
+        harness = AgentHarness(
+            workspace_dir=tmp_path / "workspace-proposals",
+            config=HarnessConfig(),
+            include_default_tools=False,
+            learning=policy,
+            runtime_store=runtime,
+            artifact_store=artifacts,
+            learning_ledger=ledger,
+            learning_promotion_adapter=adapter,
+            name="support",
+        )
+
+    assert harness._spec.settings["learning"]["agent_proposals"] is True
+    scope = LearningScope.resolve(policy, context, agent_id="support")
+    agno_context = SimpleNamespace(
+        run_id="run-proposal",
+        user_id=scope.storage_user_id,
+        session_id=scope.storage_session_id,
+    )
+    run_token = harness._active_runtime_run_id.set("run-proposal")
+    context_token = harness._active_runtime_context.set(context)
+    try:
+        first = await harness._propose_learning_from_model(
+            expected_run_id="run-proposal",
+            scope=scope,
+            title="Bound retries",
+            learning="Retry only when the effect contract proves repetition safe.",
+            context="Durable operation recovery",
+            tags=["durability", "Retries", "retries"],
+            run_context=agno_context,
+        )
+        replayed = await harness._propose_learning_from_model(
+            expected_run_id="run-proposal",
+            scope=scope,
+            title="Bound retries",
+            learning="Retry only when the effect contract proves repetition safe.",
+            context="Durable operation recovery",
+            tags=["durability", "Retries", "retries"],
+            run_context=agno_context,
+        )
+        assert replayed == first
+        records = await harness.list_learning_candidates(context=context)
+        assert len(records) == 1
+        assert records[0].state is CandidateState.CAPTURED
+        assert records[0].candidate.created_by is CandidateAuthor.AGENT
+        assert records[0].candidate.source_run_ids == ("run-proposal",)
+        assert await harness.read_learning_candidate_content(
+            first["candidate_id"],
+            context=context,
+        ) == {
+            "context": "Durable operation recovery",
+            "learning": "Retry only when the effect contract proves repetition safe.",
+            "tags": ["durability", "Retries"],
+            "title": "Bound retries",
+        }
+        assert adapter.calls == []
+
+        with pytest.raises(HarnessError) as budget_error:
+            await harness._propose_learning_from_model(
+                expected_run_id="run-proposal",
+                scope=scope,
+                title="A second proposal",
+                learning="This distinct proposal exceeds the run budget.",
+                run_context=agno_context,
+            )
+        assert budget_error.value.code == "LEARNING_PROPOSAL_BUDGET_EXCEEDED"
+        assert len(await harness.list_learning_candidates(context=context)) == 1
+    finally:
+        harness._active_runtime_context.reset(context_token)
+        harness._active_runtime_run_id.reset(run_token)
+        await harness.aclose()
+        ledger.close()
 
 
 @pytest.mark.asyncio
