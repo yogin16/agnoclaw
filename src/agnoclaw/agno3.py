@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import inspect
 import threading
 from pathlib import Path
 from typing import Any
@@ -160,7 +161,46 @@ def resolve_tool_result_offloading(
         return explicit
     from agno.offload.store import ResultStore
 
-    return ResultStore(
+    class _AgnoclawResultStore(ResultStore):
+        """Use the non-deprecated coroutine probe on Python 3.14+.
+
+        Agno 3.0.6 still calls ``asyncio.iscoroutinefunction`` in these two
+        private dispatch seams. Python 3.14 warns on every call, and agnoclaw's
+        warning-clean lanes intentionally make that a release error.
+        """
+
+        def bound(self, db: Any | None) -> _AgnoclawResultStore:
+            """Keep the compatibility adapter when Agno binds its lazy store."""
+            return type(self)(
+                db=self.db if self.db is not None else db,
+                fs=self._fs,
+                threshold_chars=self.threshold_chars,
+                preview_lines=self.preview_lines,
+                preview_chars=self.preview_chars,
+                ttl_seconds=self.ttl_seconds,
+                member_responses=self.member_responses,
+            )
+
+        def _db_call(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
+            if self.db is None:
+                raise RuntimeError("ResultStore has no db; index operations are unavailable")
+            function = getattr(self.db, method_name)
+            if inspect.iscoroutinefunction(function):
+                raise RuntimeError(
+                    f"ResultStore: '{method_name}' is async on "
+                    f"{type(self.db).__name__}; use the a-prefixed store method"
+                )
+            return function(*args, **kwargs)
+
+        async def _adb_call(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
+            if self.db is None:
+                raise RuntimeError("ResultStore has no db; index operations are unavailable")
+            function = getattr(self.db, method_name)
+            if inspect.iscoroutinefunction(function):
+                return await function(*args, **kwargs)
+            return await asyncio.to_thread(function, *args, **kwargs)
+
+    return _AgnoclawResultStore(
         threshold_chars=threshold_chars,
         ttl_seconds=ttl_seconds,
     )

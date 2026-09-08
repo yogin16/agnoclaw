@@ -2,7 +2,7 @@
 
 This project follows Keep a Changelog structure.
 
-## [0.13.0] - 2026-09-07
+## [0.13.0] - 2026-09-08
 
 ### Added
 
@@ -45,6 +45,8 @@ This project follows Keep a Changelog structure.
 - Harness-owned CodeMode shutdown now cancels and drains Agno's debounced snapshot
   tasks before closing the background loop, preventing Python 3.12+ unraisable-task
   failures during deterministic CI teardown.
+- The default Agno `ResultStore` adapter uses `inspect.iscoroutinefunction` instead of
+  Agno 3.0.6's deprecated asyncio alias, preserving warning-clean Python 3.14 support.
 
 ## [0.12.2] - 2026-08-29
 
