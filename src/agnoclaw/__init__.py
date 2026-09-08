@@ -212,6 +212,8 @@ from .learning_candidates import (
     LearningOwner,
     LearningPromotionAdapter,
     LearningPromotionUnknownError,
+    LearningProposalBudgetExceededError,
+    LearningProposalLedger,
     LearningReconciliationWorkerLease,
     LearningReconciliationWorkerLeaseError,
     LearningRollbackAdapter,
@@ -398,6 +400,7 @@ from .runtime import (
     OperationReconciliationVerdict,
     OutboxDeadLetterConflictError,
     OutboxDeadLetterMutationConflictError,
+    PendingRunRequirement,
     PermissionController,
     PermissionMode,
     PlanExitSignal,
@@ -405,6 +408,7 @@ from .runtime import (
     PolicyAction,
     PolicyDecision,
     PostgresRuntimeStore,
+    RunInputRequiredError,
     RunInspection,
     RunInspectionAuthorizationError,
     RunLeaseClaim,
@@ -649,6 +653,8 @@ __all__ = [
     "LearningLedgerOverloadedError",
     "LearningEvent",
     "LearningOwner",
+    "LearningProposalBudgetExceededError",
+    "LearningProposalLedger",
     "LearningOutboxItem",
     "LearningOutboxLeaseError",
     "LearningOutcome",
@@ -770,6 +776,7 @@ __all__ = [
     "PlanExitSignal",
     "PlanQuestionSignal",
     "PermissionController",
+    "PendingRunRequirement",
     "PermissionMode",
     "PlanSignalToolkit",
     "PolicyAction",
@@ -779,6 +786,7 @@ __all__ = [
     "RunLeaseClaim",
     "RunInspection",
     "RunInspectionAuthorizationError",
+    "RunInputRequiredError",
     "RunOwner",
     "RunReconciliationRequiredError",
     "RuntimeBackend",
@@ -865,4 +873,4 @@ __all__ = [
     "trust_pack",
 ]
 
-__version__ = "0.12.2"
+__version__ = "0.13.0"

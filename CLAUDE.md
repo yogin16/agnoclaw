@@ -9,9 +9,9 @@ and LangChain DeepAgents' middleware insights — and runs them on Agno's produc
 ## Tech Stack
 
 - **Runtime**: Python 3.11-3.14, UV package manager
-- **Framework**: Agno >=2.6.4,<2.10; lockfile 2.9.0. Agno 2.6.4 is the legacy lane,
-  2.9.0 is the primary stable lane, and 3.0.0a1 is a quarantined preview as of
-  2026-08-07. Update through `agnoclaw.compat` and the compatibility suite, never by
+- **Framework**: Agno >=2.6.4,<3.1; lockfile 3.0.6. Agno 2.6.4 is the legacy lane,
+  2.9.0 is the stable-v2 lane, and 3.0.6 is the primary stable lane as of
+  2026-09-07. Update through `agnoclaw.compat` and the compatibility suite, never by
   assuming minor-version behavior.
 - **CLI**: Click + Rich + prompt-toolkit (optional extra: `agnoclaw[cli]`)
 - **TUI**: Textual >= 0.85 (optional extra: `agnoclaw[tui]`)
@@ -24,6 +24,7 @@ and LangChain DeepAgents' middleware insights — and runs them on Agno's produc
 ```
 src/agnoclaw/
 ├── agent.py          # AgentHarness — main class, wraps Agno Agent
+├── agno3.py          # Agno 3 ResultStore, media, CodeMode, and history adapters
 ├── capabilities.py   # Immutable capability descriptor and bounded registry
 ├── capability_execution.py # Governed materialization and operation dispatch
 ├── capability_approval.py # Durable exact approval coordination
@@ -31,6 +32,7 @@ src/agnoclaw/
 ├── compat.py         # Central Agno version/capability compatibility boundary
 ├── workspace.py      # Workspace: hierarchical (global → project → workspace)
 ├── memory.py         # Memory hierarchy loader (AGENTS.md, SOUL.md, USER.md, MEMORY.md)
+├── learning_runtime.py # Model-facing governed learning recall/proposal composition
 ├── config.py         # Settings via pydantic-settings + TOML
 ├── teams.py          # Pre-built team factories (research, code, data)
 ├── models/
@@ -57,6 +59,7 @@ src/agnoclaw/
 │   └── daemon.py     # asyncio-based HeartbeatDaemon + CronJob scheduler
 ├── runtime/          # Runtime kernel contracts and transactional authorities
 │   ├── lifecycle.py  # Versioned run state/reducer
+│   ├── requirements.py # Durable human-input requirement and response domain
 │   ├── operations.py # Effect intent/settlement domain
 │   ├── gateway.py    # Async-first fenced OperationGateway
 │   ├── store.py      # RuntimeStore protocol + SQLite authority
@@ -203,6 +206,9 @@ Core `agnoclaw` has zero CLI/TUI deps. Install extras for interfaces and capabil
 - `agnoclaw[browser]` — Playwright-based browser automation
 - `agnoclaw[mcp]` — Model Context Protocol server connectivity
 - `agnoclaw[media]` — Image + PDF reading (PyMuPDF)
+- `agnoclaw[code]` — Agno 3 CodeMode with a harness-owned IPython kernel
+- `agnoclaw[media-s3]` — Agno 3 S3-compatible media storage
+- `agnoclaw[media-gcs]` — Agno 3 Google Cloud media storage
 - `agnoclaw[rag]` — LanceDB + Tantivy + PyMuPDF for knowledge bases
 - `agnoclaw[notebook]` — Jupyter notebook editing (nbformat)
 - `agnoclaw[dev]` — Development tools (pytest, ruff, etc.)

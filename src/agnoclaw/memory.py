@@ -50,7 +50,125 @@ LearningMachine API Notes:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from textwrap import dedent
 from typing import Any
+
+from .compat import (
+    supports_agno_learning_update_budget as _agno_supports_update_budget,
+)
+
+LearningProposalHandler = Callable[..., Awaitable[dict[str, Any]]]
+
+
+def _optional_update_budget(value: int) -> dict[str, Any]:
+    """Pass Agno's update budget only on versions that expose the contract."""
+    return {"max_updates_per_run": value} if _agno_supports_update_budget() else {}
+
+
+class _GovernedLearnedKnowledgeStore:
+    """Agno Learned Knowledge recall plus inert, host-reviewed proposals."""
+
+    def __init__(
+        self,
+        delegate: Any,
+        handler: LearningProposalHandler | None,
+    ) -> None:
+        self._delegate = delegate
+        self._handler = handler
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+    @property
+    def learning_type(self) -> str:
+        return "learned_knowledge"
+
+    @property
+    def schema(self) -> Any:
+        return self._delegate.schema
+
+    @property
+    def was_updated(self) -> bool:
+        # A proposal is intentionally not a learning-store update.
+        return False
+
+    def recall(self, **kwargs: Any) -> Any:
+        return self._delegate.recall(**kwargs)
+
+    async def arecall(self, **kwargs: Any) -> Any:
+        return await self._delegate.arecall(**kwargs)
+
+    def process(self, messages: list[Any], **kwargs: Any) -> None:
+        self._delegate.process(messages, **kwargs)
+
+    async def aprocess(self, messages: list[Any], **kwargs: Any) -> None:
+        await self._delegate.aprocess(messages, **kwargs)
+
+    def build_context(self, data: Any) -> str:
+        return self._delegate.build_context(data)
+
+    def instructions(self) -> str:
+        proposal_guidance = (
+            "Search first for duplicates. Use `propose_learning` only for a "
+            "non-obvious, reusable, actionable "
+            "insight supported by the current run. Do not propose raw facts, "
+            "temporary task state, user-specific preferences, guesses, or duplicates.\n"
+            "- A proposal is inert. It is not trusted or available to future runs "
+            "until an evaluator and authorized host independently review and promote it.\n"
+            "- Never claim that a proposal was saved, learned, approved, or applied."
+            if self._handler is not None
+            else (
+                "This run has read-only access. No tool can save or propose shared "
+                "learning."
+            )
+        )
+        return dedent(
+            f"""\
+            <governed_learning_system>
+            You can search reviewed shared learnings.
+
+            - Use `search_learnings` before relying on prior organizational knowledge.
+            - {proposal_guidance}
+            </governed_learning_system>\
+            """
+        )
+
+    def get_tools(self, **kwargs: Any) -> list[Callable[..., Any]]:
+        # Governed proposals require the async lifecycle path. The delegate is
+        # configured search-only, so this surface cannot write shared memory.
+        return list(self._delegate.get_tools(**kwargs))
+
+    async def aget_tools(self, **kwargs: Any) -> list[Callable[..., Any]]:
+        tools = list(await self._delegate.aget_tools(**kwargs))
+        run_context = kwargs.get("run_context")
+        handler = self._handler
+        if handler is None:
+            return tools
+
+        async def propose_learning(
+            title: str,
+            learning: str,
+            context: str | None = None,
+            tags: list[str] | None = None,
+        ) -> str:
+            """Propose a reusable insight for independent review; this does not save it."""
+            result = await handler(
+                title=title,
+                learning=learning,
+                context=context,
+                tags=tags,
+                run_context=run_context,
+            )
+            if not isinstance(result, dict):
+                raise TypeError("learning proposal handler must return a dictionary")
+            return (
+                f"Proposal captured for independent review: {result['candidate_id']} "
+                "(not active learning)"
+            )
+
+        tools.append(propose_learning)
+        return tools
 
 
 def build_memory_manager(
@@ -133,6 +251,7 @@ def build_learning_machine(
     knowledge=None,
     policy=None,
     scope=None,
+    learning_proposal_handler: LearningProposalHandler | None = None,
 ):
     """
     Build an Agno LearningMachine — the unified memory system.
@@ -307,7 +426,7 @@ def build_learning_machine(
                 db=db,
                 model=model,
                 mode=_policy_mode(policy.user_profile),
-                max_updates_per_run=policy.user_profile.max_updates_per_run,
+                **_optional_update_budget(policy.user_profile.max_updates_per_run),
                 enable_agent_tools=(policy.user_profile.mode is not HarnessLearningMode.ALWAYS),
             )
 
@@ -317,7 +436,7 @@ def build_learning_machine(
                 db=db,
                 model=model,
                 mode=_policy_mode(policy.user_memory),
-                max_updates_per_run=policy.user_memory.max_updates_per_run,
+                **_optional_update_budget(policy.user_memory.max_updates_per_run),
                 enable_agent_tools=(policy.user_memory.mode is not HarnessLearningMode.ALWAYS),
             )
 
@@ -329,7 +448,7 @@ def build_learning_machine(
                 db=db,
                 model=model,
                 mode=_policy_mode(policy.session_context),
-                max_updates_per_run=policy.session_context.max_updates_per_run,
+                **_optional_update_budget(policy.session_context.max_updates_per_run),
                 enable_planning=True,
             )
 
@@ -343,7 +462,7 @@ def build_learning_machine(
                 model=model,
                 mode=LearningMode.AGENTIC,
                 namespace=_namespace,
-                max_updates_per_run=policy.entity_memory.max_updates_per_run,
+                **_optional_update_budget(policy.entity_memory.max_updates_per_run),
                 enable_agent_tools=False,
             )
 
@@ -354,7 +473,7 @@ def build_learning_machine(
                 model=model,
                 mode=LearningMode.AGENTIC,
                 namespace=_namespace,
-                max_updates_per_run=policy.learned_knowledge.max_updates_per_run,
+                **_optional_update_budget(policy.learned_knowledge.max_updates_per_run),
                 enable_agent_tools=True,
                 agent_can_save=False,
                 agent_can_search=True,
@@ -366,7 +485,7 @@ def build_learning_machine(
                 db=db,
                 model=model,
                 mode=LearningMode.AGENTIC,
-                max_updates_per_run=policy.decision_log.max_updates_per_run,
+                **_optional_update_budget(policy.decision_log.max_updates_per_run),
                 enable_agent_tools=True,
                 agent_can_save=False,
                 agent_can_search=True,
@@ -384,12 +503,12 @@ def build_learning_machine(
             )
             if store is not None
         ]
-        return LearningMachine(
+        machine = LearningMachine(
             db=db,
             model=model,
             knowledge=knowledge,
             namespace=_namespace,
-            max_updates_per_run=max(budgets, default=1),
+            **_optional_update_budget(max(budgets, default=1)),
             user_profile=user_profile_config,
             user_memory=user_memory_config,
             session_context=session_context_config,
@@ -397,6 +516,15 @@ def build_learning_machine(
             learned_knowledge=policy_learned_config,
             decision_log=policy_decision_config,
         )
+        if learning_proposal_handler is not None and policy.learned_knowledge is None:
+            raise ValueError("learning_proposal_handler requires learned_knowledge policy")
+        if policy.learned_knowledge is not None:
+            stores = machine.stores
+            stores["learned_knowledge"] = _GovernedLearnedKnowledgeStore(
+                stores["learned_knowledge"],
+                learning_proposal_handler,
+            )
+        return machine
 
     # ── Legacy per-store configs ───────────────────────────────────────────
     entity_config: Any = False

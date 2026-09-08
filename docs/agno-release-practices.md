@@ -1,18 +1,18 @@
 # Agno release-practice audit
 
-Status: primary-source compatibility and architecture input for agnoclaw 0.12.0
+Status: primary-source compatibility and architecture input for agnoclaw 0.13.0
 
-Research date: 2026-08-08; live release/package recheck: 2026-08-28;
-supported evaluation/learning API source recheck: 2026-08-28
+Research date: 2026-08-08; live release/package recheck: 2026-09-07;
+supported evaluation/learning API source recheck: 2026-09-07
 
-Live-source recheck on 2026-08-28: Agno 3.0.1 is the latest stable package. Agno's live documentation index and
+Live-source recheck on 2026-09-07: Agno 3.0.6 is the latest stable package. Agno's live documentation index and
 Learning pages still define vector-backed Learned Knowledge, semantic
 `<relevant_learnings>` context injection, Agentic as its default mode, and
 global/user/custom namespaces. The rendered release page can be stale; release
 admission uses exact repository/package evidence and tested artifacts, never a cached
 marketing page.
 
-Scope: every stable Agno release from 2.6.0 through 3.0.1, the earlier 3.0.0a1
+Scope: every stable Agno release from 2.6.0 through 3.0.6, the earlier 3.0.0a1
 source audit, and upstream changes that materially affect an embeddable agent
 harness. Provider-only additions were reviewed but are recorded here only when they
 change a harness contract.
@@ -46,8 +46,8 @@ model-facing save authority; reviewed promotion remains a separate host action. 
 local benefit gate exercises the actual vector store/context injection with tools
 disabled instead of weakening that boundary merely to match the upstream quickstart.
 
-The production development baseline and lock are Agno 3.0.1. Agno 2.6.4 remains the
-legacy boundary and 2.9.0 remains a required stable-v2 lane. Stable 3.0.1 passed the
+The production development baseline and lock are Agno 3.0.6. Agno 2.6.4 remains the
+legacy boundary and 2.9.0 remains a required stable-v2 lane. Stable 3.0.6 passed the
 full token-free contract suite and deterministic operation, tool-checkpoint, approval,
 outer-model, and learning process-restart probes before admission. The central
 capability report and all three required CI lanes are implemented; this document
@@ -95,7 +95,7 @@ generic queue or session migration system unnecessarily.
 
 ## Release-by-release audit
 
-The “agnoclaw response” column is normative for the 0.12 plan. Links go to the
+The “agnoclaw response” column is normative for the current compatibility plan. Links go to the
 corresponding official GitHub release.
 
 | Release | Harness-relevant upstream change | agnoclaw response and required evidence |
@@ -137,9 +137,15 @@ corresponding official GitHub release.
 | [2.8.6](https://github.com/agno-agi/agno/releases/tag/v2.8.6) | Added background/single-flight metrics refresh, improved hot-path version lookup, UTF-8 handling, audio artifacts, and OpenSearch support. | Adopt single-flight refresh and status visibility patterns. Benchmark import/run overhead and test non-ASCII event/artifact round trips. |
 | [2.8.7](https://github.com/agno-agi/agno/releases/tag/v2.8.7) | Moved synchronous scheduler database calls off the event loop; added advisor-model feedback and component-aware schedule/history tools; made FileSystem toolkit identity configurable; improved toolkit rehydration, audio-result handling, and top-level review propagation; fixed SQLite team loading and zero-valued parameters; and exposed a dependency-pin break. | Retain its event-loop stall, schedule/history scope, stable toolkit identity, rehydration, nested review, artifact, SQLite, zero-value, and dependency-resolution gates. Treat advisor output as untrusted evidence subject to evaluator-independence, ordering-bias, and self-preference controls—not approval or proof. |
 | [2.9.0](https://github.com/agno-agi/agno/releases/tag/v2.9.0) | Added identity-aware, run-only Studio dispatch with caller `user_id`; made dispatch-path component rehydration strict and honor pinned member versions; bound cached tool results to user/session identity; blocked call-time MCP `tool_name` substitution; persisted paused team member runs; preserved toolkit instructions; and repaired A2A metadata plus selected WebSocket workflow versions. | This is the primary 2.x lane. Reuse the upstream security fixes while retaining agnoclaw's stronger invariant: durable tools use the owner-bound operation ledger rather than Agno result caching, and selected capability identity comes from an admitted immutable spec rather than model arguments. Require strict/fail-loud materialization, exact pinned versions, trusted caller propagation, paused-team restart, rehydrated-instruction equality, A2A metadata, and WebSocket-version fixtures. Never expose Studio mutation tools merely to gain run dispatch. |
+| [3.0.1](https://github.com/agno-agi/agno/releases/tag/v3.0.1) | Stabilized v3 with ResultStore offloading, pluggable media storage, CodeMode, normalized run rows, cached tool schemas, and bounded incremental history. | Adopt ResultStore, media, CodeMode, and history behind one capability boundary. Keep agnoclaw's operation ledger and RuntimeBackend authoritative; a host CodeMode kernel is not a sandbox. |
+| [3.0.2](https://github.com/agno-agi/agno/releases/tag/v3.0.2) | Fixed call-site metadata precedence and repaired `allow_shell=False` bypasses in CodeMode on current IPython. | Set the `code` extra floor to 3.0.2. Certify protected metadata precedence and both direct and lazily materialized shell-magic denial without model or network calls. |
+| [3.0.3](https://github.com/agno-agi/agno/releases/tag/v3.0.3) | Added per-page website/folder ingestion and KnowledgeManagementTools. | Do not add a second ingestion or learning-control plane. Future adapters must preserve agnoclaw provenance, consent, and promotion gates. |
+| [3.0.4](https://github.com/agno-agi/agno/releases/tag/v3.0.4) | Renamed KnowledgeManagementTools flags and made path ingestion explicit and confirmable. | Treat the opt-in path posture as compatible evidence, not authorization to bypass workspace containment or durable approvals. |
+| [3.0.5](https://github.com/agno-agi/agno/releases/tag/v3.0.5) | Added explicit embedding error/partial states, retries, and embed-before-replace ordering; added static MCP headers. | Optional RAG adapters must preserve partial/error state if adopted. Keep MCP credentials and headers in agnoclaw's governed client boundary. |
+| [3.0.6](https://github.com/agno-agi/agno/releases/tag/v3.0.6) | Added stateless MCP, protocol modes, a FastMCP client path, and MCP server cards, plus focused fixes. | Make 3.0.6 the primary lock. Keep agnoclaw's governed MCP client and server contract rather than silently swapping protocol ownership; certify imports, runtime construction, and restart behavior on the exact package. |
 
 Cross-lane inspection also confirms that `VectorDb.name_exists` is public on the
-2.6.4 legacy, 2.9.0 stable-v2, and 3.0.1 primary lanes. Agnoclaw uses that exact-name contract for
+2.6.4 legacy, 2.9.0 stable-v2, and 3.0.6 primary lanes. Agnoclaw uses that exact-name contract for
 ambiguous Learned Knowledge reconciliation; it does not treat semantic search as proof
 of presence or absence. The candidate digest is embedded in the bounded external key,
 and the resulting evidence artifact contains digests and a Boolean only.
@@ -159,7 +165,7 @@ after their tenant, cache, learning-write, and reproducibility contracts pass.
 
 The initial [Agno 3.0.0a1](https://github.com/agno-agi/agno/releases/tag/v3.0.0a1)
 audit reviewed tagged source and the migration guide because its release notes were
-minimal. Stable [Agno 3.0.1](https://pypi.org/project/agno/3.0.1/) is now a supported
+minimal. Stable [Agno 3.0.6](https://github.com/agno-agi/agno/releases/tag/v3.0.6) is now the supported
 production dependency after exact-package compatibility and restart certification.
 That support does not make every upstream queue or persistence primitive an agnoclaw
 durability boundary; those surfaces still require their own capability evidence.
@@ -220,6 +226,28 @@ agnoclaw response:
 - isolate every evaluation rollout by tenant, user, session, run, database namespace,
   cache, and learning write policy.
 
+### Stable 3.0 application capabilities
+
+The stable release added ResultStore tool-result offloading, pluggable media storage,
+CodeMode, normalized run rows, and cached tool-schema derivation plus bounded
+incremental history reads. Agnoclaw now adopts the portions that improve ordinary
+harness use without moving its canonical durability boundary:
+
+- ResultStore is automatic on Agno 3 when compression or governed ArtifactStore spill
+  does not already own the output. It covers raw/native tool paths while the operation
+  ledger remains authoritative for governed side effects and settlement.
+- persistent SQLite uses lazy local media storage; S3/GCS and other sync/async Agno
+  MediaStorage implementations are explicit host resources, so credentials and bucket
+  policy never enter the serializable harness spec;
+- CodeMode is an explicit quick/legacy host-kernel adapter with bounded cells/kernels,
+  shell off by default, owner/user/session-scoped identity, database-backed snapshots,
+  and harness-owned shutdown. Awaited tools preserve RuntimeBackend routing, while
+  direct Python bypasses it. It cannot enter durable/service until a backend-owned
+  kernel can prove process death, lease transfer, and snapshot recovery;
+- bounded history reads and tool-schema caching are inherited through the public Agno
+  Agent/tool surfaces. Fresh v3 databases use normalized run rows, but agnoclaw still
+  does not treat those rows as its RuntimeStore or automatically mutate legacy DBs.
+
 ## Adopt, adapt, and avoid
 
 ### Adopt when conformance passes
@@ -230,8 +258,10 @@ agnoclaw response:
 - evaluation Scorers, Cases, Environments, and rollouts;
 - structured MCP results, authorization callbacks, trusted argument injection, and
   protocol authentication primitives;
-- normalized run persistence and the job queue after a stable Agno 3 release passes
-  the agnoclaw contract;
+- ResultStore offloading, media storage, bounded history reads, and tool-schema caching;
+- CodeMode for explicit supervised quick/legacy execution;
+- normalized run persistence as Agno's session projection; the job queue only after
+  its service Worker/RuntimeStore adapter passes the agnoclaw contract;
 - upstream path-safety and private-filesystem helpers as defense in depth.
 
 ### Adapt behind agnoclaw contracts
@@ -263,7 +293,7 @@ agnoclaw response:
 
 During development:
 
-- primary lane: Agno 3.0.1;
+- primary lane: Agno 3.0.6;
 - stable-v2 lane: Agno 2.9.0;
 - legacy lane: Agno 2.6.4, the repository's starting lock and published minimum;
 - preview lane: the next major prerelease, excluded from normal dependency resolution;
@@ -295,6 +325,6 @@ the documented agnoclaw behavior passes its full conformance gates.
 - [Agno GitHub releases](https://github.com/agno-agi/agno/releases)
 - [Agno 2.9.0](https://github.com/agno-agi/agno/releases/tag/v2.9.0)
 - [Agno 2.8.7](https://github.com/agno-agi/agno/releases/tag/v2.8.7)
-- [Agno 3.0.1](https://pypi.org/project/agno/3.0.1/)
+- [Agno 3.0.6](https://github.com/agno-agi/agno/releases/tag/v3.0.6)
 - [Agno 3.0.0a1](https://github.com/agno-agi/agno/releases/tag/v3.0.0a1)
 - [Agno V3 database migration guide](https://github.com/agno-agi/agno/blob/v3.0.0a1/libs/agno/agno/db/migrations/V3_MIGRATION_GUIDE.md)

@@ -603,14 +603,154 @@ class _ContextManagementMixin:
             )
         return session
 
-    async def _save_context_session(self, session: Any) -> bool:
-        """Finish the atomic Agno row write if caller cancellation races commit.
+    async def _save_context_session(
+        self,
+        session: Any,
+        *,
+        runs_to_persist: Sequence[Any] = (),
+    ) -> bool:
+        """Finish a durable Agno context write if caller cancellation races commit.
 
         Returns ``True`` when cancellation arrived after dispatching the write. The
         caller then emits its committed evidence and raises a typed outcome instead of
         reporting false cancellation or abandoning the database coroutine.
         """
-        task = asyncio.create_task(self._agent.asave_session(session))
+        storage = getattr(self._agent, "db", None)
+        normalized = self._uses_normalized_agno_run_storage(storage)
+
+        async def persist() -> None:
+            if normalized:
+                for run in runs_to_persist:
+                    await self._call_agno_storage(
+                        storage,
+                        "upsert_run",
+                        run,
+                        session_id=session.session_id,
+                        user_id=session.user_id,
+                    )
+            await self._agent.asave_session(session)
+            if normalized:
+                for run in runs_to_persist:
+                    persisted = await self._call_agno_storage(
+                        storage,
+                        "get_run",
+                        run.run_id,
+                    )
+                    if persisted is None:
+                        raise HarnessError(
+                            code="CONTEXT_STORAGE_WRITE_INCOMPLETE",
+                            category="context",
+                            message="Agno did not persist the context history record.",
+                            retryable=True,
+                        )
+
+        task = asyncio.create_task(persist())
+        try:
+            await asyncio.shield(task)
+            return False
+        except asyncio.CancelledError:
+            await task
+            return True
+
+    @staticmethod
+    def _uses_normalized_agno_run_storage(storage: Any) -> bool:
+        """Return whether Agno persists session metadata and runs separately."""
+        from agno.db.base import AsyncBaseDb, BaseDb
+
+        from .compat import AgnoFeature, inspect_agno_compatibility
+
+        return isinstance(storage, (BaseDb, AsyncBaseDb)) and inspect_agno_compatibility().has(
+            AgnoFeature.V3_NORMALIZED_RUN_STORAGE
+        )
+
+    @staticmethod
+    async def _call_agno_storage(
+        storage: Any,
+        method_name: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Call either a synchronous or asynchronous Agno database method."""
+        method = getattr(storage, method_name, None)
+        if not callable(method):
+            raise HarnessError(
+                code="CONTEXT_STORAGE_REPLACEMENT_UNSUPPORTED",
+                category="context",
+                message=(
+                    "The configured Agno 3 database cannot persist normalized "
+                    "context replacement."
+                ),
+                retryable=False,
+                details={"missing_method": method_name},
+            )
+        if inspect.iscoroutinefunction(method):
+            return await method(*args, **kwargs)
+        result = await asyncio.to_thread(method, *args, **kwargs)
+        return await result if inspect.isawaitable(result) else result
+
+    async def _save_context_replacement(
+        self,
+        session: Any,
+        *,
+        replacement_run: Any,
+        source_run_ids: Sequence[str],
+    ) -> bool:
+        """Persist real history replacement across Agno 2 and Agno 3 layouts.
+
+        Agno 3 normalizes runs into a table separate from the session row, so
+        ``Agent.asave_session`` alone cannot replace live history. Persist the
+        checkpoint first, then its manifest, and only then retire archived runs.
+        Source rows are retired last, so abrupt loss cannot delete the trajectory
+        before its checkpoint and manifest are durable. The complete operation is
+        shielded against ordinary caller cancellation.
+        """
+        storage = getattr(self._agent, "db", None)
+        normalized = self._uses_normalized_agno_run_storage(storage)
+
+        async def persist() -> None:
+            if normalized:
+                await self._call_agno_storage(
+                    storage,
+                    "upsert_run",
+                    replacement_run,
+                    session_id=session.session_id,
+                    user_id=session.user_id,
+                    run_index=0,
+                )
+            await self._agent.asave_session(session)
+            if normalized and source_run_ids:
+                await self._call_agno_storage(
+                    storage,
+                    "delete_runs",
+                    list(source_run_ids),
+                )
+            if normalized:
+                persisted = await self._call_agno_storage(
+                    storage,
+                    "get_runs",
+                    session_id=session.session_id,
+                    user_id=session.user_id,
+                )
+                rows = persisted[0] if isinstance(persisted, tuple) else persisted
+                persisted_ids = {
+                    run_id
+                    for run in rows or ()
+                    if isinstance((run_id := getattr(run, "run_id", None)), str)
+                    and run_id
+                }
+                if persisted_ids != {replacement_run.run_id}:
+                    raise HarnessError(
+                        code="CONTEXT_STORAGE_REPLACEMENT_INCOMPLETE",
+                        category="context",
+                        message="Agno did not retire every archived context history record.",
+                        retryable=True,
+                        details={
+                            "persisted_run_count": len(persisted_ids),
+                            "expected_run_count": 1,
+                        },
+                    )
+
+        task = asyncio.create_task(persist())
         try:
             await asyncio.shield(task)
             return False
@@ -870,7 +1010,10 @@ class _ContextManagementMixin:
             )
             updated_session = self._clone_context_session(session)
             updated_session.runs = [*(getattr(updated_session, "runs", None) or []), restored]
-            committed_after_cancellation = await self._save_context_session(updated_session)
+            committed_after_cancellation = await self._save_context_session(
+                updated_session,
+                runs_to_persist=(restored,),
+            )
             self._adopt_context_session(session, updated_session)
         finally:
             lease.release()
@@ -1761,6 +1904,13 @@ class _ContextManagementMixin:
                 },
                 status=RunStatus.completed,
             )
+            source_run_ids = tuple(
+                run_id
+                for run in runs
+                if isinstance((run_id := getattr(run, "run_id", None)), str)
+                and run_id
+                and run_id != compacted_run.run_id
+            )
             updated_session = self._clone_context_session(session)
             session_data = dict(getattr(updated_session, "session_data", None) or {})
             session_data[_CONTEXT_MANIFEST_KEY] = updated_manifest.to_dict()
@@ -1769,7 +1919,11 @@ class _ContextManagementMixin:
             updated_session.runs = [compacted_run]
             if maintenance_lock is not None:
                 maintenance_lock.validate()
-            committed_after_cancellation = await self._save_context_session(updated_session)
+            committed_after_cancellation = await self._save_context_replacement(
+                updated_session,
+                replacement_run=compacted_run,
+                source_run_ids=source_run_ids,
+            )
             self._adopt_context_session(session, updated_session)
         finally:
             if lease is not None:

@@ -2,7 +2,51 @@
 
 This project follows Keep a Changelog structure.
 
-## Unreleased
+## [0.13.0] - 2026-09-08
+
+### Added
+
+- Durable runs can now pause on Agno confirmation, user-input, feedback, and
+  external-execution requirements. `pending_requirements()` exposes a bounded,
+  owner-authorized view; `Respond(request_id, payload)` persists the answer before
+  continuation and safely replays it after worker restart. `wait()` reports the
+  boundary with typed `RunInputRequiredError` instead of pretending the run finished.
+- Models can propose institutional learnings through an inert, replay-safe,
+  per-run-budgeted `propose_learning` tool. Proposals enter the existing candidate
+  ledger for independent evaluation and host promotion; the model never receives
+  direct shared-memory write authority.
+- Agno 3-native tool-result offloading is now `auto` by default. Oversized raw/native
+  tool results use a configured `ResultStore` with bounded previews and read/search
+  handles whenever compression or Agnoclaw's governed ArtifactStore spill does not
+  already own the boundary.
+- Persistent SQLite harnesses now receive lazy local Agno media storage by default;
+  callers can pass any Agno `MediaStorage`/`AsyncMediaStorage`, including S3 and GCS
+  through the new `media-s3` and `media-gcs` extras. No media directory is created
+  until the first upload.
+- `AgentHarness(code_mode=True)` adopts Agno 3 CodeMode behind the `code` extra. It
+  replaces a wide tool schema with a bounded persistent host IPython kernel, disables
+  its shell helper by default, isolates kernel/snapshot identity by harness owner and
+  user, and shuts kernels plus their background loop down with the harness. Awaited
+  tool handles retain runtime backend routing, but direct Python does not; CodeMode
+  remains quick/legacy-only until backend-owned kernel recovery is certified.
+- The compatibility report now probes Agno 3 ResultStore, media storage, CodeMode, and
+  bounded incremental-history contracts. Harness specs record which of those native
+  capabilities are active without including storage paths or credentials.
+
+### Changed
+
+- Agno 3.0.6 is now the primary development and CI lane while 2.9.0 and 2.6.4
+  remain certified compatibility boundaries. The `code` extra requires Agno 3.0.2+
+  so call-site metadata wins over component metadata and `allow_shell=False` cannot
+  be bypassed by lazy IPython magic registration.
+
+### Fixed
+
+- Harness-owned CodeMode shutdown now cancels and drains Agno's debounced snapshot
+  tasks before closing the background loop, preventing Python 3.12+ unraisable-task
+  failures during deterministic CI teardown.
+- The default Agno `ResultStore` adapter uses `inspect.iscoroutinefunction` instead of
+  Agno 3.0.6's deprecated asyncio alias, preserving warning-clean Python 3.14 support.
 
 ## [0.12.2] - 2026-08-29
 

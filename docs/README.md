@@ -22,7 +22,7 @@ order.
 - [World-class harness strategy](world-class-harness.md) — 2026 primary-source research,
   product decision, competitive lessons, and phased roadmap.
 - [Agno release-practice audit](agno-release-practices.md) — every stable Agno release
-  from 2.6.0 through 3.0.1, the retained 3.0 alpha source evidence, and agnoclaw's tested
+  from 2.6.0 through 3.0.6, the retained 3.0 alpha source evidence, and agnoclaw's tested
   adopt/adapt/avoid decisions.
 - [Pi 0.84 harness audit](pi-harness-audit.md) — released lane/session/operation/storage
   contracts, scaffold maturity, unreleased v3 signals, and agnoclaw reconciliation.
@@ -38,6 +38,8 @@ order.
 
 - [Harness architecture](architecture.md) — target kernel, state machine, events,
   context, capabilities, policy, durability, and invariants.
+- [Code execution models](code-execution.md) — overlap and composition across built-in
+  tools, runtime backends, LLMSandbox, Agno CodeMode, notebooks, and session paths.
 - [Run lifecycle and RuntimeStore](runtime-lifecycle.md) — implemented `start/get_run`,
   `HarnessRun`, state/command semantics, SQLite authority, cursors, bounded startup
   recovery, and the current continuation boundary.

@@ -239,10 +239,12 @@ from .recovery import (
     RuntimeRecoveryStatus,
     recover_pending_runs,
 )
+from .requirements import PendingRunRequirement
 from .run_handle import (
     HarnessRun,
     RunControlUnavailableError,
     RunHeartbeat,
+    RunInputRequiredError,
     RunReconciliationRequiredError,
     RunWaitError,
 )
@@ -462,6 +464,7 @@ __all__ = [
     "PermissionController",
     "PermissionMode",
     "PermissionRequest",
+    "PendingRunRequirement",
     "PostRunHook",
     "PostgresRuntimeStore",
     "PostgresWriterAuthorityError",
@@ -497,6 +500,7 @@ __all__ = [
     "RunOwner",
     "RunInspection",
     "RunInspectionAuthorizationError",
+    "RunInputRequiredError",
     "RunRecoveryRecommendation",
     "RunRevisionConflictError",
     "RunReconciliationRequiredError",

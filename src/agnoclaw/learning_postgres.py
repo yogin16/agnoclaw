@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -14,6 +15,7 @@ from .learning_candidates import (
     _CANDIDATE_TRANSITIONS,
     LEARNING_LEDGER_SCHEMA_VERSION,
     CandidateAction,
+    CandidateAuthor,
     CandidateConflictError,
     CandidateEvaluation,
     CandidateEvaluationNotFoundError,
@@ -41,8 +43,10 @@ from .learning_candidates import (
     LearningOutcome,
     LearningOutcomeNotFoundError,
     LearningOwner,
+    LearningProposalBudgetExceededError,
     LearningReconciliationWorkerLease,
     LearningReconciliationWorkerLeaseError,
+    LearningTarget,
     PromotionActor,
     ReconciliationCursor,
     ReconciliationCursorScopeError,
@@ -56,6 +60,7 @@ from .learning_candidates import (
     _learning_effectiveness_summary,
     _learning_event,
     _now,
+    _validate_model_proposal_budget_request,
     evaluation_archive_entry,
 )
 from .runtime.errors import HarnessError
@@ -557,12 +562,97 @@ class PostgresLearningLedger:
             (event.candidate_id, event.sequence, event_json, event.occurred_at),
         )
 
-    def create_candidate(self, candidate: LearningCandidate) -> CandidateRecord:
+    def _create_candidate_locked(
+        self,
+        conn: Any,
+        candidate: LearningCandidate,
+    ) -> CandidateRecord:
         record = CandidateRecord(candidate=candidate)
+        existing = conn.execute(
+            """
+            SELECT candidate_digest, record_json FROM learning_candidates
+            WHERE candidate_id = %s FOR UPDATE
+            """,
+            (candidate.candidate_id,),
+        ).fetchone()
+        if existing is not None:
+            if existing["candidate_digest"] != candidate.digest:
+                raise CandidateConflictError(candidate.candidate_id)
+            return self._record(existing)
+        if candidate.supersedes_candidate_id is not None:
+            parent = self._get_locked(
+                conn,
+                candidate.supersedes_candidate_id,
+                owner=candidate.owner,
+            )
+            if parent.state is CandidateState.DELETED:
+                raise CandidateTransitionError(
+                    candidate.supersedes_candidate_id,
+                    state=parent.state,
+                    action="supersede",
+                )
+            if parent.candidate.target is not candidate.target:
+                raise HarnessError(
+                    code="LEARNING_CANDIDATE_TARGET_CONFLICT",
+                    category="learning",
+                    message="An edited candidate cannot change learning target.",
+                    retryable=False,
+                    details={"candidate_id": candidate.candidate_id},
+                )
+        conn.execute(
+            """
+            INSERT INTO learning_candidates(
+                candidate_id, candidate_digest, tenant_id, storage_namespace,
+                state, revision, content_storage_key, record_json, created_at,
+                updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                candidate.candidate_id,
+                candidate.digest,
+                candidate.tenant_id,
+                candidate.storage_namespace,
+                record.state.value,
+                record.revision,
+                candidate.content_artifact.storage_key,
+                _canonical_json(record.to_dict()),
+                candidate.created_at,
+                record.updated_at,
+            ),
+        )
+        self._save_event(conn, None, record)
+        return record
+
+    def create_candidate(self, candidate: LearningCandidate) -> CandidateRecord:
         with self._transaction() as conn:
             conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 (f"agnoclaw.learning.candidate:{candidate.candidate_id}",),
+            )
+            record = self._create_candidate_locked(conn, candidate)
+        return record
+
+    def create_candidate_with_run_budget(
+        self,
+        candidate: LearningCandidate,
+        *,
+        source_run_id: str,
+        maximum: int,
+    ) -> CandidateRecord:
+        """Create one model proposal under an atomic owner/run quota."""
+        _validate_model_proposal_budget_request(
+            candidate,
+            source_run_id=source_run_id,
+            maximum=maximum,
+        )
+        owner_lock = (
+            "agnoclaw.learning.proposal:"
+            f"{candidate.owner.digest}:{source_run_id}"
+        )
+        with self._transaction() as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (owner_lock,),
             )
             existing = conn.execute(
                 """
@@ -575,48 +665,30 @@ class PostgresLearningLedger:
                 if existing["candidate_digest"] != candidate.digest:
                     raise CandidateConflictError(candidate.candidate_id)
                 return self._record(existing)
-            if candidate.supersedes_candidate_id is not None:
-                parent = self._get_locked(
-                    conn,
-                    candidate.supersedes_candidate_id,
-                    owner=candidate.owner,
-                )
-                if parent.state is CandidateState.DELETED:
-                    raise CandidateTransitionError(
-                        candidate.supersedes_candidate_id,
-                        state=parent.state,
-                        action="supersede",
-                    )
-                if parent.candidate.target is not candidate.target:
-                    raise HarnessError(
-                        code="LEARNING_CANDIDATE_TARGET_CONFLICT",
-                        category="learning",
-                        message="An edited candidate cannot change learning target.",
-                        retryable=False,
-                        details={"candidate_id": candidate.candidate_id},
-                    )
-            conn.execute(
+            count = conn.execute(
                 """
-                INSERT INTO learning_candidates(
-                    candidate_id, candidate_digest, tenant_id, storage_namespace,
-                    state, revision, content_storage_key, record_json, created_at,
-                    updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                SELECT COUNT(*) AS candidate_count
+                FROM learning_candidates AS c
+                WHERE c.tenant_id IS NOT DISTINCT FROM %s
+                  AND c.storage_namespace = %s
+                  AND c.record_json::jsonb #>> '{candidate,target}' = %s
+                  AND c.record_json::jsonb #>> '{candidate,created_by}' = %s
+                  AND (c.record_json::jsonb #> '{candidate,source_run_ids}') ? %s
                 """,
                 (
-                    candidate.candidate_id,
-                    candidate.digest,
                     candidate.tenant_id,
                     candidate.storage_namespace,
-                    record.state.value,
-                    record.revision,
-                    candidate.content_artifact.storage_key,
-                    _canonical_json(record.to_dict()),
-                    candidate.created_at,
-                    record.updated_at,
+                    LearningTarget.LEARNED_KNOWLEDGE.value,
+                    CandidateAuthor.AGENT.value,
+                    source_run_id,
                 ),
-            )
-            self._save_event(conn, None, record)
+            ).fetchone()
+            if int(count["candidate_count"]) >= maximum:
+                raise LearningProposalBudgetExceededError(
+                    source_run_id=source_run_id,
+                    maximum=maximum,
+                )
+            record = self._create_candidate_locked(conn, candidate)
         return record
 
     def get_candidate(
@@ -632,6 +704,34 @@ class PostgresLearningLedger:
                 owner=owner,
                 for_update=False,
             )
+
+    def find_candidate_by_digest_prefix(
+        self,
+        digest_prefix: str,
+        *,
+        owner: LearningOwner,
+    ) -> CandidateRecord | None:
+        if re.fullmatch(r"[0-9a-f]{32}", digest_prefix) is None:
+            raise ValueError("candidate digest prefix must contain 32 lowercase hex digits")
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT record_json FROM learning_candidates
+                WHERE tenant_id IS NOT DISTINCT FROM %s
+                  AND storage_namespace = %s
+                  AND candidate_digest LIKE %s
+                ORDER BY candidate_id LIMIT 2
+                """,
+                (owner.tenant_id, owner.storage_namespace, f"sha256:{digest_prefix}%"),
+            ).fetchall()
+        if len(rows) > 1:
+            raise HarnessError(
+                code="LEARNING_CANDIDATE_DIGEST_AMBIGUOUS",
+                category="learning",
+                message="A recalled learning digest does not identify one candidate.",
+                retryable=False,
+            )
+        return self._record(rows[0]) if rows else None
 
     def list_candidates(
         self,

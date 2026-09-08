@@ -1,8 +1,8 @@
 # Governed learning candidates
 
-Status: v0.12 development preview
+Status: v0.13 implemented candidate and proposal boundary
 
-Last updated: 2026-08-17
+Last updated: 2026-09-07
 
 This is agnoclaw's boundary between an agent proposing a learning and the application
 trusting it. A candidate is inert, immutable, scoped data. It is never inserted into
@@ -115,6 +115,14 @@ Candidate content is not stored in the SQLite record.
 
 Reuse of `candidate_id` is idempotent only for the same immutable candidate digest. A
 different payload fails with `LEARNING_CANDIDATE_CONFLICT`.
+
+Reviewed Learned Knowledge also exposes a narrow model-facing `propose_learning`
+tool during an admitted durable run. The model supplies a title, learning, optional
+context, and tags; Agnoclaw derives the candidate ID from the exact run, scope, and
+normalized content. SQLite and PostgreSQL enforce `max_updates_per_run` atomically by
+owner and source run. A replay returns the same candidate, while quota exhaustion raises
+`LEARNING_PROPOSAL_BUDGET_EXCEEDED`. This path never evaluates, promotes, or directly
+writes Agno's shared learning store.
 
 An edit creates a new candidate and sets `supersedes_candidate_id`; it never rewrites the
 old record. The ledger verifies that the predecessor is visible in the same scope and
@@ -296,7 +304,7 @@ batch = await harness.observe_learning_reconciliation_page(
 ```
 
 This requires the version-probed public `VectorDb.name_exists` contract, which passes
-on the 2.6.4 legacy, 2.9.0 stable-v2, and 3.0.1 primary lanes. It never calls semantic search. The
+on the 2.6.4 legacy, 2.9.0 stable-v2, and 3.0.6 primary lanes. It never calls semantic search. The
 exact Agno title contains a 128-bit prefix of the immutable candidate digest, and the
 complete ledger reference is bounded to 512 characters. The observer stages only the
 candidate/observer digests, revision, effect kind, exact-key digest, and Boolean

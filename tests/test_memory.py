@@ -287,7 +287,7 @@ def test_build_learning_machine_session_context_opt_in():
 def test_build_learning_machine_explicit_policy_uses_scoped_configs():
     """The v0.12 adapter configures each store and bounds extraction work."""
     from agnoclaw.learning import LearningProfile, LearningScope
-    from agnoclaw.memory import build_learning_machine
+    from agnoclaw.memory import _agno_supports_update_budget, build_learning_machine
     from agnoclaw.runtime import ExecutionContext
 
     policy = LearningProfile.personal_and_session(
@@ -328,11 +328,12 @@ def test_build_learning_machine_explicit_policy_uses_scoped_configs():
             scope=scope,
         )
 
-    assert profile_config.call_args.kwargs["max_updates_per_run"] == 4
-    assert memory_config.call_args.kwargs["max_updates_per_run"] == 4
-    assert session_config.call_args.kwargs["max_updates_per_run"] == 4
+    for config in (profile_config, memory_config, session_config, mock_lm):
+        if _agno_supports_update_budget():
+            assert config.call_args.kwargs["max_updates_per_run"] == 4
+        else:
+            assert "max_updates_per_run" not in config.call_args.kwargs
     assert mock_lm.call_args.kwargs["namespace"] == scope.storage_namespace
-    assert mock_lm.call_args.kwargs["max_updates_per_run"] == 4
 
 
 def test_build_learning_machine_entity_memory_mode_propagated():

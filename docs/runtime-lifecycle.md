@@ -1,6 +1,6 @@
 # Run lifecycle and RuntimeStore
 
-Status: 0.12 development preview; lifecycle, both store authorities, operation ledger,
+Status: 0.13 implemented lifecycle; both store authorities, operation ledger,
 store-issued execution leases, durable registered-capability approvals,
 artifact-backed successful-result recovery, and conservative startup classification
 implemented; exact pre-model request-checkpoint continuation plus a conditional Agno
@@ -292,7 +292,8 @@ from agnoclaw import Fork, Pause, Respond, Resume, Steer
 
 await run.command(Pause("operator inspection"))
 await run.command(Resume())
-await run.command(Respond("approval-17", {"approved": True}))
+pending = await run.pending_requirements()
+await run.command(Respond(pending[0].request_id, {"name": "Ada"}))
 await run.command(Steer("Prioritize database evidence"))
 await run.command(Fork(from_step=17))
 ```
@@ -310,13 +311,20 @@ Current execution boundary:
 - a reattached handle on a non-owning harness fails pause, resume, and steering with
   `RUN_CONTROL_OWNER_UNAVAILABLE` before recording an accepted transition;
 - a late pause or steer fails instead of pretending it affected the model;
+- an Agno confirmation, user-input, feedback, or external-execution requirement is
+  checkpointed to the ArtifactStore before the run enters `waiting_for_input`;
+- `wait()` raises retryable `RunInputRequiredError` at that boundary. The owner may
+  inspect bounded `PendingRunRequirement` values through `pending_requirements()` and
+  respond from the original or a reattached harness. Accepted responses are persisted
+  before provider continuation and replay after worker restart without redispatch;
 - ordinary response IDs are bound by the lifecycle reducer. An approval response is
   stricter: the store requires the exact settled approval state and decision digest,
   so raw `Respond(..., {"approved": true})` cannot grant authority;
 - fork currently fails with `RUN_FORK_CHECKPOINT_REQUIRED`: the request checkpoint is
   not an effect-capable step checkpoint and cannot safely support time travel.
 
-These limitations are deliberate truthfulness, not the final 0.12 command contract.
+CodeMode is excluded from this durable continuation path because its local kernel is
+not recoverable by another worker. These limitations are deliberate truthfulness.
 
 ## Events and cursors
 

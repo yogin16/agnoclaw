@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from unittest.mock import patch
 
 import pytest
 from agno.agent import Agent
@@ -16,6 +17,7 @@ from agnoclaw.compat import (
     inspect_agno_compatibility,
     parse_agno_version,
     require_supported_agno,
+    supports_agno_learning_update_budget,
 )
 from agnoclaw.runtime import AgnoCapabilityError, AgnoVersionError
 
@@ -31,6 +33,7 @@ from agnoclaw.runtime import AgnoCapabilityError, AgnoVersionError
         ("3.0.0a1", AgnoLane.PREVIEW),
         ("3.0.0", AgnoLane.STABLE_V3),
         ("3.0.1", AgnoLane.STABLE_V3),
+        ("3.0.6", AgnoLane.STABLE_V3),
         ("3.1.0a1", AgnoLane.PREVIEW),
         ("2.6.3", AgnoLane.UNSUPPORTED),
         ("3.1.0", AgnoLane.UNSUPPORTED),
@@ -50,6 +53,12 @@ def test_parse_agno_version_rejects_unknown_shape():
     assert exc.value.code == "AGNO_VERSION_UNSUPPORTED"
 
 
+def test_learning_update_budget_tracks_its_upstream_introduction():
+    assert not supports_agno_learning_update_budget("2.6.4")
+    assert supports_agno_learning_update_budget("2.8.1")
+    assert supports_agno_learning_update_budget("3.0.6")
+
+
 def test_installed_supported_report_has_core_contracts():
     report = inspect_agno_compatibility()
 
@@ -67,6 +76,14 @@ def test_installed_supported_report_has_core_contracts():
         and callable(getattr(Agent, "acancel_run", None))
         and callable(getattr(Agent, "acontinue_run", None))
     )
+
+
+def test_code_mode_is_not_admitted_before_agno_3_0_2_shell_fix():
+    with patch("agnoclaw.compat.installed_agno_version", return_value="3.0.1"):
+        report = inspect_agno_compatibility()
+
+    assert report.lane is AgnoLane.STABLE_V3
+    assert not report.has(AgnoFeature.V3_CODE_MODE)
 
 
 def test_report_require_raises_actionable_capability_error():

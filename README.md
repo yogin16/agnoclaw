@@ -7,16 +7,8 @@ Skills, policy and permission hooks, a transactional run lifecycle, scoped artif
 and governed learning. It is a Python library first: no required gateway, editor, or
 hosted control plane.
 
-> **0.12 release-candidate status:** security, lifecycle, effects, artifacts, approvals,
-> governed-learning, and durable-scheduler foundations are implemented and tested.
-> Schema-v12 SQLite/PostgreSQL scheduling has deterministic occurrences, leased/fenced
-> attempts, lifecycle reattachment, retries, misfires, overlap policy, and learning
-> consent. Artifact-first context, governed spill, declared capabilities, deferred MCP 2.0, and read-only Agno context
-> queries work; raw extensions are rejected by `start()`. Authenticated AgentOS remote
-> lifecycle parity is implemented; JWT/proxy certification and live-provider proof remain
-> open. Improvement evidence, exact pre-model recovery, fresh-process subjects, and a strict no-network Docker evaluation profile
-> work; VM/provider-egress certification and arbitrary mid-model/tool-stack
-> continuation remain open. Follow the [live implementation record](docs/releases/v0.12.0-progress.md) for evidence and limitations.
+> **0.13 release:** Agno 3.0.6 is the default lock, with native large-result/media offloading, opt-in CodeMode, bounded normalized history, durable human-input continuation, and inert model-authored learning proposals. CodeMode is a trusted host-kernel interface; RuntimeBackend/LLMSandbox owns containment, and the operation ledger remains the durable effect authority. Agno 2.6.4 and 2.9.0 remain compatibility lanes. See the
+> [compatibility matrix](docs/compatibility.md) for exact evidence and limitations.
 
 ## Install
 
@@ -27,11 +19,13 @@ pip install agnoclaw                    # core; strings or an AgnoModelFactory
 pip install "agnoclaw[anthropic]"       # recommended Claude setup
 pip install "agnoclaw[local]"           # local Ollama
 pip install "agnoclaw[cli]"             # CLI and async REPL
-pip install "agnoclaw[tui]"             # Textual TUI
 pip install "agnoclaw[postgres]"        # PostgreSQL runtime stores
 pip install "agnoclaw[mcp]"             # MCP 2.0 deferred tool ingress
 pip install "agnoclaw[server]"          # AgentOS + remote lifecycle HTTP edge
-pip install "agnoclaw[full]"            # Claude + web + scheduler + TUI
+pip install "agnoclaw[code]"            # opt-in Agno 3 host-kernel CodeMode
+pip install "agnoclaw[media-s3]"        # Agno 3 S3-compatible media offloading
+pip install "agnoclaw[media-gcs]"       # Agno 3 Google Cloud media offloading
+pip install "agnoclaw[full]"            # Claude + opt-in host CodeMode + web/scheduler/TUI
 ```
 
 ## Run an agent
@@ -56,12 +50,7 @@ harness = AgentHarness("ollama:qwen3:8b")  # local; Ollama must be running
 
 ## Choose runtime semantics
 
-The 0.12 preview exposes `quick`, `durable`, and `service` profiles; the no-argument
-default remains `legacy` only for migration compatibility. Start new short-running
-work with `HarnessConfig.quick()` or `AgentHarness(profile="quick")`. Durable/service
-construction fails early unless its required runtime and artifact stores are explicit;
-service additionally requires PostgreSQL runtime and Agno storage. Profile defaults,
-prerequisites, and current certification limits are in the
+The preview exposes `quick`, `durable`, and `service` profiles; the no-argument `legacy` default remains only for migration compatibility. Start new short-running work with `HarnessConfig.quick()` or `AgentHarness(profile="quick")`. Durable/service construction requires explicit runtime and artifact stores; service additionally requires PostgreSQL runtime and Agno storage. See
 [configuration reference](docs/configuration.md#runtime-profiles).
 
 For streaming compatibility:
@@ -93,14 +82,25 @@ result = await run.wait()
 await harness.aclose(policy="drain")
 ```
 
+If Agno pauses a durable run for confirmation, user input, feedback, or an external
+execution result, `wait()` raises `RunInputRequiredError`. Inspect the bounded request
+and continue it from the same or a reattached harness:
+
+```python
+from agnoclaw import Respond, RunInputRequiredError
+
+try:
+    result = await run.wait()
+except RunInputRequiredError:
+    pending = await run.pending_requirements()
+    await run.command(Respond(pending[0].request_id, {"name": "Ada"}))
+    result = await run.wait()
+```
+
 The lifecycle persists intent, state, terminal results, and content-minimized normalized trajectory through a `RuntimeStore`; ambiguous outcomes are never blindly retried. Recovery continues from settled pre-model/result/evidence boundaries; exact-owner startup and reconciliation scans do not promise general mid-model restart. See [run lifecycle](docs/runtime-lifecycle.md),
 [operations and recovery](docs/operations-and-recovery.md), and [artifacts](docs/artifacts.md).
 
-With a durable artifact store, `start(..., persist_output=True)` uses bounded provider
-streaming and `run.output()` replays authorized text segments by cursor. Authenticated
-remote lifecycle starts default this option to true. The final `wait()` result remains
-authoritative; output replay does not pretend an interrupted provider call is safe to
-resume.
+With a durable artifact store, `start(..., persist_output=True)` uses bounded provider streaming and `run.output()` replays authorized text segments by cursor. Authenticated remote starts default it to true. The final `wait()` result remains authoritative; replay does not imply an interrupted provider call is safe to resume.
 
 ## Embed with trusted identity
 
@@ -152,11 +152,11 @@ result = await harness.arun(
 )
 ```
 
-Scoped read/replace/forget administration is post-verified. Candidate capture,
-evaluation, promotion/rollback, unknown-effect discovery, and evidence-bound
-reconciliation plus an owner-scoped leased/fenced/checkpointed maintenance worker are implemented on SQLite and PostgreSQL.
-Automatic promotion remains off until custom backend observers,
-production worker certification, deletion proof, and model-backed no-learning benefit pass. Start with
+With reviewed Learned Knowledge enabled, the model may call `propose_learning` under
+the policy's per-run update budget. The call only creates an inert candidate; an
+independent evaluator and authorized host must still promote it before future recall.
+
+Scoped read/replace/forget administration is post-verified. Candidate capture, evaluation, promotion/rollback, unknown-effect discovery, evidence-bound reconciliation, and the leased/fenced maintenance worker are implemented on SQLite and PostgreSQL. Automatic promotion remains off pending custom-backend observers, production worker certification, deletion proof, and model-backed no-learning benefit. Start with
 [learning](docs/learning.md), [administration](docs/learning-administration.md), and [governed candidates](docs/learning-candidates.md).
 
 ## Skills, workspace, tools, and backends
@@ -218,11 +218,7 @@ and the [Lilian Weng research audit](docs/lilian-weng-harness-audit.md).
 
 ## Compatibility and quality
 
-The current development lock is Agno 3.0.1. Agno 2.6.4 remains the legacy lane and
-2.9.0 remains a required stable-v2 compatibility lane. Schema-v12 is current. The
-full token-free contract suite and deterministic process-restart probes certify all
-three exact Agno boundaries; real-service, chaos, soak, provider-backed, and hosted-CI
-gates remain separately tracked because unit count alone is not a production claim.
+The development lock is Agno 3.0.6; 2.6.4 remains legacy and 2.9.0 stable-v2. Schema-v12 is current. Token-free contracts and deterministic restart probes certify all three boundaries; real-service, chaos, soak, provider-backed, and hosted-CI gates remain separate.
 
 - [Compatibility matrix](docs/compatibility.md)
 - [Evaluation and release gates](docs/evaluation.md)

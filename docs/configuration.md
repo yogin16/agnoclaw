@@ -175,6 +175,9 @@ pip install "agnoclaw[openai]"
 pip install "agnoclaw[google]"
 pip install "agnoclaw[local]"
 pip install "agnoclaw[mcp]"
+pip install "agnoclaw[code]"
+pip install "agnoclaw[media-s3]"
+pip install "agnoclaw[media-gcs]"
 ```
 
 Unsupported or missing capabilities fail with a stable compatibility error before a
@@ -399,6 +402,56 @@ model results, or child runs; see [Durable artifacts](artifacts.md#model-context
 | `max_context_tokens` / `AGNOCLAW_MAX_CONTEXT_TOKENS` | unset | Positive provider context budget used for exact-tokenizer or deterministic-fallback accounting. |
 | `auto_compact_context` / `AGNOCLAW_AUTO_COMPACT_CONTEXT` | `false` | Archive-first automatic preflight at 90%; requires `max_context_tokens` and `artifact_store`. |
 | `max_inline_output_chars` / `AGNOCLAW_MAX_INLINE_OUTPUT_CHARS` | unset | Spill larger governed registered-capability and lifecycle first-party-tool results to verified artifacts; requires `artifact_store` and `start()`. |
+
+## Agno 3 result, media, and code execution
+
+Agno 3's native ResultStore covers large outputs from raw tools, built-ins, and other
+Agno-native paths that are outside `max_inline_output_chars`. The default `auto` mode
+enables it only when Agno 3 is installed, an Agno database exists, and neither
+compression nor governed ArtifactStore spill already owns the same output boundary.
+Explicit conflicting owners fail during construction instead of nesting references.
+
+| Field / environment variable | Default | Contract |
+|---|---:|---|
+| `agno_tool_result_offloading` / `AGNOCLAW_AGNO_TOOL_RESULT_OFFLOADING` | `auto` | `auto`, `enabled`, or `disabled`; Agno 3 only. |
+| `agno_tool_result_threshold_chars` / `AGNOCLAW_AGNO_TOOL_RESULT_THRESHOLD_CHARS` | `16000` | Native tool-result offload threshold. |
+| `agno_tool_result_ttl_seconds` / `AGNOCLAW_AGNO_TOOL_RESULT_TTL_SECONDS` | unset | Optional 60-second to one-year retention bound. |
+| `agno_media_offloading` / `AGNOCLAW_AGNO_MEDIA_OFFLOADING` | `auto` | Lazy local storage for persistent SQLite; explicit storage is required for service/cloud use. |
+| `agno_media_storage_path` / `AGNOCLAW_AGNO_MEDIA_STORAGE_PATH` | `~/.agnoclaw/media` | Local media root; created only on first upload. |
+
+Pass an Agno storage object to select a deployment backend without putting credentials
+in TOML or the immutable harness spec:
+
+```python
+from agno.media.storage.s3 import S3MediaStorage
+from agnoclaw import AgentHarness
+
+harness = AgentHarness(
+    media_storage=S3MediaStorage(bucket="agent-media", prefix="agnoclaw/"),
+)
+```
+
+`code_mode=True` replaces the ordinary tool list with Agno's CodeMode toolkit. The
+model receives one programmable kernel instead of every injected tool schema. Tool
+handles remain backed by the original Agno/Agnoclaw functions, kernel snapshots use
+the Agno database FileSystem, and raw owner/user/session identifiers are hashed before
+they enter kernel or snapshot identity.
+
+CodeMode's IPython kernel is a host child process even when its awaitable Bash/file
+handles route through `LLMSandboxBackend`. Direct Python imports, `open`, `subprocess`,
+and sockets bypass those handles; `code_mode_allow_shell=false` only removes Agno's
+shell helper. It is therefore explicit-only and currently limited to `quick`/`legacy`.
+Use backend-routed Bash with CodeMode disabled when containment is required. See
+[Code execution models](code-execution.md) for the complete overlap matrix.
+
+| Field / environment variable | Default | Contract |
+|---|---:|---|
+| `enable_code_mode` / `AGNOCLAW_ENABLE_CODE_MODE` | `false` | Requires `agnoclaw[code]` and Agno 3. |
+| `code_mode_allow_shell` / `AGNOCLAW_CODE_MODE_ALLOW_SHELL` | `false` | Enables CodeMode's shell helper; does not make Python itself a sandbox. |
+| `code_mode_snapshot` / `AGNOCLAW_CODE_MODE_SNAPSHOT` | `true` | Persist bounded kernel variables through Agno FileSystem when a DB is present. |
+| `code_mode_timeout_seconds` / `AGNOCLAW_CODE_MODE_TIMEOUT_SECONDS` | `300` | Hard per-cell execution bound. |
+| `code_mode_idle_ttl_seconds` / `AGNOCLAW_CODE_MODE_IDLE_TTL_SECONDS` | `1800` | Idle kernel eviction time. |
+| `code_mode_max_kernels` / `AGNOCLAW_CODE_MODE_MAX_KERNELS` | `4` | Per-harness live-kernel cap. |
 
 ## Observability and inspection
 
