@@ -250,6 +250,16 @@ def _harness(
     return harness, runtime_store
 
 
+async def _wait_for_agent_calls(agent_type: type[ControlledAgent], expected: int) -> None:
+    """Wait for worker dispatch without assuming a loaded runner schedules promptly."""
+
+    async def wait_until_reached() -> None:
+        while agent_type.calls < expected:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_until_reached(), timeout=2)
+
+
 @pytest.mark.asyncio
 async def test_lifecycle_live_presentation_streams_inside_settled_model_operation(tmp_path):
     from agnoclaw.runtime.presentation import LiveRunPresentation
@@ -1456,11 +1466,7 @@ async def test_lifecycle_runs_serialize_same_session_and_overlap_other_sessions(
     harness, _ = _harness(tmp_path)
     same_first = await harness.start("same-first", session_id="same")
     same_second = await harness.start("same-second", session_id="same")
-    for _ in range(50):
-        if ControlledAgent.calls == 1:
-            break
-        await asyncio.sleep(0.005)
-    await asyncio.sleep(0.01)
+    await _wait_for_agent_calls(ControlledAgent, 1)
     assert ControlledAgent.calls == 1
     ControlledAgent.release.set()
     await asyncio.gather(same_first.wait(), same_second.wait())
@@ -1469,10 +1475,7 @@ async def test_lifecycle_runs_serialize_same_session_and_overlap_other_sessions(
     other_harness, _ = _harness(tmp_path / "other")
     first = await other_harness.start("one", session_id="one")
     second = await other_harness.start("two", session_id="two")
-    for _ in range(50):
-        if ControlledAgent.calls == 2:
-            break
-        await asyncio.sleep(0.005)
+    await _wait_for_agent_calls(ControlledAgent, 2)
     assert ControlledAgent.calls == 2
     ControlledAgent.release.set()
     await asyncio.gather(first.wait(), second.wait())
@@ -1486,11 +1489,7 @@ async def test_lifecycle_global_concurrency_bound_is_enforced(tmp_path):
     assert initial["active"] == initial["waiting"] == 0
     first = await harness.start("one", session_id="one")
     second = await harness.start("two", session_id="two")
-    for _ in range(50):
-        if ControlledAgent.calls == 1:
-            break
-        await asyncio.sleep(0.005)
-    await asyncio.sleep(0.01)
+    await _wait_for_agent_calls(ControlledAgent, 1)
     assert ControlledAgent.calls == 1
     ControlledAgent.release.set()
     await asyncio.gather(first.wait(), second.wait())
