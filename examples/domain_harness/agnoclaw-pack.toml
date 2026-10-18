@@ -1,0 +1,6 @@
+name = "domain-harness-examples"
+version = "0.1.0"
+description = "Offline diligence and invoice domain SDK examples"
+
+[provides]
+domains = ["agnoclaw_domain_examples:register"]
