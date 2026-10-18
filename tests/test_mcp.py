@@ -18,6 +18,20 @@ from agnoclaw.runtime.tool_ingress import (
 from agnoclaw.tools.mcp import MCPToolkit, _check_mcp
 
 
+@pytest.mark.parametrize(
+    ("installed", "supported"),
+    [
+        ("1.30.0", False), ("2.0.0", False), ("2.1.1", False),
+        ("2.2.0rc1", False), ("2.2.0", True), ("2.3.0", True),
+        ("3.0.0", False), ("invalid", False),
+    ],
+)
+def test_mcp_requires_patched_stable_sdk(installed, supported):
+    # Refuse vulnerable/unsupported installations before any client is constructed.
+    with patch("agnoclaw.tools.mcp.version", return_value=installed):
+        assert _check_mcp() is supported
+
+
 class FakeClient:
     def __init__(self) -> None:
         self.schema = {"type": "object", "properties": {"query": {"type": "string"}}}

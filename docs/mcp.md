@@ -2,7 +2,7 @@
 
 Status: implemented 0.12 preview for MCP tools; broader MCP extensions remain planned
 
-Last verified: 2026-08-09 against MCP Python SDK 2.0.0 and protocol `2026-07-28`
+Last verified: 2026-10-18 against MCP Python SDK 2.3.0 and protocol `2026-07-28`
 
 ## The deliberately small model surface
 
@@ -31,7 +31,9 @@ The MCP SDK is optional and does not enlarge the provider-neutral core:
 pip install "agnoclaw[mcp]"
 ```
 
-The supported range is `mcp>=2.0.0,<3`. Missing or incompatible SDKs fail on use with
+The supported range is `mcp>=2.2.0,<3`. The 2.2 minimum includes the upstream
+[OAuth credential-disclosure fix](https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-qx49-fqc8-xw99).
+Missing, older or prerelease SDKs fail on use with
 `MCP_SDK_REQUIRED` and the exact extra to install.
 
 ## Configure a server

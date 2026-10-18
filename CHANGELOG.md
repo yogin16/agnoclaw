@@ -22,6 +22,8 @@ This project follows Keep a Changelog structure.
 
 - Cancelling an offloaded capability call now cancels and drains any async result
   it returns, preventing an unawaited writer coroutine after output validation.
+- Clean installs include SQLAlchemy's asyncio dependency required by Agno's SQLite
+  imports. Refresh affected locked dependencies and require patched MCP 2.2+.
 
 ## [0.13.0] - 2026-09-08
 
