@@ -27,6 +27,8 @@ order.
   versioning, stable identities, relationships, deduplication, conflicts, and reviewed actions.
 - [Embeddable framework roadmap](framework-roadmap.md) — Clarion extraction candidates,
   pack/schema/workspace lifecycles, evaluations, protocols, hooks, observers and workflows.
+- [Domain object and behavior design](domain-model-behavior.md) — entity/relation definitions,
+  matching, review, interfaces, triggers and decisions applied to an embeddable SDK.
 - [Agno release-practice audit](agno-release-practices.md) — every stable Agno release
   from 2.6.0 through 3.0.6, the retained 3.0 alpha source evidence, and agnoclaw's tested
   adopt/adapt/avoid decisions.

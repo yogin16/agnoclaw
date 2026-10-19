@@ -7,6 +7,8 @@ Implementation status updated 2026-10-19 for the additive 0.15 authoring preview
 The [embeddable framework roadmap](framework-roadmap.md) expands the next slices into
 pack management, ontology/schema evolution, evaluations, workspaces, protocols,
 interactions, hooks, listeners, observers and workflow adapters, grounded in Clarion code.
+The [Domain object and behavior design](domain-model-behavior.md), updated 2026-10-19, maps ontology,
+matching, interface and automation concepts onto that embeddable framework boundary.
 
 ## What the YC evidence supports
 

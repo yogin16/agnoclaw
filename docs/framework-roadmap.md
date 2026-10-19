@@ -4,6 +4,10 @@ Design direction, 2026-10-19. This extends the [domain research](domain-harness-
 and [0.15 authoring guide](domain-authoring.md). Unless marked implemented, the
 capabilities below are proposed work, not available APIs or release commitments.
 
+The [Domain object and behavior design](domain-model-behavior.md) sharpens this plan with
+entity/relation definitions, separate matching and value-resolution policies, reusable
+interfaces, trigger semantics and a concrete Clarion proposal-to-commit walkthrough.
+
 ## Product direction
 
 agnoclaw should let a developer build, inspect, test, version, embed, and operate a
@@ -123,6 +127,13 @@ Graph constraint standards such as [SHACL](https://www.w3.org/TR/shacl/) are use
 reference points for relation validation. Full RDF/OWL/SHACL execution should remain an
 optional adapter if adopters need it, not a prerequisite for a Python invoice pack.
 
+Relation definitions and link instances need separate contracts. Endpoint kinds and
+edge shape can be checked locally; existence, uniqueness and cardinality require
+authoritative host state and transactional enforcement. Display labels, stable object
+IDs, external matching keys and operation retry keys must remain distinct. Matching
+entities, selecting preferred field values and merging concurrent edits are separate
+operations; preserve source claims and explicit unresolved outcomes.
+
 ## Protocols, hooks, listeners and observers
 
 An interface needs both a typed signature and operational semantics. Do not combine
@@ -149,6 +160,11 @@ drain/cancel behavior and bounded cleanup. Define whether an exception fails the
 retries the consumer, or is recorded as observer failure. Shutdown must not orphan async
 tasks. Include correlation, causation, tenant, schema version and effect references,
 with redaction and payload-size limits at the boundary.
+
+Trigger bindings should name applicability filters, actor delegation, exact target
+definitions and concurrency scope. Bound recursive reactions and distinguish duplicate
+delivery from a new event about the same object. An asynchronous acknowledgement is
+not completion; a post-hook is not proof of a committed business transaction.
 
 Reuse `runtime/hooks.py`, `runtime/events.py`, `RuntimeOutboxWorker`, lifecycle cursors,
 and reconciliation observers. Business-event adapters attach to the host's own outbox.
@@ -177,6 +193,11 @@ critical regression. Keep human judgments and model graders attributed. Offline 
 remain usable without credentials; live-model suites are explicit and budgeted. Model
 routing, learned predictors and deterministic decision tables can be evaluated through
 the same subject adapters without requiring a particular model family.
+
+Reuse the existing `DecisionTable` and `InferencePolicy` contracts. Preserve explicit
+no-match/conflict/error outcomes and bounded fast/deliberate/review routing. Alternative
+hit policies or model-backed decision adapters require versioned semantics and fixtures;
+a recommendation never grants execution authority.
 
 Corrections can propose new fixtures. Admission to a held-out corpus and promotion of
 policy changes remain explicit operations. Reusing the governed corpus/improvement
