@@ -174,7 +174,8 @@ to support a particular amount.
 `ChangeSet(base_snapshot, proposed_document).rebase(current_snapshot)` performs a
 three-way comparison of complete JSON objects:
 
-- Disjoint nested edits combine; identical concurrent edits deduplicate.
+- Disjoint edits within existing JSON objects combine; identical concurrent edits
+  deduplicate. Different concurrent additions at one previously missing key conflict.
 - Overlapping edits produce `ChangeConflict` records with JSON pointers and all three
   values. The preview keeps the current value until explicitly resolved.
 - Missing keys differ from explicit `null`. Deletion versus modification conflicts.
