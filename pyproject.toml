@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agnoclaw"
-version = "0.13.0"
+version = "0.14.0"
 description = "A hackable, model-agnostic agent harness built on Agno — with Claude Code's prompt wisdom, OpenClaw's UX patterns, and full Python extensibility"
 readme = "README.md"
 license = { text = "MIT" }
@@ -39,8 +39,9 @@ dependencies = [
     # direct agnoclaw dependency and remains explicit.
     "httpx>=0.27.0",
     # AgentHarness defaults to Agno's SQLiteDb, whose public backend imports
-    # SQLAlchemy. Core construction must work without a storage extra.
-    "sqlalchemy>=2.0.0",
+    # SQLAlchemy's asyncio facade. Since 2.1 it requires the asyncio extra
+    # explicitly, even when the selected Agno database is synchronous SQLite.
+    "sqlalchemy[asyncio]>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -122,7 +123,7 @@ llm-sandbox = [
 ]
 # MCP (Model Context Protocol) server integration
 mcp = [
-    "mcp>=2.0.0,<3",
+    "mcp>=2.2.0,<3",
 ]
 # Optional AgentOS/FastAPI server export.
 server = [

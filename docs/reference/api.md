@@ -7,7 +7,7 @@ Status: generated from the complete top-level `agnoclaw.__all__` contract
 
 Reference schema: `1.0`
 Public symbols: `402`
-Public-surface digest: `sha256:f77339c01b02a128da7213ef1a689dc6d97548b04e233a1a949844cf8f993bd5`
+Public-surface digest: `sha256:08306eeb053d5772798bdc9f950775aa6accefa434dafc881f53df9080a58e8f`
 
 Every name below is importable directly from `agnoclaw`. Signatures are
 generated from the installed runtime objects; source modules identify the
@@ -4479,7 +4479,7 @@ load_pack(
 
 Class · `agnoclaw.packs.LoadedPack`
 
-LoadedPack(manifest: 'PackManifest', trusted: 'bool' = False, capabilities: 'list[Any]' = <factory>, tools: 'list[Any]' = <factory>, skills_dirs: 'list[Path]' = <factory>, pre_run_hooks: 'list[Callable]' = <factory>, post_run_hooks: 'list[Callable]' = <factory>, lifecycle_hooks: 'dict[str, list[Callable]]' = <factory>, context_providers: 'list[Any]' = <factory>, policies: 'list[Any]' = <factory>)
+LoadedPack(manifest: 'PackManifest', trusted: 'bool' = False, capabilities: 'list[Any]' = <factory>, tools: 'list[Any]' = <factory>, skills_dirs: 'list[Path]' = <factory>, pre_run_hooks: 'list[Callable]' = <factory>, post_run_hooks: 'list[Callable]' = <factory>, lifecycle_hooks: 'dict[str, list[Callable]]' = <factory>, context_providers: 'list[Any]' = <factory>, policies: 'list[Any]' = <factory>, domains: 'list[Any]' = <factory>)
 
 ```python
 from agnoclaw import LoadedPack
@@ -4495,6 +4495,7 @@ LoadedPack(
     lifecycle_hooks: 'dict[str, list[Callable]]' = <factory>,
     context_providers: 'list[Any]' = <factory>,
     policies: 'list[Any]' = <factory>,
+    domains: 'list[Any]' = <factory>,
 ) -> None
 ```
 
@@ -4545,7 +4546,7 @@ PackManifest(
 
 Class · `agnoclaw.packs.PackProvides`
 
-PackProvides(skills: 'list[str]' = <factory>, capabilities: 'list[str]' = <factory>, tools: 'list[str]' = <factory>, hooks: 'list[str]' = <factory>, context_providers: 'list[str]' = <factory>, policies: 'list[str]' = <factory>, commands: 'list[str]' = <factory>)
+PackProvides(skills: 'list[str]' = <factory>, capabilities: 'list[str]' = <factory>, tools: 'list[str]' = <factory>, hooks: 'list[str]' = <factory>, context_providers: 'list[str]' = <factory>, policies: 'list[str]' = <factory>, commands: 'list[str]' = <factory>, domains: 'list[str]' = <factory>)
 
 ```python
 from agnoclaw import PackProvides
@@ -4558,6 +4559,7 @@ PackProvides(
     context_providers: 'list[str]' = <factory>,
     policies: 'list[str]' = <factory>,
     commands: 'list[str]' = <factory>,
+    domains: 'list[str]' = <factory>,
 ) -> None
 ```
 

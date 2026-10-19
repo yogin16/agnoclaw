@@ -21,6 +21,8 @@ order.
 - [Vision](vision.md) — product boundary and design principles.
 - [World-class harness strategy](world-class-harness.md) — 2026 primary-source research,
   product decision, competitive lessons, and phased roadmap.
+- [Domain harness research and roadmap](domain-harness-research.md) — recent vertical
+  agents, industry-specific contracts, Clarion adoption, and SDK/platform gates.
 - [Agno release-practice audit](agno-release-practices.md) — every stable Agno release
   from 2.6.0 through 3.0.6, the retained 3.0 alpha source evidence, and agnoclaw's tested
   adopt/adapt/avoid decisions.
@@ -97,6 +99,9 @@ order.
 
 ## Embed and operate
 
+- [Domain SDK preview](domain-sdk.md) — objects, evidence, typed outputs, verification,
+  reviewed actions, procedures, context, feedback, decision rules, inference routing,
+  runnable domain packs, research rationale, and the Clarion adoption roadmap.
 - [Embedding overview](embedding/README.md) — current service shape and limitations.
 - [Policy and guardrails](embedding/policy-and-guardrails.md) — enforcement checkpoints,
   durable host approval, configuration, elevation, errors, and event cautions.

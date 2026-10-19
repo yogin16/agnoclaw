@@ -2,6 +2,29 @@
 
 This project follows Keep a Changelog structure.
 
+## [0.14.0] - 2026-10-18
+
+### Added
+
+- Opt-in `agnoclaw.domain` preview with scoped object references, source-bound text
+  evidence, typed work products and capability binding, exact-subject verification,
+  reviewed-action contracts, procedures, bounded context contributors, attributed
+  feedback and offline regression fixtures.
+- Optional unique-hit decision rules and evaluated-fast-path inference routing hints.
+  Model execution stays with Agno; business authorization and commits stay with hosts.
+- Trusted domain registrations in existing packs, an offline diligence/invoice example,
+  and research-backed documentation with explicit Clarion migration and maturity gates.
+- `bind_output_schema` for host-owned tools, sharing `OutputSpec.validate_content`
+  with the save boundary without accessing a private agent. Aliases retain their
+  advertised JSON names; models with conflicting input/storage schemas are rejected.
+
+### Fixed
+
+- Cancelling an offloaded capability call now cancels and drains any async result
+  it returns, preventing an unawaited writer coroutine after output validation.
+- Clean installs include SQLAlchemy's asyncio dependency required by Agno's SQLite
+  imports. Refresh affected locked dependencies and require patched MCP 2.2+.
+
 ## [0.13.0] - 2026-09-08
 
 ### Added

@@ -455,6 +455,11 @@ not by unit-test count or a capability checklist.
 
 ## Phased roadmap
 
+The additive [domain SDK preview and adoption track](domain-sdk.md) builds on these
+runtime guarantees. Its first offline contracts and examples are implemented; Clarion
+migration, real-model quality evidence, and stable cross-application adoption remain
+separate gates. It does not replace the runtime release scope below.
+
 Sequence matters. Adding more tools before fixing state ownership and learning truth
 would increase risk.
 

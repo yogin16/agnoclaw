@@ -348,6 +348,18 @@ class CapabilityExecutor:
                     raise asyncio.CancelledError from None
                 raise
         if cancelled:
+            if inspect.isawaitable(value):
+                # A synchronous wrapper may return an async callable's coroutine.
+                # Cancel it before starting its body; do not orphan it when the
+                # caller was cancelled while its worker thread was finishing.
+                abandoned = asyncio.ensure_future(value)
+                abandoned.cancel()
+                drained = asyncio.gather(abandoned, return_exceptions=True)
+                while not drained.done():
+                    try:
+                        await asyncio.shield(drained)
+                    except asyncio.CancelledError:
+                        pass
             raise asyncio.CancelledError
         return value
 

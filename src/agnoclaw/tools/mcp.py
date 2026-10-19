@@ -35,19 +35,19 @@ _MAX_JSON_DEPTH = 64
 def _check_mcp() -> bool:
     """Return whether the supported stable MCP SDK is installed."""
     try:
-        major = int(version("mcp").split(".", 1)[0])
-    except (PackageNotFoundError, ValueError):
+        release = re.fullmatch(r"2\.(\d+)\.\d+(?:\.post\d+)?(?:\+[A-Za-z0-9.]+)?", version("mcp"))
+    except PackageNotFoundError:
         return False
-    return major == 2
+    return release is not None and int(release.group(1)) >= 2
 
 
 def _mcp_dependency_error() -> HarnessError:
     return HarnessError(
         code="MCP_SDK_REQUIRED",
         category="dependency",
-        message="MCP tools require the stable v2 SDK. Install agnoclaw[mcp].",
+        message="MCP tools require the patched stable v2 SDK (2.2+). Install agnoclaw[mcp].",
         retryable=False,
-        details={"extra": "mcp", "supported_sdk": ">=2.0,<3"},
+        details={"extra": "mcp", "supported_sdk": ">=2.2,<3"},
     )
 
 

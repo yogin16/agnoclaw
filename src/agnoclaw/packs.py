@@ -34,6 +34,7 @@ class PackProvides:
     context_providers: list[str] = field(default_factory=list)
     policies: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
+    domains: list[str] = field(default_factory=list)
 
     @property
     def code_entries(self) -> list[str]:
@@ -45,6 +46,7 @@ class PackProvides:
             self.context_providers,
             self.policies,
             self.commands,
+            self.domains,
         ):
             entries.extend(values)
         return entries
@@ -78,6 +80,7 @@ class LoadedPack:
     lifecycle_hooks: dict[str, list[Callable]] = field(default_factory=dict)
     context_providers: list[Any] = field(default_factory=list)
     policies: list[Any] = field(default_factory=list)
+    domains: list[Any] = field(default_factory=list)
 
 
 def inspect_pack(path: str | Path) -> PackManifest:
@@ -110,6 +113,7 @@ def inspect_pack(path: str | Path) -> PackManifest:
             context_providers=_string_list(provides_data.get("context_providers")),
             policies=_string_list(provides_data.get("policies")),
             commands=_string_list(provides_data.get("commands")),
+            domains=_string_list(provides_data.get("domains")),
         ),
         trust=PackTrust(
             default=skill_trust,
@@ -327,6 +331,13 @@ def load_pack(
                 _load_registered_items(manifest.provides.context_providers)
             )
             loaded.policies.extend(_load_registered_items(manifest.provides.policies))
+            if manifest.provides.domains:
+                from .domain.procedures import DomainPack
+
+                domains = _load_registered_items(manifest.provides.domains)
+                if not all(isinstance(domain, DomainPack) for domain in domains):
+                    raise PackError("Domain registrations must return DomainPack instances")
+                loaded.domains.extend(domains)
     return loaded
 
 

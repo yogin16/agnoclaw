@@ -18,7 +18,10 @@ MAX_CORE_DEPENDENCIES = 6
 # two-second import limits remain unchanged. The remaining oversized facade/import
 # graph is explicit extraction debt, not hidden growth.
 MAX_SOURCE_BYTES = 3_487_000
-MAX_WHEEL_BYTES = 771_000
+# The opt-in domain SDK adds ~51 KB of Python source (~14 KB compressed) without
+# dependencies or eager top-level imports. Rebaseline only the wheel ceiling for
+# this feature, retaining roughly two percent headroom; other limits are unchanged.
+MAX_WHEEL_BYTES = 794_000
 MAX_SDIST_BYTES = 2_050_000
 MAX_SINGLE_MODULE_BYTES = 494_000
 MAX_SINGLE_MODULE_LINES = 12_070

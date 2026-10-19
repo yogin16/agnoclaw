@@ -81,7 +81,7 @@ real default harness, not merely the package import. Install optional surfaces d
 | Gemini | `agnoclaw[google]` |
 | Groq | `agnoclaw[groq]` |
 | rich HTML extraction and keyless search | `agnoclaw[web]` |
-| MCP 2.0 tools | `agnoclaw[mcp]` |
+| MCP 2.2+ tools | `agnoclaw[mcp]` |
 | AgentOS/FastAPI lifecycle server | `agnoclaw[server]` |
 | PostgreSQL RuntimeStore and service migration | `agnoclaw[postgres]` |
 | cron expressions | `agnoclaw[scheduler]` |
@@ -331,7 +331,7 @@ modules are not an accepted compatibility strategy.
 | AgentOS | optional 0.12 preview | Install `agnoclaw[server]`; native-compatibility and versioned lifecycle contracts pass on Agno 2.6.4/2.9.0 and retained FastAPI 0.136.3/0.141.1 lanes, including OS-key/auth-state normalization, claims-first identity, scopes, result/reattach, lifecycle/output cursor pages, commands, disconnect semantics, and malformed peers. JWT issuer integration, proxy/load/soak, and production failover certification remain open. |
 | SQLite | durable single-node reference | Schema-v12 runtime/operation/artifact/approval/child/outbox/recovery/reconciliation/dead-letter/scheduler conformance and v7→v12 migrations are contract-tested. Scheduler contention/reopen/fencing passes, and a repeatable gate passes 50/50 real ungraceful exits inside run-create, lifecycle-transition, operation-prepare, dispatch, and settlement transactions with rollback, idempotent retry, exact-event, integrity-check, and WAL-checkpoint proof. Host-power-loss/filesystem certification, full backup/restore, and long-duration production soak remain. |
 | PostgreSQL | optional live-service development preview | Install `agnoclaw[postgres]`; the runtime/learning matrix, schema-v12 scheduler parity, multi-connection races, read-only inspection, and the complete service-migration development lifecycle pass against disposable PostgreSQL 17. Existing atomic output, child recovery, connection-loss, effect-race, recovery-index, bounded load, restart, promotion, synchronous-loss, role-rotation, writer-authority, secure-etcd, native restore, forced migration-process death, three-database least privilege, and 5,000-row bounded-memory evidence remains. This is not external controller election, durable multi-AZ quorum/partition/rotation, arbitrary-client physical fencing, production scheduler failover/soak, encrypted off-host/artifact/key/PITR recovery, corruption response, or production migration certification. |
-| MCP tools | preview on SDK 2.0 / protocol `2026-07-28` | Two-tool deferred discovery/call, stdio, Streamable HTTP, explicit legacy SSE, pagination, structured content, schema-digest drift checks, conservative lifecycle effects, and run-owned quick/legacy clients are contract-tested. OAuth, resources/prompts/subscriptions/apps/tasks/extensions, and real-network certification remain open. |
+| MCP tools | preview on SDK 2.2+ (locked 2.3) / protocol `2026-07-28` | Two-tool deferred discovery/call, stdio, Streamable HTTP, explicit legacy SSE, pagination, structured content, schema-digest drift checks, conservative lifecycle effects, and run-owned quick/legacy clients are contract-tested. OAuth, resources/prompts/subscriptions/apps/tasks/extensions, and real-network certification remain open. |
 | Providers | Agno-routed, not uniformly certified | Each advertised provider/model needs auth, streaming, structured output, tool, usage, cancellation, and error fixtures. |
 
 ## Upgrade policy
