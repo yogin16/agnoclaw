@@ -4,6 +4,9 @@ Research checked 2026-10-18. This is a qualitative sample of primary sources,
 not a census or market-share estimate. Product descriptions are company claims;
 the architecture recommendations below are our synthesis.
 Implementation status updated 2026-10-19 for the additive 0.15 authoring preview.
+The [embeddable framework roadmap](framework-roadmap.md) expands the next slices into
+pack management, ontology/schema evolution, evaluations, workspaces, protocols,
+interactions, hooks, listeners, observers and workflow adapters, grounded in Clarion code.
 
 ## What the YC evidence supports
 
