@@ -22,6 +22,8 @@ This project follows Keep a Changelog structure.
 - Capability execution can pin an expected implementation digest before materialization
   or operation intent. Domain actions use this to reject a registry implementation that
   differs from the reviewed proposal.
+- Refresh the locked `aiohttp` dependency to 3.14.4 and its required `yarl` dependency
+  after the release audit identified vulnerabilities in the previous lock.
 
 ### Compatibility
 
