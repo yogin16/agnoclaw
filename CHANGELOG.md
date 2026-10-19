@@ -2,6 +2,32 @@
 
 This project follows Keep a Changelog structure.
 
+## [0.15.0] - 2026-10-19
+
+### Added
+
+- Additive domain authoring preview: `OutputSchema`, executable `Check` and `Procedure`,
+  `PreparedWork`, and conflict-checked `Domain` composition. Initial versions default
+  to `"1"`; typed references and check objects remove duplicated reference strings.
+- `Action` prepares checked proposals and binds authoritative object/review lookup to
+  the existing executor, preserving the exact reviewed arguments and implementation.
+- Stable `ObjectId`, directed revision-bound `ObjectLink`, request/intent identity with
+  explicit duplicate/conflict classification, and three-way JSON `ChangeSet` reconciliation.
+  Hosts retain atomic revision checks, business receipts, and persistence ownership.
+- A copyable domain starter, complete offline authoring/dispatch example, and DX guide
+  covering naming, IDs, versioning, retries, conflict UI, and Clarion adoption gates.
+
+### Fixed
+
+- Capability execution can pin an expected implementation digest before materialization
+  or operation intent. Domain actions use this to reject a registry implementation that
+  differs from the reviewed proposal.
+
+### Compatibility
+
+- Existing 0.14 domain constructors and record formats remain available. No runtime
+  storage migration, new core dependency, or Clarion production pin change is required.
+
 ## [0.14.0] - 2026-10-18
 
 ### Added

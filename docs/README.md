@@ -23,6 +23,8 @@ order.
   product decision, competitive lessons, and phased roadmap.
 - [Domain harness research and roadmap](domain-harness-research.md) — recent vertical
   agents, industry-specific contracts, Clarion adoption, and SDK/platform gates.
+- [Build a domain harness](domain-authoring.md) — executable procedures and checks,
+  versioning, stable identities, relationships, deduplication, conflicts, and reviewed actions.
 - [Agno release-practice audit](agno-release-practices.md) — every stable Agno release
   from 2.6.0 through 3.0.6, the retained 3.0 alpha source evidence, and agnoclaw's tested
   adopt/adapt/avoid decisions.

@@ -9,10 +9,16 @@ transport protocol or a certification of domain accuracy.
 For the market evidence, industry differences and platform sequencing, see
 [domain harness research and roadmap](domain-harness-research.md).
 
+For new integrations, start with [the domain authoring guide](domain-authoring.md):
+`OutputSchema`, executable `Check`/`Procedure` objects, reviewed `Action` dispatch,
+stable object IDs and links, request deduplication, and concurrent-edit reconciliation.
+The 0.14 `*Spec` contracts documented below remain available with unchanged constructors.
+
 ## Run the complete example
 
 ```bash
 uv run python examples/domain_harness/demo.py
+uv run python examples/domain_harness/ergonomic_demo.py
 uv run pytest tests/test_domain_core.py tests/test_domain_workflows.py tests/test_domain_example.py
 ```
 
@@ -22,15 +28,18 @@ commits a revision-checked mutation, and replays the settled operation. A second
 procedure uses integer-cent arithmetic. A curated correction becomes an offline
 regression fixture. No provider calls, credentials, or Clarion services are involved.
 
-The preview adds approximately 51 KB of source without eager top-level imports. Its
-wheel budget is explicitly adjusted from 771,000 to 794,000 bytes; dependency, source,
-sdist, import-time and import-count limits remain unchanged.
+The preview has no eager top-level imports or additional dependencies. Package/source
+budgets account explicitly for its contracts and authoring helpers; dependency,
+import-time, import-count and largest-module limits remain unchanged.
 
 ## Modules and ownership
 
 | Module | Implemented preview | Host responsibility |
 |---|---|---|
-| `objects` | `ObjectRef`, immutable `ObjectSnapshot` | Load authorized objects, supply revisions, retain the business schema/ORM |
+| `objects` | Stable `ObjectId`, revision-bound `ObjectRef`, immutable `ObjectSnapshot` | Load authorized objects, supply revisions, retain the business schema/ORM |
+| `links` / `identity` | Directed `ObjectLink`, typed contract references, operation identity/conflict classification | Persist edges and atomically claim business operation receipts |
+| `changes` | Three-way JSON reconciliation and explicit conflicts | Resolve domain-specific overlaps, revalidate/review, write with atomic revision comparison |
+| `authoring` / `dispatch` | `OutputSchema`, executable `Check`/`Procedure`, `Domain`, bound `Action` dispatch | Select trusted implementations and supply authoritative object/review loaders |
 | `evidence` | `TextSource`, `EvidenceRef`, conservative quote location | Authorize/load source renditions; supply extractor versions; assess source authority |
 | `outputs` | `OutputSpec`, immutable `WorkProduct`, `bind_output_capability`, `bind_output_schema` | Choose schemas and trusted metadata; persist/commit products |
 | `verification` | Versioned, exact-subject checks and reports | Implement domain checkers and required-check policy |
@@ -247,6 +256,7 @@ dependencies for a broad run; it is not the full-suite release environment.
 |---|---|---|
 | Objects/evidence/outputs/checks | Implemented preview | Evaluate representative Clarion OCR and extraction fixtures, including period/currency confusion |
 | Actions/reviews/procedures | Implemented preview | Integrate one real Clarion capability with authoritative review lookup and transaction checks |
+| Authoring/identity/conflicts | Additive preview: executable checks, typed references, directed links, request identity and three-way reconciliation | Measure adoption in one Clarion procedure and one independent domain; retain 0.14 compatibility |
 | Context/feedback/packs | Implemented preview | Replace one persona contributor and one feedback path without changing host ownership |
 | Decisions/inference routing | Rules and routing policy implemented; model execution remains host-owned | Compare deliberate-only against fast-then-escalate on held-out domain data and review/cost/latency metrics |
 | Clarion migration | Opt-in evidence/review and typed artifact-input adapters implemented in the Clarion checkout; production pin remains 0.11.0 | Broaden source coverage, certify a supported runtime version pair, then integrate action preflight |

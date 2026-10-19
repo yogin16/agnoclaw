@@ -446,6 +446,7 @@ class CapabilityExecutor:
         safe_metadata: Mapping[str, Any] | None = None,
         pre_dispatch: CapabilityPreDispatch | None = None,
         result_transformer: CapabilityResultTransformer | None = None,
+        expected_capability_digest: str | None = None,
     ) -> CapabilityExecution:
         """Authorize, persist intent, materialize, dispatch, and settle once."""
         self._require_open()
@@ -461,6 +462,13 @@ class CapabilityExecutor:
             )
             await asyncio.to_thread(self.gateway.store.get_run, run_id, owner=owner)
         spec = self.registry.resolve(reference)
+        if expected_capability_digest is not None and spec.digest != expected_capability_digest:
+            raise HarnessError(
+                code="CAPABILITY_DIGEST_MISMATCH",
+                category="capability",
+                message="The registered capability differs from the reviewed implementation.",
+                retryable=False,
+            )
         spec.require_profile(profile)
         missing = tuple(sorted(set(spec.required_scopes) - scopes))
         if missing:

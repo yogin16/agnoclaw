@@ -7,10 +7,10 @@ Skills, policy and permission hooks, a transactional run lifecycle, scoped artif
 and governed learning. It is a Python library first: no required gateway, editor, or
 hosted control plane.
 
-The opt-in [domain SDK preview](docs/domain-sdk.md) adds evidence-backed outputs,
-reviewed-action contracts, context contributors, feedback, and optional decision rules
-and inference routing. Run its [offline diligence/invoice example](examples/domain_harness/demo.py)
-without a model provider; application services retain business policy and persistence.
+The opt-in [domain SDK](docs/domain-sdk.md) adds evidence, reviewed actions, feedback,
+and optional decisions/routing. Its [authoring guide](docs/domain-authoring.md) covers
+procedures, checks, object links, and conflicts. Run the [offline example](examples/domain_harness/ergonomic_demo.py);
+application services retain business policy and persistence.
 
 > **0.13 release:** Agno 3.0.6 is the default lock, with native large-result/media offloading, opt-in CodeMode, bounded normalized history, durable human-input continuation, and inert model-authored learning proposals. CodeMode is a trusted host-kernel interface; RuntimeBackend/LLMSandbox owns containment, and the operation ledger remains the durable effect authority. Agno 2.6.4 and 2.9.0 remain compatibility lanes. See the
 > [compatibility matrix](docs/compatibility.md) for exact evidence and limitations.

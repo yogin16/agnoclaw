@@ -12,6 +12,22 @@ from ._contracts import Record, fail, frozen_json, identifier
 
 
 @dataclass(frozen=True)
+class ObjectId(Record):
+    """Stable identity in a host-owned namespace; revision is a separate concern."""
+
+    tenant_id: str
+    kind: str
+    object_id: str
+
+    def __post_init__(self) -> None:
+        for name in ("tenant_id", "kind", "object_id"):
+            identifier(getattr(self, name), name)
+
+    def at(self, revision: str) -> ObjectRef:
+        return ObjectRef(self.tenant_id, self.kind, self.object_id, revision)
+
+
+@dataclass(frozen=True)
 class ObjectRef(Record):
     tenant_id: str
     kind: str
@@ -26,6 +42,10 @@ class ObjectRef(Record):
         """Check host-supplied tenant scope; host RBAC still owns object access."""
         if context.tenant_id != self.tenant_id:
             fail("SCOPE_MISMATCH", "Object and execution context tenant scopes differ.")
+
+    @property
+    def identity(self) -> ObjectId:
+        return ObjectId(self.tenant_id, self.kind, self.object_id)
 
     def require_current(self, current: ObjectRef) -> None:
         if self != current:
