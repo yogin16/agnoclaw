@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "agnoclaw-clarion-example"
 version = "0.1.0"
 description = "Example authoring package for a Clarion-shaped domain"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["agnoclaw>=0.15,<0.16", "pydantic>=2"]
 

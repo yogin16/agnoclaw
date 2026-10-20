@@ -189,6 +189,8 @@ run lifecycle, scheduling, approvals and recovery of uncertain effects. This is 
 sequential adapter, not certification of arbitrary Agno workflow durability or branching.
 The interface and complete plan are included in persisted execution identity, so a
 new plan under an existing request ID cannot silently change workflow semantics.
+Resuming under the same run with a new worker attempt preserves existing steps' original
+attempt attribution; it does not reclaim an in-flight step automatically.
 See [durability and recovery](domain-durability.md) for plan serialization, current
 Agno/Flue lessons and the host adoption gates.
 

@@ -57,6 +57,9 @@ would introduce competing ownership without solving semantic drift.
 workflow under an old request ID and silently reuse results merely because its tool
 arguments and capability stayed the same. Calls to `CapabilityExecutor.execute()`
 without the new optional `execution_digest` retain their previous request identities.
+When a replacement worker supplies a new `attempt_id`, the workflow retains original
+attempt attribution for existing steps and uses the new attempt for newly planned
+steps. Reads are owner-scoped; in-flight fences still require explicit host recovery.
 
 Persist and restore an ordinary plan without serializing Python functions:
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -14,6 +15,7 @@ from agnoclaw.capability_execution import (
 )
 from agnoclaw.runtime.operations import EffectClass
 from agnoclaw.runtime.security import AdmissionEnvelope, canonical_json_digest
+from agnoclaw.runtime.store import OperationNotFoundError, RunOwner
 from agnoclaw.skills.loader import Skill
 
 from ._contracts import Record, digest_string, fail, frozen_json, identifier
@@ -232,6 +234,8 @@ class Workflow(DomainComponent):
         guards = pre_dispatch or {}
         if set(guards) - {s.name for s in self.steps}:
             raise ValueError("pre_dispatch names an unknown workflow step")
+        owner = RunOwner(tenant_id=admission.identity.tenant_id, user_id=admission.identity.user_id)
+        await asyncio.to_thread(executor.gateway.store.get_run, run_id, owner=owner)
         values = plan.inputs
         for step in self.steps:
             identity = OperationIdentity(
@@ -240,12 +244,25 @@ class Workflow(DomainComponent):
                 plan.request_id,
                 canonical_json_digest([plan.digest, step.call.digest, values]),
             )
+            # Attempts observe existing steps; they do not replace their original
+            # attribution or implicitly reclaim an in-flight dispatch fence.
+            operation_attempt = attempt_id
+            try:
+                recorded = await asyncio.to_thread(
+                    executor.gateway.store.get_operation, identity.key, owner=owner
+                )
+            except OperationNotFoundError:
+                pass
+            else:
+                if recorded.intent.run_id != run_id:
+                    fail("WORKFLOW_RUN_CHANGED", "Resume the workflow under its original run.")
+                operation_attempt = recorded.intent.attempt_id
             execution = await step.call.execute(
                 executor,
                 values,
                 operation_id=identity.key,
                 run_id=run_id,
-                attempt_id=attempt_id,
+                attempt_id=operation_attempt,
                 admission=admission,
                 idempotency_key=identity.key
                 if step.call.capability.supports_idempotency_key

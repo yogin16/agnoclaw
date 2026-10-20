@@ -353,7 +353,9 @@ async def test_workflow_reopens_persisted_store_without_redispatch(tmp_path):
         ),
     )
     try:
-        assert await workflow.execute(second, plan, **kwargs) == {"value": 4}
+        assert await workflow.execute(second, plan, **{**kwargs, "attempt_id": "attempt-2"}) == {
+            "value": 4
+        }
         assert calls == [4]
     finally:
         await second.aclose()
@@ -460,7 +462,7 @@ async def test_workflow_does_not_repeat_uncertain_effect_after_reopening_store(t
     )
     try:
         with pytest.raises(OperationTerminalError) as error:
-            await workflow.execute(second, plan, **kwargs)
+            await workflow.execute(second, plan, **{**kwargs, "attempt_id": "attempt-2"})
         assert error.value.record.state is OperationState.UNKNOWN
         assert calls == ["read", "write"]
     finally:
