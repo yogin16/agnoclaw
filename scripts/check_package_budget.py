@@ -13,14 +13,13 @@ import tomllib
 from pathlib import Path
 
 MAX_CORE_DEPENDENCIES = 6
-# 0.15 authoring/identity helpers add ~29 KB of source, plus examples, tests and
-# documentation. Source/sdist ceilings retain about two percent measured headroom;
-# wheel, dependency, import and largest-module limits are unchanged in this iteration.
-MAX_SOURCE_BYTES = 3_572_000
-# The 0.14 opt-in domain SDK originally added ~51 KB of source (~14 KB compressed)
-# without dependencies or eager top-level imports; retain its wheel ceiling.
-MAX_WHEEL_BYTES = 794_000
-MAX_SDIST_BYTES = 2_108_000
+# The 0.15 package lifecycle adds ~91 KB source and ~27 KB compressed wheel over
+# the authoring preview, without core dependencies or eager domain imports. Keep
+# about two percent headroom after measuring built artifacts. Import/dependency
+# and largest-module ceilings remain unchanged.
+MAX_SOURCE_BYTES = 3_670_000
+MAX_WHEEL_BYTES = 832_000
+MAX_SDIST_BYTES = 2_160_000
 # Remaining facade/import size is explicit extraction debt, not hidden growth.
 MAX_SINGLE_MODULE_BYTES = 494_000
 MAX_SINGLE_MODULE_LINES = 12_070

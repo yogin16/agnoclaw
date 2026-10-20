@@ -15,7 +15,9 @@ from agnoclaw.runtime.security import canonical_json_digest, freeze_data, thaw_d
 
 
 def fail(code: str, message: str) -> NoReturn:
-    raise HarnessError(code=f"DOMAIN_{code}", category="domain", message=message, retryable=False)
+    raise HarnessError(
+        code=f"DOMAIN_{code}", category="domain", message=message, retryable=False
+    ) from None
 
 
 def identifier(value: str, field: str) -> None:

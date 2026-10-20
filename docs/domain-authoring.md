@@ -4,6 +4,8 @@ The opt-in `agnoclaw.domain` authoring API composes the contracts introduced in 
 Use `OutputSchema`, `Check`, `Procedure`, `Domain`, and `Action` for new integrations.
 Existing `OutputSpec`, `ProcedureSpec`, `ActionSpec`, and `DomainPack` constructors and
 serialized records remain supported. This is still a preview API.
+For a complete installable package, schema/skill composition, evaluation and host
+integration, follow [Author and embed a domain package](domain-packages.md).
 For the broader library direction and what to extract from Clarion next, see the
 [embeddable framework roadmap](framework-roadmap.md).
 

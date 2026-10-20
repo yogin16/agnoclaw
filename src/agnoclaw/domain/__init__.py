@@ -2,7 +2,35 @@
 
 from .actions import ActionProposal, ActionSpec
 from .authoring import Check, CheckOutcome, Domain, OutputSchema, PreparedWork, Procedure
+from .behavior import (
+    EvaluationSuite,
+    Interface,
+    InterfaceBinding,
+    SkillBinding,
+    Workflow,
+    WorkflowPlan,
+    WorkflowStep,
+)
+from .catalog import (
+    Definition,
+    Diagnostic,
+    DomainDiff,
+    DomainValidationError,
+    Override,
+    PackEvaluation,
+    ResolvedDomain,
+    ValidationReport,
+    inspect_domain_manifest,
+)
 from .changes import ChangeConflict, ChangeResolution, ChangeSet
+from .channels import (
+    ChannelAdapter,
+    ChannelCapabilities,
+    ChannelReceipt,
+    Interaction,
+    InteractionRequest,
+)
+from .components import DomainComponent
 from .context import ContextBundle, ContextContribution, ContextContributor, assemble_context
 from .decisions import (
     DecisionResult,
@@ -16,16 +44,91 @@ from .decisions import (
 from .dispatch import Action, PreparedAction
 from .evaluation import CaseResult, EvaluationCase, EvaluationSummary, evaluate_cases
 from .evidence import EvidenceRef, QuoteMatch, TextSource, locate_quote
+from .extensions import (
+    Delivery,
+    DeliveryResult,
+    DomainEvent,
+    EventType,
+    Extensions,
+    Hook,
+    Listener,
+    Registration,
+    RuntimeListenerExporter,
+    Trigger,
+    TriggerRequest,
+)
 from .feedback import FeedbackEvent, FeedbackKind
 from .identity import ContractRef, DeduplicationStatus, OperationIdentity
 from .interaction import ReviewDecision, ReviewRequest, ReviewVerdict
 from .links import ObjectLink
 from .objects import ObjectId, ObjectRef, ObjectSnapshot
+from .ontology import Entity, Relation, Schema, SchemaCompatibility, compare_schemas
 from .outputs import OutputSpec, WorkProduct, bind_output_capability, bind_output_schema
 from .procedures import DomainPack, ProcedureSpec
+from .reconciliation import (
+    ClaimResolution,
+    FieldClaim,
+    MatchCandidate,
+    MatchPolicy,
+    MatchResult,
+    ResolutionPolicy,
+)
+from .resources import LocalResources, ResourceProvider, Resources, WorkspaceSnapshot
 from .verification import CheckResult, CheckStatus, VerificationReport, check_quote, run_check
+from .watchers import Finding, Watcher, WatcherResult
 
 __all__ = [
+    "Finding",
+    "Watcher",
+    "WatcherResult",
+    "ChannelCapabilities",
+    "ChannelAdapter",
+    "ChannelReceipt",
+    "ClaimResolution",
+    "Definition",
+    "Delivery",
+    "DeliveryResult",
+    "Diagnostic",
+    "DomainComponent",
+    "DomainDiff",
+    "DomainEvent",
+    "DomainValidationError",
+    "Entity",
+    "EvaluationSuite",
+    "EventType",
+    "Extensions",
+    "FieldClaim",
+    "Hook",
+    "Interaction",
+    "InteractionRequest",
+    "Interface",
+    "InterfaceBinding",
+    "Listener",
+    "LocalResources",
+    "MatchCandidate",
+    "MatchPolicy",
+    "MatchResult",
+    "Override",
+    "PackEvaluation",
+    "Registration",
+    "Relation",
+    "ResolvedDomain",
+    "ResolutionPolicy",
+    "ResourceProvider",
+    "Resources",
+    "RuntimeListenerExporter",
+    "Schema",
+    "SchemaCompatibility",
+    "SkillBinding",
+    "Trigger",
+    "TriggerRequest",
+    "ValidationReport",
+    "Workflow",
+    "WorkflowPlan",
+    "WorkflowStep",
+    "WorkspaceSnapshot",
+    "compare_schemas",
+    "inspect_domain_manifest",
     "Action",
     "ActionProposal",
     "ActionSpec",

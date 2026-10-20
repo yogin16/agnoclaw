@@ -2,7 +2,7 @@
 
 This project follows Keep a Changelog structure.
 
-## [0.15.0] - 2026-10-19
+## [0.15.0] - 2026-10-20
 
 ### Added
 
@@ -16,6 +16,13 @@ This project follows Keep a Changelog structure.
   Hosts retain atomic revision checks, business receipts, and persistence ownership.
 - A copyable domain starter, complete offline authoring/dispatch example, and DX guide
   covering naming, IDs, versioning, retries, conflict UI, and Clarion adoption gates.
+- Composable domain packages with aggregated diagnostics, pinned manifests, explicit
+  overlays and aliases, dependency/upgrade inspection and pack-bound fixture suites.
+- Entity/relation definitions, schema overlays and compatibility reports, attributed
+  entity matching and claim resolution, and scoped content-pinned workspace resources.
+- Typed interface bindings, sequential workflow plans over the capability executor,
+  scoped hooks/listeners and outbox adaptation, channel interactions, bounded triggers
+  and watcher results. Add an installable Clarion-shaped authoring package and guide.
 
 ### Fixed
 
@@ -24,6 +31,10 @@ This project follows Keep a Changelog structure.
   differs from the reviewed proposal.
 - Refresh the locked `aiohttp` dependency to 3.14.4 and its required `yarl` dependency
   after the release audit identified vulnerabilities in the previous lock.
+- Preserve frozen capability schemas when using `dataclasses.replace()` and suppress
+  raw callback exception context in sanitized domain errors.
+- Pin interface and workflow execution semantics in operation request identity;
+  preserve prior identities when the optional executor digest is omitted.
 
 ### Compatibility
 

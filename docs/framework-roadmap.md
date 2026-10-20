@@ -4,6 +4,14 @@ Design direction, 2026-10-19. This extends the [domain research](domain-harness-
 and [0.15 authoring guide](domain-authoring.md). Unless marked implemented, the
 capabilities below are proposed work, not available APIs or release commitments.
 
+Implementation update, 2026-10-20: the 0.15 preview now implements the initial catalog,
+schema/relation, evaluation, extension, interface, workspace and sequential workflow
+contracts. See [the package authoring guide](domain-packages.md) for runnable public
+APIs and the precise host boundaries. Remaining gates below concern broader adapters,
+production adoption and certification; they are not claims that those adapters shipped.
+The [durability notes](domain-durability.md) apply current Agno and Flue recovery
+lessons to domain plans, effects, approvals, events and workspace retention.
+
 The [Domain object and behavior design](domain-model-behavior.md) sharpens this plan with
 entity/relation definitions, separate matching and value-resolution policies, reusable
 interfaces, trigger semantics and a concrete Clarion proposal-to-commit walkthrough.
@@ -56,18 +64,18 @@ for every row. Extend the existing modules before inventing parallel registries.
 
 | Family | Developer experience to provide | Existing foundation / remaining work |
 |---|---|---|
-| Pack catalog and composition | Discover, resolve, inspect, validate, diff, activate and retire packs; actionable errors with origin paths | `packs.py`, `Domain`, `DomainPack` exist; dependency resolution, resolved manifests and cross-definition diagnostics are next |
-| Schemas and ontology | Register shapes and entity/relation definitions; resolve references; validate overlays; preview compatibility and migrations | `OutputSchema`, `ObjectId`, `ObjectLink` exist; schema catalog, relation constraints and schema evolution are proposed |
-| Skills and procedures | Bind skill metadata to input/output schemas, checks, capabilities and applicability; derive tool schemas from those bindings | Skill loader/registry and `Procedure` exist; shared typed extension metadata and cross-reference validation remain |
-| Changes and conflicts | Distinguish definition conflicts, data edits, duplicate requests, and contradictory claims; render explicit resolution choices | 0.15 handles definition conflicts, JSON rebasing and request identity; semantic claim resolution stays a separate policy |
-| Evaluations | Run pure checks, replay fixtures, grade outputs/trajectories, test adapters, compare policies/models, measure cost and latency | `domain.evaluate_cases`, corpus and improvement runners exist; a common authoring/inspection facade should reuse them |
-| Workflows | Compose typed steps, branch on results, await reviews, expose progress, cancel and resume with explicit effect semantics | Existing lifecycle, child runs, scheduler and Agno workflows; a certified domain workflow adapter is proposed |
-| Interaction and channels | Declare questions, choices, review/diff requests, evidence views and artifacts; expose unsupported affordances clearly | Domain review contracts and lifecycle input requirements exist; transport-neutral affordances and adapter conformance remain |
-| Protocol adapters | Versioned ingress/egress envelopes, schema validation, capability negotiation and compatibility checks | Existing lifecycle HTTP protocol and governed MCP; extend through adapters rather than replace these protocols |
-| Hooks and middleware | Typed interception points with declared ordering, mutation rights, failure policy and cleanup | Existing pre/post/lifecycle hooks and capability pre-dispatch; pack-scoped composition/inspection need work |
-| Events and observers | Subscribe to appropriate committed facts, replay by cursor, deduplicate, apply backpressure and inspect delivery failures | Runtime events, transactional outbox and reconciliation observers exist; domain adapters and consumer tooling remain |
-| Watchers and triggers | Evaluate source changes or scheduled work, report suppression/health, deduplicate triggers and request governed runs | Scheduler/capability substrate exists; reusable detector contracts and host trigger adapters are proposed |
-| Workspaces | Pin immutable pack resources, layer controlled overrides, isolate session writes, preview refreshes and manage cleanup | Local `Workspace` and pack content trust exist; snapshot/provider contracts and staged materialization remain |
+| Pack catalog and composition | Discover, resolve, inspect, validate, diff, activate and retire packs; actionable errors with origin paths | Implemented `Domain.compile/validate`, resolved manifests, dependency pins, includes/overrides, aliases and diffs; service activation/retirement remains host-owned |
+| Schemas and ontology | Register shapes and entity/relation definitions; resolve references; validate overlays; preview compatibility and migrations | Implemented `Schema.extend`, `Entity`, `Relation`, scoped links and conservative compatibility reports; data migrations remain host-owned |
+| Skills and procedures | Bind skill metadata to input/output schemas, checks, capabilities and applicability; derive tool schemas from those bindings | Implemented `SkillBinding`, direct procedure bindings and cross-reference/resource validation over the existing loader |
+| Changes and conflicts | Distinguish definition conflicts, data edits, duplicate requests, and contradictory claims; render explicit resolution choices | Implemented definition conflicts, JSON rebasing, request identity, candidate matching and attributed source-priority claim resolution; domain policy remains explicit |
+| Evaluations | Run pure checks, replay fixtures, grade outputs/trajectories, test adapters, compare policies/models, measure cost and latency | Implemented `EvaluationSuite`/`PackEvaluation` over exact structured fixtures; advanced graders/paired experiments retain existing runners |
+| Workflows | Compose typed steps, branch on results, await reviews, expose progress, cancel and resume with explicit effect semantics | Implemented sequential `Workflow` plans through `CapabilityExecutor`, with persisted-result replay tests; general branching/Agno workflow certification remains |
+| Interaction and channels | Declare questions, choices, review/diff requests, evidence views and artifacts; expose unsupported affordances clearly | Implemented typed `Interaction`, `ChannelAdapter`, negotiation and receipts; production transports and Clarion channel migration remain |
+| Protocol adapters | Versioned ingress/egress envelopes, schema validation, capability negotiation and compatibility checks | Local channel protocol contracts complement existing lifecycle HTTP and governed MCP; no claim of a new remote protocol deployment |
+| Hooks and middleware | Typed interception points with declared ordering, mutation rights, failure policy and cleanup | Implemented instance-scoped `Extensions`, typed policy/transform hooks, bounded callbacks and close/drain/cancel semantics |
+| Events and observers | Subscribe to appropriate committed facts, replay by cursor, deduplicate, apply backpressure and inspect delivery failures | Implemented typed events/listeners, consumer identities and `RuntimeListenerExporter`; reuse existing outbox worker and host business receipts |
+| Watchers and triggers | Evaluate source changes or scheduled work, report suppression/health, deduplicate triggers and request governed runs | Implemented bounded trigger plans, causation limits and accounted watcher findings; hosts admit/schedule work and promote insights |
+| Workspaces | Pin immutable pack resources, layer controlled overrides, isolate session writes, preview refreshes and manage cleanup | Implemented providers, content snapshots, explicit overlays and staged materialization; active pointers, scratch and retention remain host-owned |
 
 ## What can come upstream from Clarion
 
@@ -224,16 +232,16 @@ freshness tokens for refresh; stage writes before atomic activation. Reject path
 undeclared overwrites and unknown snapshot substitutions. Host adapters supply local/S3
 or other storage and define cleanup/retention. Existing `Workspace` callers keep working.
 
-## Ordered implementation slices
+## Implementation status and remaining gates
 
 | Slice | Concrete deliverable | Acceptance gate |
 |---|---|---|
 | 0 — 0.15 foundation | Executable authoring, stable IDs/links, explicit merge/dedup semantics, reviewed dispatch | Implemented preview; old APIs and Clarion adapters retained |
-| 1 — Pack catalog and validation | One resolved manifest joining existing skills, output schemas, procedures and capability declarations; aggregated diagnostics with source paths; read-only inspection and dependency/override diff | Clarion typed-output pack and an invoice pack validate offline; unresolved/ambiguous refs and changed definitions fail; inspection executes no pack code |
-| 2 — Schema and workspace lifecycle | Schema provider/overlay contract, bounded compatibility report, pinned workspace snapshot/provider and staged activation | Two adopters exercise same contracts; unchanged 0.14 records; no cross-tenant override; resume refuses unavailable/mismatched pinned content |
-| 3 — Pack evaluation facade | Fixtures and conformance suites attached to exact resolved manifests; adapters over current deterministic/paired runners | Both packs run from Python and pytest; offline by default; changed schema/check/workspace invalidates stale evidence; failures identify the relevant definition |
-| 4 — Interaction and extension contracts | Typed affordances plus scoped hook/listener/observer registration, lifecycle handles and adapter conformance fixtures | Clarion channel adapter plus a local test adapter; retries, duplicate delivery, ordering, slow consumers, cancellation, cleanup and stale reviews tested |
-| 5 — Workflow and watcher integration | One certified workflow adapter and reusable detector/result contract using existing scheduler/capabilities | Clarion one real action and watcher, plus non-finance equivalents; crash/replay cannot duplicate effects or promote findings without host policy |
+| 1 — Pack catalog and validation | Implemented resolved manifests, aggregated diagnostics, includes/overrides, aliases and dependency diffs | Offline package and prior invoice authoring journeys; production Clarion catalog adoption still required |
+| 2 — Schema and workspace lifecycle | Implemented typed overlays, conservative compatibility reports, pinned snapshots/providers and staged directory creation | Scope, content drift and overlay conflicts tested; provider-specific certification and host activation/migrations remain |
+| 3 — Pack evaluation facade | Implemented fixtures bound to exact manifest/workspace digests using the existing deterministic runner | Python/pytest journeys and stale evidence rejection; deeper paired-runner reporting and production quality corpora remain |
+| 4 — Interaction and extension contracts | Implemented local typed channel interfaces and scoped hooks/listeners with outbox adaptation | Retry, duplicate delivery, ordering, slow callbacks, cancellation and stale input contracts tested; production Clarion transport adoption remains |
+| 5 — Workflow and watcher integration | Implemented sequential capability workflow and bounded watcher/trigger contracts | Existing ledger/result-store replay tested; full Agno workflow branching/recovery certification and production watcher promotion remain |
 | 6 — Stable ecosystem | Versioned pack format/migrations, maintained adapter compatibility matrix, optional storage/UI/provider packages | Independent adoption and measured maintenance benefit; framework usable without a hosted service |
 
 Each slice should reduce a measurable burden: time to first checked domain output,

@@ -9,6 +9,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any
 
 from .capability_schema import validate_capability_input_schema
@@ -101,8 +102,15 @@ class CapabilitySpec:
         if any(not isinstance(scope, str) or not scope.strip() for scope in scopes):
             raise ValueError("required_scopes must contain non-empty strings")
         object.__setattr__(self, "required_scopes", scopes)
+        # dataclasses.replace() passes our already frozen schema back to the
+        # constructor. Validate its detached JSON representation on that path.
+        schema = (
+            thaw_data(self.input_schema)
+            if isinstance(self.input_schema, MappingProxyType)
+            else self.input_schema
+        )
         validate_capability_input_schema(
-            self.input_schema,
+            schema,
             capability=self.name,
         )
         frozen_schema = freeze_data(self.input_schema)

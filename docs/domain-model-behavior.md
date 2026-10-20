@@ -2,6 +2,9 @@
 
 Design notes, 2026-10-19. The [framework roadmap](framework-roadmap.md) is the
 implementation plan. Proposed capabilities are distinguished from existing APIs.
+Implementation update: the [domain package guide](domain-packages.md) documents the
+0.15 contracts now available for these concepts. This note retains the design rationale;
+the guide defines the implemented scope and host responsibilities.
 
 A domain framework connects typed objects, explicit relationships, evidence-backed
 proposals and reusable behavior. Hosts retain storage, authorization and business
