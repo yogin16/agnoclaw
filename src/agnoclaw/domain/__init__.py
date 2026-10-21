@@ -64,6 +64,7 @@ from .links import ObjectLink
 from .objects import ObjectId, ObjectRef, ObjectSnapshot
 from .ontology import Entity, Relation, Schema, SchemaCompatibility, compare_schemas
 from .outputs import OutputSpec, WorkProduct, bind_output_capability, bind_output_schema
+from .pack import Model, Pack
 from .procedures import DomainPack, ProcedureSpec
 from .reconciliation import (
     ClaimResolution,
@@ -78,6 +79,8 @@ from .verification import CheckResult, CheckStatus, VerificationReport, check_qu
 from .watchers import Finding, Watcher, WatcherResult
 
 __all__ = [
+    "Model",
+    "Pack",
     "Finding",
     "Watcher",
     "WatcherResult",

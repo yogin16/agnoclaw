@@ -411,6 +411,7 @@ def _same_implementation(a: object, b: object) -> bool:
         "compare",
         "factory",
         "detect",
+        "function",
     ):
         if attribute in vars(a) and getattr(a, attribute) is not getattr(b, attribute, None):
             return False

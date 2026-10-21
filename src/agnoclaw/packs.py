@@ -332,15 +332,16 @@ def load_pack(
             if manifest.provides.domains:
                 from .domain.authoring import Domain
                 from .domain.catalog import ResolvedDomain
+                from .domain.pack import Pack
                 from .domain.procedures import DomainPack
 
                 domains = [
-                    item.compile() if isinstance(item, Domain) else item
+                    item.compile() if isinstance(item, (Domain, Pack)) else item
                     for item in _load_registered_items(manifest.provides.domains)
                 ]
                 if not all(isinstance(domain, (DomainPack, ResolvedDomain)) for domain in domains):
                     raise PackError(
-                        "Domain registrations must return Domain, DomainPack "
+                        "Domain registrations must return Pack, Domain, DomainPack "
                         "or ResolvedDomain instances"
                     )
                 loaded.domains.extend(domains)

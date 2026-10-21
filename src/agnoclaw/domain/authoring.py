@@ -14,6 +14,7 @@ from typing import (
     ForwardRef,
     Generic,
     Literal,
+    Protocol,
     TypeVar,
     cast,
     get_args,
@@ -26,7 +27,6 @@ from agnoclaw.runtime.context import ExecutionContext
 from agnoclaw.runtime.security import canonical_json_digest
 
 from ._contracts import Record, digest_string, fail, identifier
-from .actions import ActionProposal
 from .evidence import EvidenceRef
 from .identity import ContractRef
 from .objects import ObjectRef
@@ -39,7 +39,13 @@ if TYPE_CHECKING:
     from .catalog import Override, ResolvedDomain, ValidationReport
     from .feedback import FeedbackEvent, FeedbackKind
 
-Subject = TypeVar("Subject", WorkProduct, ActionProposal)
+
+class _CheckSubject(Protocol):
+    @property
+    def digest(self) -> str: ...
+
+
+Subject = TypeVar("Subject", bound=_CheckSubject)
 
 
 class OutputSchema(OutputSpec):

@@ -1,5 +1,9 @@
 # Author and embed a domain package
 
+Start with the [short domain quickstart](domain-quickstart.md) and
+[function-based example](../examples/clarion_domain_pack/clarion_domain/simple.py).
+This guide covers explicit contracts and host adapters as a package grows.
+
 The 0.15 preview provides a Python-first package lifecycle: define, compile, inspect,
 evaluate, bind host adapters, and operate an explicitly scoped instance. Start with the
 [runnable Clarion-shaped package](../examples/clarion_domain_pack/clarion_domain/__init__.py).
@@ -35,7 +39,7 @@ clarion_domain_pack/
 
 `pyproject.toml` declares the library dependency and includes skill bytes in the wheel.
 The optional TOML manifest lets the existing trusted pack loader call `register()`.
-`register()` returns a `Domain`; the loader compiles it into `LoadedPack.domains`.
+`register()` returns a `Pack` or `Domain`; the loader compiles it into `LoadedPack.domains`.
 Loading declarations does not install capabilities into a running agent. The embedding
 host chooses which compiled capabilities to register and which extensions to activate.
 Python imports and registration functions are trusted code. Inspection of an exported

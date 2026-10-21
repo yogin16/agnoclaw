@@ -1,12 +1,14 @@
 # Clarion-shaped domain package
 
-Read the [package authoring guide](../../docs/domain-packages.md), then inspect
-[the package](clarion_domain/__init__.py) and [host demo](demo.py).
+Start with [a model and a function](../../docs/domain-quickstart.md) and
+[the short example](clarion_domain/simple.py). The [package authoring guide](../../docs/domain-packages.md),
+[explicit package](clarion_domain/__init__.py) and [host demo](demo.py) cover larger integrations.
 
 From the agnoclaw repository:
 
 ```bash
 uv sync --extra dev
+uv run python examples/clarion_domain_pack/clarion_domain/simple.py
 uv run python examples/clarion_domain_pack/demo.py
 ```
 

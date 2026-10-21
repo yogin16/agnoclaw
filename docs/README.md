@@ -23,7 +23,9 @@ order.
   product decision, competitive lessons, and phased roadmap.
 - [Domain harness research and roadmap](domain-harness-research.md) — recent vertical
   agents, industry-specific contracts, Clarion adoption, and SDK/platform gates.
-- [Build a domain harness](domain-authoring.md) — executable procedures and checks,
+- [Domain quickstart](domain-quickstart.md) — a model, a typed function, examples and
+  optional request-scoped receipts using `Model` and `Pack`.
+- [Explicit domain contracts](domain-authoring.md) — executable procedures and checks,
   versioning, stable identities, relationships, deduplication, conflicts, and reviewed actions.
 - [Author and embed a domain package](domain-packages.md) — installable Clarion example,
   catalog diagnostics, schema evolution, interfaces, workflows, extensions and host adapters.

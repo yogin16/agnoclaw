@@ -6,6 +6,10 @@ This project follows Keep a Changelog structure.
 
 ### Added
 
+- Function-first `Pack` and strict Pydantic `Model`: inferred input/output contracts,
+  typed procedure calls, attached checks/examples, and one request scope for host
+  identity, evidence and verification receipts. Existing explicit contracts remain usable.
+- Published Python type information (`py.typed`) and a short runnable Clarion example.
 - Additive domain authoring preview: `OutputSchema`, executable `Check` and `Procedure`,
   `PreparedWork`, and conflict-checked `Domain` composition. Initial versions default
   to `"1"`; typed references and check objects remove duplicated reference strings.

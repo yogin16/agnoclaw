@@ -11,6 +11,9 @@ APIs and the precise host boundaries. Remaining gates below concern broader adap
 production adoption and certification; they are not claims that those adapters shipped.
 The [durability notes](domain-durability.md) apply current Agno and Flue recovery
 lessons to domain plans, effects, approvals, events and workspace retention.
+The [function-first entry point](domain-quickstart.md) now infers contracts from typed
+Python functions, registers checks/examples alongside them and binds request context
+once. Explicit declarations remain available as a package needs more control.
 
 The [Domain object and behavior design](domain-model-behavior.md) sharpens this plan with
 entity/relation definitions, separate matching and value-resolution policies, reusable

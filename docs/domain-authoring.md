@@ -1,7 +1,9 @@
 # Building a domain harness
 
 The opt-in `agnoclaw.domain` authoring API composes the contracts introduced in 0.14.
-Use `OutputSchema`, `Check`, `Procedure`, `Domain`, and `Action` for new integrations.
+For a new integration, start with [a model and a function](domain-quickstart.md) using
+`Model` and `Pack`. This guide covers the explicit `OutputSchema`, `Check`, `Procedure`,
+`Domain`, and `Action` contracts used underneath that entry point.
 Existing `OutputSpec`, `ProcedureSpec`, `ActionSpec`, and `DomainPack` constructors and
 serialized records remain supported. This is still a preview API.
 For a complete installable package, schema/skill composition, evaluation and host
