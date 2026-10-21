@@ -13,16 +13,14 @@ import tomllib
 from pathlib import Path
 
 MAX_CORE_DEPENDENCIES = 6
-# Rebaseline after extracting Agno 3 learning composition from AgentHarness. These
-# ceilings retain about two percent regression headroom; the six-dependency and
-# two-second import limits remain unchanged. The remaining oversized facade/import
-# graph is explicit extraction debt, not hidden growth.
-MAX_SOURCE_BYTES = 3_487_000
-# The opt-in domain SDK adds ~51 KB of Python source (~14 KB compressed) without
-# dependencies or eager top-level imports. Rebaseline only the wheel ceiling for
-# this feature, retaining roughly two percent headroom; other limits are unchanged.
-MAX_WHEEL_BYTES = 794_000
-MAX_SDIST_BYTES = 2_050_000
+# The 0.15 package lifecycle adds ~91 KB source and ~27 KB compressed wheel over
+# the authoring preview, without core dependencies or eager domain imports. Keep
+# about two percent headroom after measuring built artifacts. Import/dependency
+# and largest-module ceilings remain unchanged.
+MAX_SOURCE_BYTES = 3_670_000
+MAX_WHEEL_BYTES = 832_000
+MAX_SDIST_BYTES = 2_160_000
+# Remaining facade/import size is explicit extraction debt, not hidden growth.
 MAX_SINGLE_MODULE_BYTES = 494_000
 MAX_SINGLE_MODULE_LINES = 12_070
 MAX_IMPORT_SECONDS = 2.0

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -446,9 +447,20 @@ class CapabilityExecutor:
         safe_metadata: Mapping[str, Any] | None = None,
         pre_dispatch: CapabilityPreDispatch | None = None,
         result_transformer: CapabilityResultTransformer | None = None,
+        expected_capability_digest: str | None = None,
+        execution_digest: str | None = None,
     ) -> CapabilityExecution:
-        """Authorize, persist intent, materialize, dispatch, and settle once."""
+        """Authorize, persist intent, materialize, dispatch, and settle once.
+
+        ``execution_digest`` optionally pins surrounding contract semantics into
+        the persisted request identity. Omitting it preserves existing identities.
+        """
         self._require_open()
+        if execution_digest is not None and (
+            not isinstance(execution_digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", execution_digest)
+        ):
+            raise ValueError("execution_digest must be a canonical sha256 digest")
         scopes = self._authorized_scopes(
             profile=profile,
             admission=admission,
@@ -461,6 +473,13 @@ class CapabilityExecutor:
             )
             await asyncio.to_thread(self.gateway.store.get_run, run_id, owner=owner)
         spec = self.registry.resolve(reference)
+        if expected_capability_digest is not None and spec.digest != expected_capability_digest:
+            raise HarnessError(
+                code="CAPABILITY_DIGEST_MISMATCH",
+                category="capability",
+                message="The registered capability differs from the reviewed implementation.",
+                retryable=False,
+            )
         spec.require_profile(profile)
         missing = tuple(sorted(set(spec.required_scopes) - scopes))
         if missing:
@@ -529,6 +548,7 @@ class CapabilityExecutor:
                 "capability_digest": spec.digest,
                 "idempotency_key": idempotency_key,
                 "profile": profile,
+                **({"execution_digest": execution_digest} if execution_digest is not None else {}),
             }
         )
         intent_metadata = {

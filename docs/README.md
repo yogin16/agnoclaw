@@ -23,6 +23,18 @@ order.
   product decision, competitive lessons, and phased roadmap.
 - [Domain harness research and roadmap](domain-harness-research.md) — recent vertical
   agents, industry-specific contracts, Clarion adoption, and SDK/platform gates.
+- [Domain quickstart](domain-quickstart.md) — a model, a typed function, examples and
+  optional request-scoped receipts using `Model` and `Pack`.
+- [Explicit domain contracts](domain-authoring.md) — executable procedures and checks,
+  versioning, stable identities, relationships, deduplication, conflicts, and reviewed actions.
+- [Author and embed a domain package](domain-packages.md) — installable Clarion example,
+  catalog diagnostics, schema evolution, interfaces, workflows, extensions and host adapters.
+- [Domain durability](domain-durability.md) — pinned plans, replay, Agno/Flue recovery
+  lessons, and the host boundaries for effects, approvals, events and workspace retention.
+- [Embeddable framework roadmap](framework-roadmap.md) — Clarion extraction candidates,
+  pack/schema/workspace lifecycles, evaluations, protocols, hooks, observers and workflows.
+- [Domain object and behavior design](domain-model-behavior.md) — entity/relation definitions,
+  matching, review, interfaces, triggers and decisions applied to an embeddable SDK.
 - [Agno release-practice audit](agno-release-practices.md) — every stable Agno release
   from 2.6.0 through 3.0.6, the retained 3.0 alpha source evidence, and agnoclaw's tested
   adopt/adapt/avoid decisions.

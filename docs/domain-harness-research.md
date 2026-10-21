@@ -3,6 +3,12 @@
 Research checked 2026-10-18. This is a qualitative sample of primary sources,
 not a census or market-share estimate. Product descriptions are company claims;
 the architecture recommendations below are our synthesis.
+Implementation status updated 2026-10-19 for the additive 0.15 authoring preview.
+The [embeddable framework roadmap](framework-roadmap.md) expands the next slices into
+pack management, ontology/schema evolution, evaluations, workspaces, protocols,
+interactions, hooks, listeners, observers and workflow adapters, grounded in Clarion code.
+The [Domain object and behavior design](domain-model-behavior.md), updated 2026-10-19, maps ontology,
+matching, interface and automation concepts onto that embeddable framework boundary.
 
 ## What the YC evidence supports
 
@@ -84,8 +90,9 @@ adapters. The application authenticates users and owns business state and commit
 An `interface` package should grow from real consumers of typed outputs, pending
 reviews and evidence locations. The current `interaction` module is the portable
 request/decision contract. A universal UI renderer, chat replacement and business
-ORM would be premature. Similarly, procedures are declarations used by hosts; they
-are not an automatically enforced DAG or a replacement for Agno workflows.
+ORM would be premature. `ProcedureSpec` remains a declaration; the new `Procedure`
+validates outputs and runs bound checks when explicitly called. Neither is an
+automatically enforced DAG or a replacement for Agno workflows.
 
 ## Release and roadmap gates
 
@@ -93,18 +100,26 @@ are not an automatically enforced DAG or a replacement for Agno workflows.
    typed outputs, versioned checks, reviewed-action contracts, procedure and pack
    declarations, bounded context, feedback fixtures, decision rules and inference
    routing hints. The offline example exercises real SQLite writes and replay.
-2. **Clarion adoption — partly implemented.** Opt-in source-evidence/review and
-   typed-input adapters are in the companion branch. Next certify the complete
+2. **0.15 authoring — implemented preview.** `OutputSchema`, executable checks and
+   procedures, conflict-checked domain composition, and reviewed `Action` dispatch
+   remove repeated binding code. Stable object IDs, directed links, request/intent
+   deduplication, and three-way JSON changes make identity and conflict policy explicit.
+   Existing 0.14 constructors and record formats remain supported. See the
+   [authoring guide](domain-authoring.md) and its runnable starter.
+3. **Clarion adoption — partly implemented.** Opt-in source-evidence/review and
+   typed-input adapters have landed in Clarion; its production pin remains 0.11.0.
+   Next certify the complete
    agnoclaw version pair, connect one real action with authoritative review lookup
-   and atomic revision checks, and add field-specific semantic verification.
-3. **Developer usability — acceptance gate.** A second independent adopter builds
+   and atomic revision checks, and add field-specific semantic verification. Use the
+   new authoring helpers in one default-off procedure before broader migration.
+4. **Developer usability — acceptance gate.** A second independent adopter builds
    a domain pack using public APIs only. Measure setup effort, repeated adapter
    code and failure diagnosis. Extract storage/review/interface utilities only
    where both adopters establish a shared contract.
-4. **Stable SDK — acceptance gate.** Versioned serialization and migration policy,
+5. **Stable SDK — acceptance gate.** Versioned serialization and migration policy,
    compatibility tests for maintained Agno versions, domain evaluation datasets,
    connector contract tests and documented authority/recovery responsibilities.
-5. **Hosted platform — conditional.** Add managed execution, tenancy operations,
+6. **Hosted platform — conditional.** Add managed execution, tenancy operations,
    review storage or a pack registry only if independent adopters repeatedly need
    them. An SDK is useful before a hosted platform is justified.
 

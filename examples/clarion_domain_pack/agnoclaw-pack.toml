@@ -1,0 +1,11 @@
+name = "clarion-company-metrics-example"
+version = "0.1.0"
+description = "Typed company metrics, evidence checks, relationships and monitoring"
+
+[provides]
+domains = ["clarion_domain:register"]
+skills = ["skills"]
+
+[trust]
+default = "local"
+requires_code_execution = true

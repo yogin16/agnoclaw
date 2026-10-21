@@ -277,9 +277,7 @@ def is_pack_trusted(path_or_name: str | Path, *, root: str | Path | None = None)
     except (json.JSONDecodeError, OSError, PackError):
         return False
     return bool(
-        data.get("trusted")
-        and data.get("name") == manifest.name
-        and data.get("digest") == digest
+        data.get("trusted") and data.get("name") == manifest.name and data.get("digest") == digest
     )
 
 
@@ -332,11 +330,20 @@ def load_pack(
             )
             loaded.policies.extend(_load_registered_items(manifest.provides.policies))
             if manifest.provides.domains:
+                from .domain.authoring import Domain
+                from .domain.catalog import ResolvedDomain
+                from .domain.pack import Pack
                 from .domain.procedures import DomainPack
 
-                domains = _load_registered_items(manifest.provides.domains)
-                if not all(isinstance(domain, DomainPack) for domain in domains):
-                    raise PackError("Domain registrations must return DomainPack instances")
+                domains = [
+                    item.compile() if isinstance(item, (Domain, Pack)) else item
+                    for item in _load_registered_items(manifest.provides.domains)
+                ]
+                if not all(isinstance(domain, (DomainPack, ResolvedDomain)) for domain in domains):
+                    raise PackError(
+                        "Domain registrations must return Pack, Domain, DomainPack "
+                        "or ResolvedDomain instances"
+                    )
                 loaded.domains.extend(domains)
     return loaded
 

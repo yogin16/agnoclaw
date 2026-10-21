@@ -31,6 +31,7 @@ from agnoclaw.runtime import (
     RunSnapshot,
     SQLiteRuntimeStore,
 )
+from agnoclaw.runtime.security import canonical_json_digest
 from agnoclaw.runtime.store import OperationIdempotencyConflictError
 
 _OPEN_STORES: list[SQLiteRuntimeStore] = []
@@ -157,6 +158,30 @@ async def test_durable_execution_requires_admission_before_intent_or_factory(tmp
 
 
 @pytest.mark.asyncio
+async def test_expected_implementation_rejects_before_factory_or_operation_intent(tmp_path):
+    calls = []
+    spec = _spec(factory=lambda: calls.append("factory"))
+    executor, store, _ = _executor(tmp_path, spec)
+    try:
+        with pytest.raises(HarnessError) as rejected:
+            await executor.execute(
+                f"{spec.name}@{spec.version}",
+                operation_id="changed-implementation",
+                run_id="run-1",
+                attempt_id="attempt-1",
+                admission=_admission(),
+                expected_capability_digest="sha256:previous-implementation",
+                pre_dispatch=lambda: calls.append("preflight"),
+            )
+        assert rejected.value.code == "CAPABILITY_DIGEST_MISMATCH"
+        assert calls == []
+        with pytest.raises(OperationNotFoundError):
+            store.get_operation("changed-implementation")
+    finally:
+        await executor.aclose()
+
+
+@pytest.mark.asyncio
 async def test_scope_and_exact_run_owner_are_reauthorized_before_intent(tmp_path):
     executor, store, _ = _executor(tmp_path, _spec())
 
@@ -214,6 +239,16 @@ async def test_arguments_are_digest_bound_but_never_persisted(tmp_path):
     assert record.intent.metadata["authority_digest"] == admission.authority_digest
     assert record.intent.metadata["capability_digest"] == completed.spec.digest
     assert record.intent.metadata["profile"] == "durable"
+    # Omitting the new digest preserves persisted request identity for old callers.
+    assert record.intent.request_digest == canonical_json_digest(
+        {
+            "arguments": {"sku": "secret-sku-value"},
+            "authority_digest": admission.authority_digest,
+            "capability_digest": completed.spec.digest,
+            "idempotency_key": None,
+            "profile": "durable",
+        }
+    )
 
     with pytest.raises(HarnessError) as reserved:
         await executor.execute(
