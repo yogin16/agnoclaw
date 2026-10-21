@@ -35,6 +35,7 @@ This project follows Keep a Changelog structure.
   differs from the reviewed proposal.
 - Refresh the locked `aiohttp` dependency to 3.14.4 and its required `yarl` dependency
   after the release audit identified vulnerabilities in the previous lock.
+- Refresh locked `certifi` to 2026.10.19 after CI detected PYSEC-2026-4320.
 - Preserve frozen capability schemas when using `dataclasses.replace()` and suppress
   raw callback exception context in sanitized domain errors.
 - Pin interface and workflow execution semantics in operation request identity;
