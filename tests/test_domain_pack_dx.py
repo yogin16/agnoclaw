@@ -287,7 +287,9 @@ async def check() -> None:
         cwd=Path(__file__).parents[1],
         text=True,
         capture_output=True,
-        timeout=30,
+        # Cold mypy runs analyze the installed Agno/Pydantic dependency graph too.
+        # This asserts typing correctness, not compiler startup performance.
+        timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
